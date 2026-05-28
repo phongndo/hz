@@ -63,13 +63,39 @@ real behavior is added.
 
 ## Development
 
+Install the repo Rust toolchain:
+
 ```sh
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+rustup show
+```
+
+Or enter the Nix development shell:
+
+```sh
+nix develop
+```
+
+```sh
+cargo check --workspace --all-targets --all-features --locked
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-targets --all-features --locked
+cargo build --workspace --all-targets --all-features --locked
+rust-analyzer diagnostics .
 ```
 
 ## CI
 
 `.github/workflows/quality.yml` runs rust-analyzer diagnostics, formatter,
 Clippy, workspace tests, and a full workspace build.
+
+The same quality gate is also available through Nix:
+
+```sh
+nix develop -c cargo check --workspace --all-targets --all-features --locked
+nix develop -c cargo fmt --all --check
+nix develop -c cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+nix develop -c cargo test --workspace --all-targets --all-features --locked
+nix develop -c cargo build --workspace --all-targets --all-features --locked
+nix develop -c rust-analyzer diagnostics .
+```
