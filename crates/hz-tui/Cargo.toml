@@ -1,0 +1,10 @@
+[package]
+name = "hz-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crossterm.workspace = true
+hz-core.workspace = true
+ratatui.workspace = true

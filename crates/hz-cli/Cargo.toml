@@ -1,0 +1,16 @@
+[package]
+name = "hz-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A CLI for working with parallel agent worktrees."
+
+[[bin]]
+name = "hz"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+hz-command.workspace = true
+hz-core.workspace = true
+hz-tui.workspace = true

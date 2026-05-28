@@ -1,0 +1,10 @@
+[package]
+name = "hz-command"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hz-core.workspace = true
+hz-diff.workspace = true
+hz-worktree.workspace = true
