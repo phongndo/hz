@@ -68,3 +68,8 @@ cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 ```
+
+## CI
+
+`.github/workflows/quality.yml` runs rust-analyzer diagnostics, formatter,
+Clippy, workspace tests, and a full workspace build.
