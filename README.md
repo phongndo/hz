@@ -4,43 +4,6 @@
 across Git worktrees. The repository currently contains scaffolding only:
 command shapes, crate boundaries, and placeholder domain types.
 
-## Commands
-
-```sh
-cargo run -p hz-cli -- worktree new <name>
-cargo run -p hz-cli -- worktree switch <name-or-path>
-cargo run -p hz-cli -- worktree handoff <from> <to>
-cargo run -p hz-cli -- diff --stat
-cargo run -p hz-cli -- tui
-```
-
-Shortcuts are available for the worktree commands:
-
-```sh
-cargo run -p hz-cli -- new <name>
-cargo run -p hz-cli -- switch <name-or-path>
-cargo run -p hz-cli -- handoff <from> <to>
-```
-
-The intended default path policy for named worktrees is:
-
-```text
-~/.hz/worktrees/<repo-name>/<worktree-name>
-```
-
-Use `--path <path>` with `worktree new` when a worktree should live somewhere
-else. This behavior is not implemented yet.
-
-## JSON
-
-Headless commands reserve `--json` for future structured output:
-
-```sh
-cargo run -p hz-cli -- worktree new agent-a --json
-cargo run -p hz-cli -- worktree switch agent-a --json
-cargo run -p hz-cli -- worktree handoff agent-a agent-b --json
-```
-
 ## Crates
 
 ```text
