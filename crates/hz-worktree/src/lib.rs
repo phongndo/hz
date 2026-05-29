@@ -18,7 +18,7 @@ pub struct CreateWorktree {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SwitchWorktree {
+pub struct PathWorktree {
     pub target: String,
     pub repo: Option<PathBuf>,
 }
@@ -142,7 +142,7 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     })
 }
 
-pub fn switch(input: SwitchWorktree) -> HzResult<WorktreeTarget> {
+pub fn path(input: PathWorktree) -> HzResult<WorktreeTarget> {
     let registry = Registry::load()?;
     let repo = resolve_repo(input.repo.as_deref(), &registry)?;
     resolve_target(&registry, &repo, &input.target)

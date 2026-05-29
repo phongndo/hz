@@ -20,7 +20,7 @@ enum Command {
     #[command(about = "Create a Git worktree for a parallel agent")]
     New(NewWorktreeArgs),
     #[command(alias = "cd", about = "Print the directory for a worktree")]
-    Path(SwitchWorktreeArgs),
+    Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
     #[command(alias = "rm", about = "Remove a managed worktree")]
@@ -42,7 +42,7 @@ enum WorktreeCommand {
     #[command(about = "Create a Git worktree for a parallel agent")]
     New(NewWorktreeArgs),
     #[command(alias = "cd", about = "Print the directory for a worktree")]
-    Path(SwitchWorktreeArgs),
+    Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
     #[command(alias = "rm", about = "Remove a managed worktree")]
@@ -71,7 +71,7 @@ struct NewWorktreeArgs {
 }
 
 #[derive(Debug, Args)]
-struct SwitchWorktreeArgs {
+struct PathWorktreeArgs {
     target: Option<String>,
     #[arg(long)]
     repo: Option<PathBuf>,
@@ -200,9 +200,9 @@ fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
     Ok(())
 }
 
-fn path_worktree(args: SwitchWorktreeArgs) -> HzResult<()> {
+fn path_worktree(args: PathWorktreeArgs) -> HzResult<()> {
     let _ = args.path_only;
-    let target = hz_command::switch_worktree(hz_command::SwitchWorktree {
+    let target = hz_command::path_worktree(hz_command::PathWorktree {
         target: args.target.unwrap_or_else(|| "local".to_owned()),
         repo: args.repo,
     })?;
