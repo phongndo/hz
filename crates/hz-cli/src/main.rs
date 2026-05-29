@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     path::PathBuf,
     process::ExitCode,
 };
@@ -302,6 +302,14 @@ fn should_confirm_unmanaged_removal(
     args: &RemoveWorktreeArgs,
     worktree: &hz_command::WorktreeEntry,
 ) -> HzResult<bool> {
+    should_confirm_unmanaged_removal_with_stdin(args, worktree, io::stdin().is_terminal())
+}
+
+fn should_confirm_unmanaged_removal_with_stdin(
+    args: &RemoveWorktreeArgs,
+    worktree: &hz_command::WorktreeEntry,
+    stdin_is_terminal: bool,
+) -> HzResult<bool> {
     if worktree.source == hz_command::WorktreeSource::Managed || args.force {
         return Ok(false);
     }
@@ -309,6 +317,13 @@ fn should_confirm_unmanaged_removal(
     if args.json {
         return Err(hz_core::HzError::Usage(
             "refusing to remove unmanaged worktree in --json mode without --force".to_owned(),
+        ));
+    }
+
+    if !stdin_is_terminal {
+        return Err(hz_core::HzError::Usage(
+            "refusing to prompt for unmanaged worktree removal without a terminal; use --force"
+                .to_owned(),
         ));
     }
 
@@ -494,6 +509,28 @@ mod tests {
         let worktree = test_entry(hz_command::WorktreeSource::Managed);
 
         assert!(!should_confirm_unmanaged_removal(&args, &worktree).unwrap());
+    }
+
+    #[test]
+    fn unmanaged_non_interactive_removal_requires_force() {
+        let args = remove_args(false, false);
+        let worktree = test_entry(hz_command::WorktreeSource::Git);
+
+        let error =
+            should_confirm_unmanaged_removal_with_stdin(&args, &worktree, false).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "refusing to prompt for unmanaged worktree removal without a terminal; use --force"
+        );
+    }
+
+    #[test]
+    fn unmanaged_interactive_removal_confirms() {
+        let args = remove_args(false, false);
+        let worktree = test_entry(hz_command::WorktreeSource::Git);
+
+        assert!(should_confirm_unmanaged_removal_with_stdin(&args, &worktree, true).unwrap());
     }
 
     fn remove_args(json: bool, force: bool) -> RemoveWorktreeArgs {
