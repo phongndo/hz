@@ -172,8 +172,9 @@ pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
         .filter(|entry| same_path(&entry.repo, &repo))
         .collect();
 
-    let _ = input.all;
-    add_git_worktrees(&mut entries, &repo, hz_git::list_worktrees(&repo)?);
+    if input.all {
+        add_git_worktrees(&mut entries, &repo, hz_git::list_worktrees(&repo)?);
+    }
 
     entries.sort_by(|left, right| left.handle.cmp(&right.handle));
     Ok(entries)
@@ -203,6 +204,35 @@ pub fn remove(input: RemoveWorktree) -> HzResult<WorktreeEntry> {
 
     let entry = find_git_entry(&repo, &input.target)?;
     hz_git::remove_worktree(&repo, &entry.path)?;
+
+    Ok(entry)
+}
+
+pub fn remove_found(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
+    match entry.source {
+        WorktreeSource::Managed => remove_registered_entry(entry),
+        WorktreeSource::Git => {
+            hz_git::remove_worktree(&entry.repo, &entry.path)?;
+            Ok(entry)
+        }
+    }
+}
+
+fn remove_registered_entry(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
+    let mut registry = Registry::load()?;
+    let index = registry
+        .entries
+        .iter()
+        .position(|registered| {
+            same_path(&registered.repo, &entry.repo)
+                && registered.id == entry.id
+                && same_path(&registered.path, &entry.path)
+        })
+        .ok_or_else(|| HzError::Usage(format!("unknown worktree: {}", entry.handle)))?;
+    let entry = registry.entries.remove(index);
+
+    hz_git::remove_worktree(&entry.repo, &entry.path)?;
+    registry.save()?;
 
     Ok(entry)
 }
@@ -242,7 +272,9 @@ fn find_entry(registry: &Registry, repo: &Path, target: &str) -> HzResult<Worktr
 fn find_git_entry(repo: &Path, target: &str) -> HzResult<WorktreeEntry> {
     hz_git::list_worktrees(repo)?
         .into_iter()
-        .filter(|worktree| !same_path(&worktree.path, repo))
+        .enumerate()
+        .filter(|(index, worktree)| *index != 0 && !same_path(&worktree.path, repo))
+        .map(|(_, worktree)| worktree)
         .map(|worktree| git_entry(repo, worktree))
         .find(|entry| matches_target(entry, target))
         .ok_or_else(|| HzError::Usage(format!("unknown worktree: {target}")))
@@ -253,8 +285,9 @@ fn add_git_worktrees(
     repo: &Path,
     worktrees: Vec<hz_git::GitWorktree>,
 ) {
-    for worktree in worktrees {
-        if same_path(&worktree.path, repo)
+    for (index, worktree) in worktrees.into_iter().enumerate() {
+        if index == 0
+            || same_path(&worktree.path, repo)
             || entries
                 .iter()
                 .any(|entry| same_path(&entry.path, &worktree.path))
@@ -753,6 +786,34 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[1].handle, "bd16");
         assert_eq!(entries[1].source, WorktreeSource::Git);
+    }
+
+    #[test]
+    fn git_worktree_merge_skips_primary_when_repo_is_linked_worktree() {
+        let repo = PathBuf::from("/Users/dev/.codex/worktrees/current/hz");
+        let mut entries = Vec::new();
+
+        add_git_worktrees(
+            &mut entries,
+            &repo,
+            vec![
+                hz_git::GitWorktree {
+                    path: PathBuf::from("/repo/hz"),
+                    branch: Some("main".to_owned()),
+                },
+                hz_git::GitWorktree {
+                    path: repo.clone(),
+                    branch: Some("feature/current".to_owned()),
+                },
+                hz_git::GitWorktree {
+                    path: PathBuf::from("/Users/dev/.codex/worktrees/other/hz"),
+                    branch: Some("feature/other".to_owned()),
+                },
+            ],
+        );
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].branch.as_deref(), Some("feature/other"));
     }
 
     fn test_entry(repo: &Path, handle: String) -> WorktreeEntry {

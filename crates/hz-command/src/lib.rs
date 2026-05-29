@@ -35,6 +35,10 @@ pub fn remove_worktree(input: RemoveWorktree) -> HzResult<WorktreeEntry> {
     hz_worktree::remove(input)
 }
 
+pub fn remove_found_worktree(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
+    hz_worktree::remove_found(entry)
+}
+
 pub fn diff(input: DiffOptions) -> HzResult<String> {
     hz_diff::render(input)
 }
