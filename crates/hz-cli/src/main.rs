@@ -29,7 +29,7 @@ enum Command {
     Remove(RemoveWorktreeArgs),
     #[command(about = "Print source and destination worktree handoff context")]
     Handoff(HandoffWorktreeArgs),
-    #[command(about = "Print shell integration")]
+    #[command(about = "Install shell integration into your shell rc file")]
     Init(InitArgs),
     #[command(about = "Print shell integration script")]
     Shell(InitArgs),
@@ -303,12 +303,24 @@ fn worktree_branch_or_handle(worktree: &hz_command::WorktreeEntry) -> &str {
 }
 
 fn handoff_worktree(args: HandoffWorktreeArgs) -> HzResult<()> {
-    let _ = args.json;
-    hz_command::handoff_worktree(hz_command::HandoffWorktree {
+    let handoff = hz_command::handoff_worktree(hz_command::HandoffWorktree {
         from: args.from,
         to: args.to,
         repo: args.repo,
     })?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&handoff)?);
+    } else {
+        println!("repo\t{}", handoff.repo.display());
+        println!(
+            "from\t{}\t{}",
+            handoff.from.name,
+            handoff.from.path.display()
+        );
+        println!("to\t{}\t{}", handoff.to.name, handoff.to.path.display());
+    }
+
     Ok(())
 }
 

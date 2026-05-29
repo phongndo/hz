@@ -57,6 +57,7 @@ pub fn add_worktree(repo: &Path, path: &Path, branch: &str, base: Option<&str>) 
         .arg("-C")
         .arg(repo)
         .args(["worktree", "add", "-b", branch])
+        .arg("--")
         .arg(path);
 
     if let Some(base) = base {
@@ -75,7 +76,7 @@ pub fn remove_worktree(repo: &Path, path: &Path) -> HzResult<()> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["worktree", "remove"])
+        .args(["worktree", "remove", "--"])
         .arg(path)
         .output()?;
 
