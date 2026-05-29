@@ -1,0 +1,17 @@
+{
+  "strictness": 2,
+  "commentTypes": ["logic", "syntax"],
+  "triggerOnUpdates": true,
+  "statusCheck": true,
+  "summarySection": {
+    "included": true,
+    "collapsible": true,
+    "defaultOpen": false
+  },
+  "issuesTableSection": {
+    "included": true,
+    "collapsible": true,
+    "defaultOpen": false
+  },
+  "instructions": "This is a Rust workspace for a headless-first CLI that coordinates Git worktrees. Prefer small, boring changes that preserve crate boundaries and public command behavior."
+}
