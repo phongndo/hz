@@ -166,11 +166,25 @@ fn status_path(line: &str) -> Option<&str> {
 }
 
 fn path_modified_at(path: &Path) -> Option<u64> {
-    fs::metadata(path)
+    let metadata = fs::symlink_metadata(path).ok()?;
+    let modified_at = metadata
+        .modified()
         .ok()
-        .and_then(|metadata| metadata.modified().ok())
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs())
+        .map(|duration| duration.as_secs())?;
+
+    if !metadata.is_dir() {
+        return Some(modified_at);
+    }
+
+    let child_modified_at = fs::read_dir(path)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| path_modified_at(&entry.path()))
+        .max()
+        .unwrap_or(0);
+
+    Some(modified_at.max(child_modified_at))
 }
 
 fn parse_worktree_list(output: &str) -> Vec<GitWorktree> {
@@ -214,6 +228,12 @@ fn git_error(context: &str, output: &std::process::Output) -> HzError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        env,
+        fs::File,
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn parses_porcelain_worktree_list() {
@@ -252,5 +272,40 @@ branch refs/heads/feature
             status_path("R  old-name.rs -> new-name.rs"),
             Some("new-name.rs")
         );
+    }
+
+    #[test]
+    fn directory_modified_at_uses_newest_descendant() {
+        let test_dir = env::temp_dir().join(format!(
+            "hz-git-mtime-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let nested_dir = test_dir.join("nested");
+        let nested_file = nested_dir.join("file.txt");
+
+        fs::create_dir_all(&nested_dir).expect("test directory should be created");
+        File::create(&nested_file).expect("nested file should be created");
+        let shallow_directory_modified_at =
+            path_modified_at(&nested_dir).expect("directory mtime should be read");
+        thread::sleep(Duration::from_secs(1));
+        fs::write(&nested_file, "updated").expect("nested file should be updated");
+
+        let file_modified_at = path_modified_at(&nested_file).expect("file mtime should be read");
+        let directory_modified_at =
+            path_modified_at(&nested_dir).expect("directory tree mtime should be read");
+
+        assert!(
+            directory_modified_at >= file_modified_at,
+            "directory tree mtime should include nested files"
+        );
+        assert!(
+            directory_modified_at > shallow_directory_modified_at,
+            "directory tree mtime should reflect edits to existing nested files"
+        );
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
     }
 }
