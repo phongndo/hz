@@ -248,13 +248,13 @@ fn render_worktree_list(worktrees: &[hz_command::WorktreeEntry]) -> String {
 
     let name_width = worktrees
         .iter()
-        .map(|worktree| worktree.branch.as_deref().unwrap_or("-").len())
+        .map(|worktree| display_width(worktree_branch_or_handle(worktree)))
         .chain([4])
         .max()
         .expect("width candidates should not be empty");
     let path_width = worktrees
         .iter()
-        .map(|worktree| worktree.path.display().to_string().len())
+        .map(|worktree| display_width(&worktree.path.display().to_string()))
         .chain([4])
         .max()
         .expect("width candidates should not be empty");
@@ -265,18 +265,22 @@ fn render_worktree_list(worktrees: &[hz_command::WorktreeEntry]) -> String {
         "NAME", "PATH"
     ));
     for worktree in worktrees {
-        let name = worktree.branch.as_deref().unwrap_or("-");
+        let name = worktree_branch_or_handle(worktree);
+        let path = worktree.path.display().to_string();
         let source = match worktree.source {
             hz_command::WorktreeSource::Managed => "managed",
             hz_command::WorktreeSource::Git => "git",
         };
         output.push_str(&format!(
-            "{name:<name_width$}  {:<path_width$}  {source}\n",
-            worktree.path.display(),
+            "{name:<name_width$}  {path:<path_width$}  {source}\n"
         ));
     }
 
     output
+}
+
+fn display_width(value: &str) -> usize {
+    value.chars().count()
 }
 
 fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
@@ -369,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn list_output_marks_missing_branch() {
+    fn list_output_uses_handle_when_branch_is_missing() {
         let output = render_worktree_list(&[hz_command::WorktreeEntry {
             id: "entry-id".to_owned(),
             handle: "generated-handle".to_owned(),
@@ -386,8 +390,23 @@ mod tests {
             .expect("worktree row should be rendered");
         let columns: Vec<_> = row.split_whitespace().collect();
 
-        assert_eq!(columns, vec!["-", "/worktrees/entry", "git"]);
-        assert!(!output.contains("generated-handle"));
+        assert_eq!(columns, vec!["generated-handle", "/worktrees/entry", "git"]);
+    }
+
+    #[test]
+    fn list_output_widths_count_characters() {
+        let output = render_worktree_list(&[hz_command::WorktreeEntry {
+            id: "entry-id".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry"),
+            branch: Some("ééééé".to_owned()),
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            created_at_unix: 0,
+        }]);
+
+        assert!(output.starts_with("NAME   PATH"));
     }
 
     #[test]
