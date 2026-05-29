@@ -368,11 +368,23 @@ fn handoff_worktree_to_local(
     ensure_clean(&repo, "destination")?;
 
     let local_restore_branch = hz_git::current_branch(&repo)?.filter(|local| local != &branch);
-    if source_branch.as_deref() == Some(&branch) {
+    let detached_source = source_branch.as_deref() == Some(&branch);
+    if detached_source {
         hz_git::switch_detached(&current)?;
     }
-    if hz_git::current_branch(&repo)?.as_deref() != Some(&branch) {
-        hz_git::switch_branch(&repo, &branch)?;
+    if hz_git::current_branch(&repo)?.as_deref() != Some(&branch)
+        && let Err(error) = hz_git::switch_branch(&repo, &branch)
+    {
+        if detached_source {
+            let rollback = hz_git::switch_branch(&current, &branch);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => HzError::Usage(format!(
+                    "{error}; rollback failed, source worktree is not on {branch}: {rollback_error}"
+                )),
+            });
+        }
+        return Err(error);
     }
 
     registry.remember_handoff(&repo, &branch, &current, &from.name, local_restore_branch)?;

@@ -35,7 +35,7 @@ hz new
 hz ls
 hz path fix-login
 hz cd fix-login
-hz handoff fix-login
+hz handoff
 hz cd
 hz rm fix-login
 ```
@@ -62,13 +62,14 @@ worktree and changes into it, and `hz cd` returns to the local repo root.
 `--json`, `--path-only`, and help calls still pass through to the real binary
 without changing directories.
 
-`hz handoff` applies the current worktree's uncommitted diff to the other side
-by default. From a linked worktree it applies the patch to `local`. From
-`local`, pass a worktree handle such as `hz handoff fix-login` to apply the
+`hz handoff` applies the current worktree's uncommitted diff to its linked
+counterpart by default. From a linked worktree it applies the patch to `local`.
+From `local`, pass a worktree handle such as `hz handoff fix-login` to apply the
 local patch there. The destination must be clean, and source changes are left in
-place.
+place. With shell integration loaded, successful handoffs change into the
+destination worktree unless `--json`, `--path-only`, or help is passed.
 
-Use `hz handoff --branch <branch-or-worktree>` to move branch ownership instead
+Use `hz handoff <worktree> --branch` to move branch ownership instead
 of applying a patch. Branch handoff is clean-only on both sides.
 
 ## Development

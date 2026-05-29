@@ -12,7 +12,7 @@ hz() {
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h)
+          --json|--path-only|--help|-h|-j)
             command hz "$@"
             return
             ;;
@@ -21,13 +21,13 @@ hz() {
 
       local hz_target_path
       hz_target_path="$(command hz "$@" --path-only)" || return
-      builtin cd "$hz_target_path"
+      builtin cd "$hz_target_path" || return
       ;;
     handoff)
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h)
+          --json|--path-only|--help|-h|-j)
             command hz "$@"
             return
             ;;
@@ -36,14 +36,14 @@ hz() {
 
       local hz_target_path
       hz_target_path="$(command hz "$@" --path-only)" || return
-      builtin cd "$hz_target_path"
+      builtin cd "$hz_target_path" || return
       ;;
     cd)
       shift
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h)
+          --json|--path-only|--help|-h|-j)
             command hz "$cmd" "$@"
             return
             ;;
@@ -52,7 +52,7 @@ hz() {
 
       local hz_target_path
       hz_target_path="$(command hz path "$@")" || return
-      builtin cd "$hz_target_path"
+      builtin cd "$hz_target_path" || return
       ;;
     *)
       command hz "$@"

@@ -160,7 +160,16 @@ mod tests {
 
         assert!(script.contains("command hz \"$@\" --path-only"));
         assert!(script.contains("handoff)"));
-        assert!(script.contains("builtin cd \"$hz_target_path\""));
+        assert!(script.contains("--json|--path-only|--help|-h|-j"));
+        assert!(script.contains("builtin cd \"$hz_target_path\" || return"));
+    }
+
+    #[test]
+    fn fish_integration_passes_json_short_flag_through() {
+        let script = shell_integration(Shell::Fish);
+
+        assert!(script.contains("case --json --path-only --help -h -j"));
+        assert!(script.contains("or return"));
     }
 
     #[test]
