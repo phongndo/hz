@@ -23,7 +23,7 @@ hz() {
       hz_target_path="$(command hz "$@" --path-only)" || return
       builtin cd "$hz_target_path"
       ;;
-    cd|switch)
+    cd)
       shift
       local arg
       for arg in "$@"; do
