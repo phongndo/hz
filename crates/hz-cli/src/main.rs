@@ -1,4 +1,8 @@
-use std::{path::PathBuf, process::ExitCode};
+use std::{
+    io::{self, Write},
+    path::PathBuf,
+    process::ExitCode,
+};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use hz_core::HzResult;
@@ -23,7 +27,7 @@ enum Command {
     Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
-    #[command(alias = "rm", about = "Remove a managed worktree")]
+    #[command(alias = "rm", about = "Remove a worktree")]
     Remove(RemoveWorktreeArgs),
     #[command(about = "Print source and destination worktree handoff context")]
     Handoff(HandoffWorktreeArgs),
@@ -45,7 +49,7 @@ enum WorktreeCommand {
     Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
-    #[command(alias = "rm", about = "Remove a managed worktree")]
+    #[command(alias = "rm", about = "Remove a worktree")]
     Remove(RemoveWorktreeArgs),
     #[command(about = "Print source and destination worktree handoff context")]
     Handoff(HandoffWorktreeArgs),
@@ -86,8 +90,6 @@ struct ListWorktreeArgs {
     #[arg(long)]
     repo: Option<PathBuf>,
     #[arg(long)]
-    all: bool,
-    #[arg(long)]
     json: bool,
 }
 
@@ -98,6 +100,8 @@ struct RemoveWorktreeArgs {
     repo: Option<PathBuf>,
     #[arg(long)]
     json: bool,
+    #[arg(long, alias = "yes")]
+    force: bool,
     #[arg(long)]
     debug: bool,
 }
@@ -217,10 +221,7 @@ fn path_worktree(args: PathWorktreeArgs) -> HzResult<()> {
 }
 
 fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
-    let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees {
-        repo: args.repo,
-        all: args.all,
-    })?;
+    let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees { repo: args.repo })?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&worktrees)?);
@@ -274,10 +275,19 @@ fn display_width(value: &str) -> usize {
 }
 
 fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
-    let removed = hz_command::remove_worktree(hz_command::RemoveWorktree {
-        target: args.target,
-        repo: args.repo,
+    let candidate = hz_command::find_worktree(hz_command::FindWorktree {
+        target: args.target.clone(),
+        repo: args.repo.clone(),
     })?;
+
+    if should_confirm_unmanaged_removal(&args, &candidate)?
+        && !confirm_unmanaged_removal(&candidate)?
+    {
+        eprintln!("not removed");
+        return Ok(());
+    }
+
+    let removed = hz_command::remove_found_worktree(candidate)?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&removed)?);
@@ -286,6 +296,36 @@ fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
     }
 
     Ok(())
+}
+
+fn should_confirm_unmanaged_removal(
+    args: &RemoveWorktreeArgs,
+    worktree: &hz_command::WorktreeEntry,
+) -> HzResult<bool> {
+    if worktree.source == hz_command::WorktreeSource::Managed || args.force {
+        return Ok(false);
+    }
+
+    if args.json {
+        return Err(hz_core::HzError::Usage(
+            "refusing to remove unmanaged worktree in --json mode without --force".to_owned(),
+        ));
+    }
+
+    Ok(true)
+}
+
+fn confirm_unmanaged_removal(worktree: &hz_command::WorktreeEntry) -> HzResult<bool> {
+    eprint!(
+        "{} at {} is not managed by hz. Delete it with git worktree remove? [y/N] ",
+        worktree_branch_or_handle(worktree),
+        worktree.path.display()
+    );
+    io::stderr().flush()?;
+
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
 }
 
 fn worktree_branch_or_handle(worktree: &hz_command::WorktreeEntry) -> &str {
@@ -425,5 +465,57 @@ mod tests {
         };
 
         assert_eq!(worktree_branch_or_handle(&worktree), "feature/ui");
+    }
+
+    #[test]
+    fn unmanaged_json_removal_requires_force() {
+        let args = remove_args(true, false);
+        let worktree = test_entry(hz_command::WorktreeSource::Git);
+
+        let error = should_confirm_unmanaged_removal(&args, &worktree).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "refusing to remove unmanaged worktree in --json mode without --force"
+        );
+    }
+
+    #[test]
+    fn force_skips_unmanaged_removal_confirmation() {
+        let args = remove_args(false, true);
+        let worktree = test_entry(hz_command::WorktreeSource::Git);
+
+        assert!(!should_confirm_unmanaged_removal(&args, &worktree).unwrap());
+    }
+
+    #[test]
+    fn managed_removal_skips_confirmation() {
+        let args = remove_args(false, false);
+        let worktree = test_entry(hz_command::WorktreeSource::Managed);
+
+        assert!(!should_confirm_unmanaged_removal(&args, &worktree).unwrap());
+    }
+
+    fn remove_args(json: bool, force: bool) -> RemoveWorktreeArgs {
+        RemoveWorktreeArgs {
+            target: "target".to_owned(),
+            repo: None,
+            json,
+            force,
+            debug: false,
+        }
+    }
+
+    fn test_entry(source: hz_command::WorktreeSource) -> hz_command::WorktreeEntry {
+        hz_command::WorktreeEntry {
+            id: "entry-id".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry-id"),
+            branch: Some("feature/ui".to_owned()),
+            base: None,
+            source,
+            created_at_unix: 0,
+        }
     }
 }

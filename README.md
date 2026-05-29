@@ -33,7 +33,6 @@ directory under `~/.hz/worktrees/<repo>/` by default:
 hz new fix-login
 hz new
 hz ls
-hz ls --all
 hz path fix-login
 hz cd fix-login
 hz cd
@@ -42,7 +41,9 @@ hz rm fix-login
 
 `hz new` without a name generates a `word-word` branch/handle. Managed
 worktrees are registered in `~/.config/hz/registry.json` or
-`$XDG_CONFIG_HOME/hz/registry.json`.
+`$XDG_CONFIG_HOME/hz/registry.json`. `hz ls`, `hz cd`, and `hz rm` also detect
+unmanaged Git worktrees created by other tools. Removing an unmanaged worktree
+asks for confirmation because the path is not managed by hz.
 
 `hz cd` prints a path for scripts. To make `hz new` and `hz cd` change the
 current shell directory, run `hz init <shell>` once to update your shell rc
