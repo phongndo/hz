@@ -90,8 +90,6 @@ struct ListWorktreeArgs {
     #[arg(long)]
     repo: Option<PathBuf>,
     #[arg(long)]
-    all: bool,
-    #[arg(long)]
     json: bool,
 }
 
@@ -223,10 +221,7 @@ fn path_worktree(args: PathWorktreeArgs) -> HzResult<()> {
 }
 
 fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
-    let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees {
-        repo: args.repo,
-        all: args.all,
-    })?;
+    let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees { repo: args.repo })?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&worktrees)?);

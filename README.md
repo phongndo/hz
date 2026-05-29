@@ -33,7 +33,6 @@ directory under `~/.hz/worktrees/<repo>/` by default:
 hz new fix-login
 hz new
 hz ls
-hz ls --all
 hz path fix-login
 hz cd fix-login
 hz cd

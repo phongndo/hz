@@ -33,7 +33,6 @@ pub struct HandoffWorktree {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListWorktrees {
     pub repo: Option<PathBuf>,
-    pub all: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,9 +171,7 @@ pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
         .filter(|entry| same_path(&entry.repo, &repo))
         .collect();
 
-    if input.all {
-        add_git_worktrees(&mut entries, &repo, hz_git::list_worktrees(&repo)?);
-    }
+    add_git_worktrees(&mut entries, &repo, hz_git::list_worktrees(&repo)?);
 
     entries.sort_by(|left, right| left.handle.cmp(&right.handle));
     Ok(entries)
