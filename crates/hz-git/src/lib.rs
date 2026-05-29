@@ -1,6 +1,8 @@
 use std::{
+    fs,
     path::{Path, PathBuf},
     process::Command,
+    time::UNIX_EPOCH,
 };
 
 use hz_core::{HzError, HzResult};
@@ -29,6 +31,12 @@ pub struct GitDiffSpec {
 pub struct GitWorktree {
     pub path: PathBuf,
     pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitWorktreeState {
+    pub dirty: bool,
+    pub modified_at_unix: u64,
 }
 
 pub fn repository_root(repo: Option<&Path>) -> HzResult<PathBuf> {
@@ -73,12 +81,18 @@ pub fn add_worktree(repo: &Path, path: &Path, branch: &str, base: Option<&str>) 
 }
 
 pub fn remove_worktree(repo: &Path, path: &Path) -> HzResult<()> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["worktree", "remove", "--"])
-        .arg(path)
-        .output()?;
+    remove_worktree_with_force(repo, path, false)
+}
+
+pub fn remove_worktree_with_force(repo: &Path, path: &Path, force: bool) -> HzResult<()> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo).args(["worktree", "remove"]);
+    if force {
+        command.arg("--force");
+    }
+    command.arg("--").arg(path);
+
+    let output = command.output()?;
 
     if !output.status.success() {
         return Err(git_error("failed to remove git worktree", &output));
@@ -109,6 +123,54 @@ pub fn main_worktree(repo: &Path) -> HzResult<PathBuf> {
         .next()
         .map(|worktree| worktree.path)
         .ok_or_else(|| HzError::Usage("git worktree list was empty".to_owned()))
+}
+
+pub fn worktree_state(path: &Path) -> HzResult<GitWorktreeState> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to read git worktree status", &output));
+    }
+
+    let status = String::from_utf8_lossy(&output.stdout);
+    if status.trim().is_empty() {
+        return Ok(GitWorktreeState {
+            dirty: false,
+            modified_at_unix: 0,
+        });
+    }
+
+    Ok(GitWorktreeState {
+        dirty: true,
+        modified_at_unix: status_paths_modified_at(path, &status),
+    })
+}
+
+fn status_paths_modified_at(repo: &Path, status: &str) -> u64 {
+    status
+        .lines()
+        .filter_map(status_path)
+        .filter_map(|path| path_modified_at(&repo.join(path)))
+        .max()
+        .unwrap_or_else(|| path_modified_at(repo).unwrap_or(0))
+}
+
+fn status_path(line: &str) -> Option<&str> {
+    let path = line.get(3..)?;
+    path.rsplit_once(" -> ")
+        .map_or(Some(path), |(_, renamed)| Some(renamed))
+}
+
+fn path_modified_at(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
 }
 
 fn parse_worktree_list(output: &str) -> Vec<GitWorktree> {
@@ -180,6 +242,15 @@ branch refs/heads/feature
                     branch: Some("feature".to_owned())
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn status_path_reads_final_path_for_renames() {
+        assert_eq!(status_path(" M src/lib.rs"), Some("src/lib.rs"));
+        assert_eq!(
+            status_path("R  old-name.rs -> new-name.rs"),
+            Some("new-name.rs")
         );
     }
 }

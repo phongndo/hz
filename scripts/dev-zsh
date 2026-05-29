@@ -1,0 +1,46 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+
+repo_dir="${0:A:h:h}"
+enter_shell=false
+if [[ "${1:-}" == "--enter" ]]; then
+  enter_shell=true
+fi
+
+cd "$repo_dir"
+cargo build -p hz-cli --locked
+
+zshrc="$HOME/.zshrc"
+touch "$zshrc"
+tmp_zshrc="$(mktemp)"
+awk '
+  skip_hz_dev_path {
+    if ($0 ~ /^export PATH=".*\/target\/debug:\$PATH"$/) {
+      skip_hz_dev_path = 0
+      next
+    }
+    skip_hz_dev_path = 0
+  }
+  $0 == "# hz dev binary" {
+    skip_hz_dev_path = 1
+    next
+  }
+  { print }
+' "$zshrc" > "$tmp_zshrc"
+mv "$tmp_zshrc" "$zshrc"
+printf '\n# hz dev binary\nexport PATH="%s/target/debug:$PATH"\n' "$repo_dir" >> "$zshrc"
+
+PATH="$repo_dir/target/debug:$PATH" "$repo_dir/target/debug/hz" init zsh
+
+if [[ "$enter_shell" == true ]]; then
+  zdotdir="$(mktemp -d)"
+  trap 'rm -rf "$zdotdir"' EXIT
+  cat > "$zdotdir/.zshrc" <<EOF
+source "$HOME/.zshrc"
+export PATH="$repo_dir/target/debug:\$PATH"
+print 'hz dev shell ready; exit to return'
+EOF
+  ZDOTDIR="$zdotdir" zsh -i
+else
+  print 'restart your shell or run: source ~/.zshrc'
+fi

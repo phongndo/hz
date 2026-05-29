@@ -8,7 +8,7 @@ use hz_core::{HzError, HzResult};
 pub use hz_diff::DiffOptions;
 pub use hz_worktree::{
     CreateWorktree, CreatedWorktree, FindWorktree, HandoffWorktree, ListWorktrees, PathWorktree,
-    RemoveWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource,
+    RemoveWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
 };
 
 pub fn create_worktree(input: CreateWorktree) -> HzResult<CreatedWorktree> {
@@ -37,6 +37,13 @@ pub fn remove_worktree(input: RemoveWorktree) -> HzResult<WorktreeEntry> {
 
 pub fn remove_found_worktree(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
     hz_worktree::remove_found(entry)
+}
+
+pub fn remove_found_worktree_with_force(
+    entry: WorktreeEntry,
+    force: bool,
+) -> HzResult<WorktreeEntry> {
+    hz_worktree::remove_found_with_force(entry, force)
 }
 
 pub fn diff(input: DiffOptions) -> HzResult<String> {
