@@ -23,6 +23,21 @@ hz() {
       hz_target_path="$(command hz "$@" --path-only)" || return
       builtin cd "$hz_target_path"
       ;;
+    handoff)
+      local arg
+      for arg in "$@"; do
+        case "$arg" in
+          --json|--path-only|--help|-h)
+            command hz "$@"
+            return
+            ;;
+        esac
+      done
+
+      local hz_target_path
+      hz_target_path="$(command hz "$@" --path-only)" || return
+      builtin cd "$hz_target_path"
+      ;;
     cd)
       shift
       local arg

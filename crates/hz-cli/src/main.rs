@@ -26,7 +26,8 @@ examples:
   hz new feature/ui
   hz ls
   hz rm -f feature/ui
-  hz cd feature/ui";
+  hz cd feature/ui
+  hz handoff feature/ui";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -66,7 +67,7 @@ enum Command {
     List(ListWorktreeArgs),
     #[command(alias = "rm", about = "Remove a worktree")]
     Remove(RemoveWorktreeArgs),
-    #[command(about = "Print source and destination worktree handoff context")]
+    #[command(about = "Apply changes between local and a linked worktree")]
     Handoff(HandoffWorktreeArgs),
     #[command(about = "Install shell integration into your shell rc file")]
     Init(InitArgs),
@@ -88,24 +89,24 @@ enum WorktreeCommand {
     List(ListWorktreeArgs),
     #[command(alias = "rm", about = "Remove a worktree")]
     Remove(RemoveWorktreeArgs),
-    #[command(about = "Print source and destination worktree handoff context")]
+    #[command(about = "Apply changes between local and a linked worktree")]
     Handoff(HandoffWorktreeArgs),
 }
 
 #[derive(Debug, Args)]
 struct NewWorktreeArgs {
     name: Option<String>,
-    #[arg(long)]
+    #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(short = 'p', long)]
     path: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(short = 'B', long)]
     base: Option<String>,
-    #[arg(long)]
+    #[arg(short = 'b', long)]
     branch: Option<String>,
-    #[arg(long)]
+    #[arg(short = 'j', long)]
     json: bool,
-    #[arg(long)]
+    #[arg(short = 'd', long)]
     debug: bool,
     #[arg(long, hide = true)]
     path_only: bool,
@@ -114,9 +115,9 @@ struct NewWorktreeArgs {
 #[derive(Debug, Args)]
 struct PathWorktreeArgs {
     target: Option<String>,
-    #[arg(long)]
+    #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(short = 'j', long)]
     json: bool,
     #[arg(long, hide = true)]
     path_only: bool,
@@ -124,33 +125,36 @@ struct PathWorktreeArgs {
 
 #[derive(Debug, Args)]
 struct ListWorktreeArgs {
-    #[arg(long)]
+    #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(short = 'j', long)]
     json: bool,
 }
 
 #[derive(Debug, Args)]
 struct RemoveWorktreeArgs {
     target: String,
-    #[arg(long)]
+    #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(short = 'j', long)]
     json: bool,
     #[arg(short = 'f', long, alias = "yes")]
     force: bool,
-    #[arg(long)]
+    #[arg(short = 'd', long)]
     debug: bool,
 }
 
 #[derive(Debug, Args)]
 struct HandoffWorktreeArgs {
-    from: String,
-    to: String,
-    #[arg(long)]
+    target: Option<String>,
+    #[arg(short = 'b', long)]
+    branch: bool,
+    #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(short = 'j', long)]
     json: bool,
+    #[arg(long, hide = true)]
+    path_only: bool,
 }
 
 #[derive(Debug, Args)]
@@ -167,11 +171,11 @@ enum ShellArg {
 
 #[derive(Debug, Args)]
 struct DiffArgs {
-    #[arg(long)]
+    #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(short = 'b', long)]
     base: Option<String>,
-    #[arg(long)]
+    #[arg(short = 's', long)]
     stat: bool,
 }
 
@@ -448,6 +452,15 @@ fn render_handoff(handoff: &hz_command::WorktreeHandoff, color: bool) -> String 
         StyleColor::White,
         color,
     );
+    output.push_str(&render_field(
+        "mode",
+        handoff_mode_label(handoff.mode),
+        StyleColor::White,
+        color,
+    ));
+    if let Some(branch) = &handoff.branch {
+        output.push_str(&render_field("branch", branch, StyleColor::White, color));
+    }
     output.push_str(&render_handoff_endpoint(
         "<",
         "from",
@@ -466,6 +479,13 @@ fn render_handoff(handoff: &hz_command::WorktreeHandoff, color: bool) -> String 
     ));
 
     output
+}
+
+fn handoff_mode_label(mode: hz_command::HandoffMode) -> &'static str {
+    match mode {
+        hz_command::HandoffMode::Patch => "patch",
+        hz_command::HandoffMode::Branch => "branch",
+    }
 }
 
 fn render_handoff_endpoint(
@@ -639,13 +659,19 @@ fn worktree_branch_or_handle(worktree: &hz_command::WorktreeEntry) -> &str {
 
 fn handoff_worktree(args: HandoffWorktreeArgs) -> HzResult<()> {
     let handoff = hz_command::handoff_worktree(hz_command::HandoffWorktree {
-        from: args.from,
-        to: args.to,
+        target: args.target,
+        mode: if args.branch {
+            hz_command::HandoffMode::Branch
+        } else {
+            hz_command::HandoffMode::Patch
+        },
         repo: args.repo,
     })?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&handoff)?);
+    } else if args.path_only {
+        println!("{}", handoff.to.path.display());
     } else {
         print!("{}", render_handoff(&handoff, io::stdout().is_terminal()));
     }
@@ -910,6 +936,8 @@ mod tests {
         let output = render_handoff(
             &hz_command::WorktreeHandoff {
                 repo: PathBuf::from("/repo"),
+                mode: hz_command::HandoffMode::Patch,
+                branch: Some("feature/ui".to_owned()),
                 from: hz_core::paths::WorktreeTarget {
                     name: "local".to_owned(),
                     path: PathBuf::from("/repo"),
@@ -918,11 +946,14 @@ mod tests {
                     name: "feature/ui".to_owned(),
                     path: PathBuf::from("/worktrees/entry"),
                 },
+                changed: true,
             },
             false,
         );
 
         assert!(output.contains("repo    /repo"));
+        assert!(output.contains("mode    patch"));
+        assert!(output.contains("branch  feature/ui"));
         assert!(output.contains("< from  local"));
         assert!(output.contains("> to    feature/ui"));
     }
@@ -945,14 +976,115 @@ mod tests {
 
     #[test]
     fn remove_accepts_short_force_flag() {
-        let cli = Cli::try_parse_from(["hz", "rm", "-f", "target"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["hz", "rm", "-r", "/repo", "-j", "-d", "-f", "target"]).unwrap();
 
         match cli.command {
             Some(Command::Remove(args)) => {
                 assert_eq!(args.target, "target");
+                assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+                assert!(args.json);
+                assert!(args.debug);
                 assert!(args.force);
             }
             command => panic!("expected remove command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn handoff_accepts_optional_branch_and_path_only() {
+        let cli =
+            Cli::try_parse_from(["hz", "handoff", "-r", "/repo", "-j", "feature/ui"]).unwrap();
+
+        match cli.command {
+            Some(Command::Handoff(args)) => {
+                assert_eq!(args.target.as_deref(), Some("feature/ui"));
+                assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+                assert!(args.json);
+                assert!(!args.branch);
+            }
+            command => panic!("expected handoff command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "handoff", "708e", "-b", "--path-only"]).unwrap();
+        match cli.command {
+            Some(Command::Handoff(args)) => {
+                assert_eq!(args.target.as_deref(), Some("708e"));
+                assert!(args.branch);
+                assert!(args.path_only);
+            }
+            command => panic!("expected handoff command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "handoff"]).unwrap();
+        match cli.command {
+            Some(Command::Handoff(args)) => assert_eq!(args.target, None),
+            command => panic!("expected handoff command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn creation_and_diff_accept_short_flags() {
+        let cli = Cli::try_parse_from([
+            "hz",
+            "new",
+            "-r",
+            "/repo",
+            "-p",
+            "../wt",
+            "-B",
+            "main",
+            "-b",
+            "feature/ui",
+            "-j",
+            "-d",
+            "handle",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::New(args)) => {
+                assert_eq!(args.name.as_deref(), Some("handle"));
+                assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+                assert_eq!(args.path, Some(PathBuf::from("../wt")));
+                assert_eq!(args.base.as_deref(), Some("main"));
+                assert_eq!(args.branch.as_deref(), Some("feature/ui"));
+                assert!(args.json);
+                assert!(args.debug);
+            }
+            command => panic!("expected new command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "diff", "-r", "/repo", "-b", "main", "-s"]).unwrap();
+        match cli.command {
+            Some(Command::Diff(args)) => {
+                assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+                assert_eq!(args.base.as_deref(), Some("main"));
+                assert!(args.stat);
+            }
+            command => panic!("expected diff command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn path_and_list_accept_short_flags() {
+        let cli = Cli::try_parse_from(["hz", "path", "-r", "/repo", "-j", "target"]).unwrap();
+        match cli.command {
+            Some(Command::Path(args)) => {
+                assert_eq!(args.target.as_deref(), Some("target"));
+                assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+                assert!(args.json);
+            }
+            command => panic!("expected path command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "ls", "-r", "/repo", "-j"]).unwrap();
+        match cli.command {
+            Some(Command::List(args)) => {
+                assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+                assert!(args.json);
+            }
+            command => panic!("expected list command, got {command:?}"),
         }
     }
 

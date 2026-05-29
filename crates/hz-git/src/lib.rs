@@ -1,8 +1,9 @@
 use std::{
-    fs,
+    env, fs,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
-    time::UNIX_EPOCH,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use hz_core::{HzError, HzResult};
@@ -150,6 +151,213 @@ pub fn worktree_state(path: &Path) -> HzResult<GitWorktreeState> {
     })
 }
 
+pub fn current_branch(repo: &Path) -> HzResult<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["branch", "--show-current"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to read current git branch", &output));
+    }
+
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if branch.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(branch))
+    }
+}
+
+pub fn branch_exists(repo: &Path, branch: &str) -> HzResult<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["show-ref", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .output()?;
+
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(git_error("failed to check git branch", &output)),
+    }
+}
+
+pub fn switch_branch(repo: &Path, branch: &str) -> HzResult<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["switch", "--"])
+        .arg(branch)
+        .output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to switch git branch", &output));
+    }
+
+    Ok(())
+}
+
+pub fn switch_detached(repo: &Path) -> HzResult<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["switch", "--detach"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to detach git worktree", &output));
+    }
+
+    Ok(())
+}
+
+pub fn diff_patch(repo: &Path) -> HzResult<Vec<u8>> {
+    let untracked = untracked_paths(repo)?;
+    if untracked.is_empty() {
+        return diff_patch_with_index(repo, None);
+    }
+
+    let index_path = git_path(repo, "index")?;
+    let temp_index = temp_index_path()?;
+    if index_path.exists() {
+        fs::copy(&index_path, &temp_index)?;
+    } else {
+        fs::File::create(&temp_index)?.sync_all()?;
+    }
+
+    let result = (|| {
+        let mut add = Command::new("git");
+        add.arg("-C")
+            .arg(repo)
+            .env("GIT_INDEX_FILE", &temp_index)
+            .args(["add", "-N", "--"])
+            .args(&untracked);
+        let output = add.output()?;
+        if !output.status.success() {
+            return Err(git_error(
+                "failed to prepare untracked files for diff",
+                &output,
+            ));
+        }
+
+        diff_patch_with_index(repo, Some(&temp_index))
+    })();
+
+    let _ = fs::remove_file(&temp_index);
+    result
+}
+
+pub fn apply_patch(repo: &Path, patch: &[u8]) -> HzResult<bool> {
+    if patch.iter().all(|byte| byte.is_ascii_whitespace()) {
+        return Ok(false);
+    }
+
+    apply_patch_command(repo, patch, true)?;
+    apply_patch_command(repo, patch, false)?;
+    Ok(true)
+}
+
+fn apply_patch_command(repo: &Path, patch: &[u8], check: bool) -> HzResult<()> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo).arg("apply");
+    if check {
+        command.arg("--check");
+    }
+    command.arg("--binary");
+
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| HzError::Usage("failed to open git apply stdin".to_owned()))?
+        .write_all(patch)?;
+    let output = child.wait_with_output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to apply git patch", &output));
+    }
+
+    Ok(())
+}
+
+fn diff_patch_with_index(repo: &Path, index: Option<&Path>) -> HzResult<Vec<u8>> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo)
+        .args(["diff", "--binary", "HEAD"]);
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+    let output = command.output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to create git patch", &output));
+    }
+
+    Ok(output.stdout)
+}
+
+fn untracked_paths(repo: &Path) -> HzResult<Vec<PathBuf>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to list untracked files", &output));
+    }
+
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| PathBuf::from(String::from_utf8_lossy(path).into_owned()))
+        .collect())
+}
+
+fn git_path(repo: &Path, path: &str) -> HzResult<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--git-path", path])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to resolve git path", &output));
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if path.is_empty() {
+        return Err(HzError::Usage("git path was empty".to_owned()));
+    }
+
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(repo.join(path))
+    }
+}
+
+fn temp_index_path() -> HzResult<PathBuf> {
+    Ok(env::temp_dir().join(format!(
+        "hz-git-index-{}.tmp",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| HzError::Usage(format!("system time before unix epoch: {error}")))?
+            .as_nanos()
+    )))
+}
+
 fn status_paths_modified_at(repo: &Path, status: &str) -> u64 {
     status
         .lines()
@@ -231,6 +439,7 @@ mod tests {
     use std::{
         env,
         fs::File,
+        process::Command,
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
@@ -307,5 +516,68 @@ branch refs/heads/feature
         );
 
         fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn patch_diff_includes_modified_and_untracked_files() {
+        let test_dir = env::temp_dir().join(format!(
+            "hz-git-patch-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let repo = test_dir.join("repo");
+        let destination = test_dir.join("destination");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+
+        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
+        git(["config", "user.email", "test@example.com"], &repo);
+        git(["config", "user.name", "Test"], &repo);
+        fs::write(repo.join("file.txt"), "base\n").expect("tracked file should be written");
+        git(["add", "file.txt"], &repo);
+        git(["commit", "-q", "-m", "init"], &repo);
+        git(
+            [
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                destination.to_str().unwrap(),
+                "HEAD",
+            ],
+            &repo,
+        );
+
+        fs::write(repo.join("file.txt"), "base\nchanged\n")
+            .expect("tracked file should be changed");
+        fs::write(repo.join("new.txt"), "new\n").expect("untracked file should be written");
+
+        let patch = diff_patch(&repo).expect("patch should be created");
+        assert!(apply_patch(&destination, &patch).expect("patch should apply"));
+
+        assert_eq!(
+            fs::read_to_string(destination.join("file.txt")).unwrap(),
+            "base\nchanged\n"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("new.txt")).unwrap(),
+            "new\n"
+        );
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    fn git<const N: usize>(args: [&str; N], cwd: &Path) {
+        let output = Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

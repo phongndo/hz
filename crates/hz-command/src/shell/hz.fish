@@ -20,6 +20,18 @@ function hz
             set hz_target_path (command hz $argv --path-only)
             or return
             builtin cd "$hz_target_path"
+        case handoff
+            for arg in $argv
+                switch $arg
+                    case --json --path-only --help -h
+                        command hz $argv
+                        return
+                end
+            end
+
+            set hz_target_path (command hz $argv --path-only)
+            or return
+            builtin cd "$hz_target_path"
         case cd
             set rest $argv[2..-1]
             for arg in $rest

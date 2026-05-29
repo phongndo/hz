@@ -7,8 +7,8 @@ use hz_core::{HzError, HzResult};
 
 pub use hz_diff::DiffOptions;
 pub use hz_worktree::{
-    CreateWorktree, CreatedWorktree, FindWorktree, HandoffWorktree, ListWorktrees, PathWorktree,
-    RemoveWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
+    CreateWorktree, CreatedWorktree, FindWorktree, HandoffMode, HandoffWorktree, ListWorktrees,
+    PathWorktree, RemoveWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
 };
 
 pub fn create_worktree(input: CreateWorktree) -> HzResult<CreatedWorktree> {
@@ -159,6 +159,7 @@ mod tests {
         let script = shell_integration(Shell::Zsh);
 
         assert!(script.contains("command hz \"$@\" --path-only"));
+        assert!(script.contains("handoff)"));
         assert!(script.contains("builtin cd \"$hz_target_path\""));
     }
 
