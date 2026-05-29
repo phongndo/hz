@@ -220,7 +220,7 @@ fn resolve_target(registry: &Registry, repo: &Path, target: &str) -> HzResult<Wo
     if target == "local" {
         return Ok(WorktreeTarget {
             name: "local".to_owned(),
-            path: repo.to_path_buf(),
+            path: hz_git::main_worktree(repo)?,
         });
     }
 

@@ -103,6 +103,14 @@ pub fn list_worktrees(repo: &Path) -> HzResult<Vec<GitWorktree>> {
     )))
 }
 
+pub fn main_worktree(repo: &Path) -> HzResult<PathBuf> {
+    list_worktrees(repo)?
+        .into_iter()
+        .next()
+        .map(|worktree| worktree.path)
+        .ok_or_else(|| HzError::Usage("git worktree list was empty".to_owned()))
+}
+
 fn parse_worktree_list(output: &str) -> Vec<GitWorktree> {
     let mut worktrees = Vec::new();
     let mut path = None;
