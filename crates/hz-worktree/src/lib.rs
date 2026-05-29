@@ -2,7 +2,6 @@ use std::{
     env, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    process,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -287,27 +286,29 @@ impl Registry {
             fs::create_dir_all(parent)?;
         }
 
-        let file_name = path.file_name().ok_or_else(|| {
-            HzError::Usage(format!(
-                "registry path has no file name: {}",
-                path.display()
-            ))
-        })?;
-        let temp_path = path.with_file_name(format!(
-            ".{}.{}.tmp",
-            file_name.to_string_lossy(),
-            process::id()
-        ));
-
-        {
-            let mut file = fs::File::create(&temp_path)?;
+        let temp_path = registry_temp_path(&path)?;
+        let mut created_temp = false;
+        let save_result = (|| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)?;
+            created_temp = true;
             file.write_all(serde_json::to_string_pretty(self)?.as_bytes())?;
             file.write_all(b"\n")?;
             file.sync_all()?;
+            drop(file);
+
+            fs::rename(&temp_path, &path)?;
+            created_temp = false;
+            Ok(())
+        })();
+
+        if save_result.is_err() && created_temp {
+            let _ = fs::remove_file(&temp_path);
         }
 
-        fs::rename(&temp_path, &path)?;
-        Ok(())
+        save_result
     }
 
     fn find(&self, repo: &Path, target: &str) -> Option<&WorktreeEntry> {
@@ -353,6 +354,20 @@ fn resolve_worktree_path(repo: &Path, path: PathBuf) -> PathBuf {
     }
 }
 
+fn registry_temp_path(path: &Path) -> HzResult<PathBuf> {
+    let file_name = path.file_name().ok_or_else(|| {
+        HzError::Usage(format!(
+            "registry path has no file name: {}",
+            path.display()
+        ))
+    })?;
+    Ok(path.with_file_name(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        new_uuid_v4()?
+    )))
+}
+
 fn default_worktree_path(repo: &Path, id: &str) -> HzResult<PathBuf> {
     let repo_name = repo
         .file_name()
@@ -391,7 +406,7 @@ fn generate_unique_handle(registry: &Registry, repo: &Path) -> String {
 
 fn generate_handle(attempt: u128) -> String {
     const LEFT: &[&str] = &[
-        "clear", "direct", "fast", "focus", "fresh", "local", "plain", "steady",
+        "clear", "direct", "fast", "focus", "fresh", "plain", "steady",
     ];
     const RIGHT: &[&str] = &[
         "branch", "change", "path", "patch", "shift", "stack", "task", "tree",
@@ -481,6 +496,23 @@ mod tests {
         assert_eq!(
             resolve_worktree_path(&repo, PathBuf::from("/tmp/worktree")),
             PathBuf::from("/tmp/worktree")
+        );
+    }
+
+    #[test]
+    fn registry_temp_paths_are_unique_and_adjacent() {
+        let registry = PathBuf::from("/config/hz/registry.json");
+        let first = registry_temp_path(&registry).unwrap();
+        let second = registry_temp_path(&registry).unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), registry.parent());
+        assert!(
+            first
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".registry.json.")
         );
     }
 }
