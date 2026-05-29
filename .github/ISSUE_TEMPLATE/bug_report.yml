@@ -52,6 +52,8 @@ body:
       label: Version or commit
       description: Paste `hz --version`, a release version, or the commit SHA you tested.
       placeholder: hz 0.0.0 / abc1234
+    validations:
+      required: true
 
   - type: dropdown
     id: environment
