@@ -1,0 +1,80 @@
+name: PR Template
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+      - ready_for_review
+
+jobs:
+  template:
+    name: Required PR fields
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -eu
+
+          missing=0
+          body="${PR_BODY:-}"
+
+          require_text() {
+            if ! printf '%s\n' "$body" | grep -Fq -- "$1"; then
+              printf 'Missing required PR body text: %s\n' "$1"
+              missing=1
+            fi
+          }
+
+          require_non_empty_section() {
+            section="$1"
+            content="$(
+              printf '%s\n' "$body" |
+                awk -v section="## $section" '
+                  $0 == section { in_section = 1; next }
+                  in_section && /^## / { exit }
+                  in_section { print }
+                ' |
+                sed '/^[[:space:]]*$/d' |
+                sed '/^[[:space:]]*-[[:space:]]*$/d' |
+                sed '/^[[:space:]]*-[[:space:]]*[[:alpha:] -][[:alpha:] -]*:[[:space:]]*$/d'
+            )"
+            if [ -z "$content" ]; then
+              printf 'Section "%s" must include non-placeholder content.\n' "$section"
+              missing=1
+            fi
+          }
+
+          require_text "## Summary"
+          require_text "## Motivation"
+          require_text "## Changes"
+          require_text "## Verification"
+          require_text "## AI Review"
+          require_text "## Risk"
+          require_text "## Reviewer Notes"
+
+          require_non_empty_section "Summary"
+          require_non_empty_section "Risk"
+
+          if ! printf '%s\n' "$body" | grep -Eq -- '- \[[xX]\] CodeRabbit reviewed or was requested'; then
+            printf 'Mark the CodeRabbit review checklist item as completed.\n'
+            missing=1
+          fi
+
+          if ! printf '%s\n' "$body" | grep -Eq -- '- \[[xX]\] Greptile reviewed or was requested'; then
+            printf 'Mark the Greptile review checklist item as completed.\n'
+            missing=1
+          fi
+
+          if ! printf '%s\n' "$body" | grep -Eq -- '- \[[xX]\] `(cargo check|cargo fmt|cargo clippy|cargo test|cargo build)'; then
+            printf 'Mark at least one cargo verification command as completed.\n'
+            missing=1
+          fi
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi

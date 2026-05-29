@@ -103,6 +103,12 @@ rust-analyzer diagnostics .
 `.github/workflows/quality.yml` runs rust-analyzer diagnostics, formatter,
 Clippy, workspace tests, and a full workspace build.
 
+`.github/workflows/pr-template.yml` requires pull requests to keep the template
+sections, including Motivation, and mark at least one verification command plus
+the CodeRabbit and Greptile review checklist items. `.coderabbit.yaml` and
+`.greptile/` configure repository-specific AI review behavior when those GitHub
+apps are installed.
+
 The same quality gate is also available through Nix:
 
 ```sh
