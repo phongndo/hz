@@ -1,0 +1,35 @@
+name: Documentation issue
+description: Report missing, unclear, or incorrect documentation.
+title: "docs: "
+labels:
+  - documentation
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What documentation needs to change?
+      placeholder: The README says ..., but ...
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: Link to the page, section, command, or file where the issue appears.
+      placeholder: README.md#development
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is missing, outdated, confusing, or incorrect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested fix
+      description: If you know what the docs should say instead, include it here.
