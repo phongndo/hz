@@ -404,21 +404,67 @@ fn generate_unique_handle(registry: &Registry, repo: &Path) -> String {
     generate_handle(128)
 }
 
-fn generate_handle(attempt: u128) -> String {
-    const LEFT: &[&str] = &[
-        "clear", "direct", "fast", "focus", "fresh", "plain", "steady",
-    ];
-    const RIGHT: &[&str] = &[
-        "branch", "change", "path", "patch", "shift", "stack", "task", "tree",
-    ];
+const HANDLE_ADJECTIVES: &[&str] = &[
+    "abelian",
+    "analytic",
+    "archimedean",
+    "boolean",
+    "cartesian",
+    "computable",
+    "differential",
+    "euclidean",
+    "gaussian",
+    "geometric",
+    "godelian",
+    "harmonic",
+    "hilbertian",
+    "logical",
+    "modular",
+    "newtonian",
+    "noetherian",
+    "pythagorean",
+    "recursive",
+    "topological",
+];
 
+const HANDLE_NOUNS: &[&str] = &[
+    "algorithm",
+    "alpha",
+    "axiom",
+    "beta",
+    "calculus",
+    "chi",
+    "delta",
+    "epsilon",
+    "eta",
+    "fractal",
+    "gamma",
+    "iota",
+    "kappa",
+    "lambda",
+    "lemma",
+    "matrix",
+    "omega",
+    "phi",
+    "proof",
+    "sigma",
+    "tensor",
+    "theorem",
+    "theta",
+    "topology",
+    "vector",
+    "zeta",
+];
+
+fn generate_handle(attempt: u128) -> String {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default()
         + attempt;
-    let left = LEFT[(seed as usize) % LEFT.len()];
-    let right = RIGHT[((seed / LEFT.len() as u128) as usize) % RIGHT.len()];
+    let left = HANDLE_ADJECTIVES[(seed as usize) % HANDLE_ADJECTIVES.len()];
+    let right =
+        HANDLE_NOUNS[((seed / HANDLE_ADJECTIVES.len() as u128) as usize) % HANDLE_NOUNS.len()];
 
     format!("{left}-{right}")
 }
@@ -472,6 +518,17 @@ mod tests {
                 .chars()
                 .all(|character| { character.is_ascii_lowercase() || character == '-' })
         );
+    }
+
+    #[test]
+    fn generated_handle_uses_adjective_noun_parts() {
+        let handle = generate_handle(0);
+        let (left, right) = handle
+            .split_once('-')
+            .expect("generated handle should have two parts");
+
+        assert!(HANDLE_ADJECTIVES.contains(&left));
+        assert!(HANDLE_NOUNS.contains(&right));
     }
 
     #[test]
