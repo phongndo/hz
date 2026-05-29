@@ -73,6 +73,15 @@ pub enum WorktreeSource {
     Git,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeStatus {
+    Clean,
+    Dirty,
+    #[default]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeEntry {
     pub id: String,
@@ -83,6 +92,10 @@ pub struct WorktreeEntry {
     pub base: Option<String>,
     pub source: WorktreeSource,
     pub created_at_unix: u64,
+    #[serde(default)]
+    pub modified_at_unix: u64,
+    #[serde(default)]
+    pub status: WorktreeStatus,
 }
 
 pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
@@ -131,6 +144,8 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
         base: input.base.clone(),
         source: WorktreeSource::Managed,
         created_at_unix: unix_now()?,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
     };
     registry.entries.push(entry);
     registry.save()?;
@@ -172,9 +187,42 @@ pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
         .collect();
 
     add_git_worktrees(&mut entries, &repo, hz_git::list_worktrees(&repo)?);
+    refresh_worktree_state(&mut entries);
 
-    entries.sort_by(|left, right| left.handle.cmp(&right.handle));
+    sort_worktree_entries(&mut entries);
     Ok(entries)
+}
+
+fn sort_worktree_entries(entries: &mut [WorktreeEntry]) {
+    entries.sort_by(|left, right| {
+        right
+            .created_at_unix
+            .cmp(&left.created_at_unix)
+            .then_with(|| left.handle.cmp(&right.handle))
+    });
+}
+
+fn refresh_worktree_state(entries: &mut [WorktreeEntry]) {
+    for entry in entries {
+        match hz_git::worktree_state(&entry.path) {
+            Ok(state) => {
+                entry.status = if state.dirty {
+                    WorktreeStatus::Dirty
+                } else {
+                    WorktreeStatus::Clean
+                };
+                entry.modified_at_unix = if state.modified_at_unix == 0 {
+                    entry.created_at_unix
+                } else {
+                    state.modified_at_unix
+                };
+            }
+            Err(_) => {
+                entry.status = WorktreeStatus::Unknown;
+                entry.modified_at_unix = worktree_path_timestamp(&entry.path);
+            }
+        }
+    }
 }
 
 pub fn find(input: FindWorktree) -> HzResult<WorktreeEntry> {
@@ -206,16 +254,23 @@ pub fn remove(input: RemoveWorktree) -> HzResult<WorktreeEntry> {
 }
 
 pub fn remove_found(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
+    remove_found_with_force(entry, false)
+}
+
+pub fn remove_found_with_force(entry: WorktreeEntry, force: bool) -> HzResult<WorktreeEntry> {
     match entry.source {
-        WorktreeSource::Managed => remove_registered_entry(entry),
+        WorktreeSource::Managed => remove_registered_entry_with_force(entry, force),
         WorktreeSource::Git => {
-            hz_git::remove_worktree(&entry.repo, &entry.path)?;
+            hz_git::remove_worktree_with_force(&entry.repo, &entry.path, force)?;
             Ok(entry)
         }
     }
 }
 
-fn remove_registered_entry(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
+fn remove_registered_entry_with_force(
+    entry: WorktreeEntry,
+    force: bool,
+) -> HzResult<WorktreeEntry> {
     let mut registry = Registry::load()?;
     let index = registry
         .entries
@@ -228,7 +283,7 @@ fn remove_registered_entry(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
         .ok_or_else(|| HzError::Usage(format!("unknown worktree: {}", entry.handle)))?;
     let entry = registry.entries.remove(index);
 
-    hz_git::remove_worktree(&entry.repo, &entry.path)?;
+    hz_git::remove_worktree_with_force(&entry.repo, &entry.path, force)?;
     registry.save()?;
 
     Ok(entry)
@@ -302,6 +357,7 @@ fn add_git_worktrees(
 
 fn git_entry(repo: &Path, worktree: hz_git::GitWorktree) -> WorktreeEntry {
     let handle = git_worktree_handle(repo, &worktree);
+    let created_at_unix = worktree_path_timestamp(&worktree.path);
 
     WorktreeEntry {
         id: handle.clone(),
@@ -311,8 +367,18 @@ fn git_entry(repo: &Path, worktree: hz_git::GitWorktree) -> WorktreeEntry {
         branch: worktree.branch,
         base: None,
         source: WorktreeSource::Git,
-        created_at_unix: 0,
+        created_at_unix,
+        modified_at_unix: created_at_unix,
+        status: WorktreeStatus::Unknown,
     }
+}
+
+fn worktree_path_timestamp(path: &Path) -> u64 {
+    path.metadata()
+        .ok()
+        .and_then(|metadata| metadata.created().or_else(|_| metadata.modified()).ok())
+        .and_then(|timestamp| timestamp.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn git_worktree_handle(repo: &Path, worktree: &hz_git::GitWorktree) -> String {
@@ -556,7 +622,7 @@ const HANDLE_NOUNS: &[&str] = &[
 ];
 
 fn generate_handle_from_seed(seed: u128, attempt: u128) -> String {
-    let offset = seed + attempt;
+    let offset = mixed_handle_offset(seed).wrapping_add(attempt) % handle_space_size();
     let left = HANDLE_ADJECTIVES[(offset as usize) % HANDLE_ADJECTIVES.len()];
     let right =
         HANDLE_NOUNS[((offset / HANDLE_ADJECTIVES.len() as u128) as usize) % HANDLE_NOUNS.len()];
@@ -565,10 +631,26 @@ fn generate_handle_from_seed(seed: u128, attempt: u128) -> String {
 }
 
 fn handle_seed() -> u128 {
+    let mut bytes = [0_u8; 16];
+    if fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .is_ok()
+    {
+        return u128::from_le_bytes(bytes);
+    }
+
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default()
+}
+
+fn mixed_handle_offset(seed: u128) -> u128 {
+    let mut value = seed;
+    value ^= seed / HANDLE_ADJECTIVES.len() as u128;
+    value ^= seed >> 32;
+    value ^= seed >> 64;
+    value
 }
 
 fn handle_space_size() -> u128 {
@@ -635,6 +717,21 @@ mod tests {
 
         assert!(HANDLE_ADJECTIVES.contains(&left));
         assert!(HANDLE_NOUNS.contains(&right));
+    }
+
+    #[test]
+    fn generated_handle_mixes_timestamp_shaped_seeds() {
+        let base = 1_700_000_000_000_000_000_u128;
+        let mut handles = (0..8)
+            .map(|index| generate_handle_from_seed(base + index * 1_000_000_000, 0))
+            .collect::<Vec<_>>();
+        handles.sort();
+        handles.dedup();
+
+        assert!(
+            handles.len() > 1,
+            "timestamp-shaped seeds should not collapse to one handle"
+        );
     }
 
     #[test]
@@ -712,6 +809,8 @@ mod tests {
                 base: None,
                 source: WorktreeSource::Managed,
                 created_at_unix: 0,
+                modified_at_unix: 0,
+                status: WorktreeStatus::Unknown,
             }],
         };
 
@@ -745,6 +844,60 @@ mod tests {
         };
 
         assert_eq!(resolve_registered_repo(&registry, &unmanaged, &repo), None);
+    }
+
+    #[test]
+    fn registry_entries_default_added_state_fields() {
+        let registry: Registry = serde_json::from_str(
+            r#"{
+              "entries": [
+                {
+                  "id": "managed-id",
+                  "handle": "managed",
+                  "repo": "/repo/hz",
+                  "path": "/worktrees/managed",
+                  "branch": "managed",
+                  "base": null,
+                  "source": "managed",
+                  "created_at_unix": 42
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(registry.entries[0].modified_at_unix, 0);
+        assert_eq!(registry.entries[0].status, WorktreeStatus::Unknown);
+    }
+
+    #[test]
+    fn worktree_entries_sort_newest_first_with_handle_tiebreaker() {
+        let repo = PathBuf::from("/repo/hz");
+        let mut entries = vec![
+            WorktreeEntry {
+                created_at_unix: 20,
+                modified_at_unix: 0,
+                status: WorktreeStatus::Unknown,
+                ..test_entry(&repo, "zeta".to_owned())
+            },
+            WorktreeEntry {
+                created_at_unix: 30,
+                modified_at_unix: 0,
+                status: WorktreeStatus::Unknown,
+                ..test_entry(&repo, "beta".to_owned())
+            },
+            WorktreeEntry {
+                created_at_unix: 30,
+                modified_at_unix: 0,
+                status: WorktreeStatus::Unknown,
+                ..test_entry(&repo, "alpha".to_owned())
+            },
+        ];
+
+        sort_worktree_entries(&mut entries);
+
+        let handles: Vec<_> = entries.iter().map(|entry| entry.handle.as_str()).collect();
+        assert_eq!(handles, vec!["alpha", "beta", "zeta"]);
     }
 
     #[test]
@@ -818,6 +971,8 @@ mod tests {
             base: None,
             source: WorktreeSource::Managed,
             created_at_unix: 0,
+            modified_at_unix: 0,
+            status: WorktreeStatus::Unknown,
         }];
 
         add_git_worktrees(
@@ -882,6 +1037,8 @@ mod tests {
             base: None,
             source: WorktreeSource::Managed,
             created_at_unix: 0,
+            modified_at_unix: 0,
+            status: WorktreeStatus::Unknown,
         }
     }
 }
