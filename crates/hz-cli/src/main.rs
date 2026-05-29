@@ -1,4 +1,8 @@
-use std::{path::PathBuf, process::ExitCode};
+use std::{
+    io::{self, Write},
+    path::PathBuf,
+    process::ExitCode,
+};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use hz_core::HzResult;
@@ -25,7 +29,7 @@ enum Command {
     Path(SwitchWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
-    #[command(alias = "rm", about = "Remove a managed worktree")]
+    #[command(alias = "rm", about = "Remove a worktree")]
     Remove(RemoveWorktreeArgs),
     #[command(about = "Print source and destination worktree handoff context")]
     Handoff(HandoffWorktreeArgs),
@@ -49,7 +53,7 @@ enum WorktreeCommand {
     Path(SwitchWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
-    #[command(alias = "rm", about = "Remove a managed worktree")]
+    #[command(alias = "rm", about = "Remove a worktree")]
     Remove(RemoveWorktreeArgs),
     #[command(about = "Print source and destination worktree handoff context")]
     Handoff(HandoffWorktreeArgs),
@@ -284,6 +288,18 @@ fn display_width(value: &str) -> usize {
 }
 
 fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
+    let candidate = hz_command::find_worktree(hz_command::FindWorktree {
+        target: args.target.clone(),
+        repo: args.repo.clone(),
+    })?;
+
+    if candidate.source != hz_command::WorktreeSource::Managed
+        && !confirm_unmanaged_removal(&candidate)?
+    {
+        eprintln!("not removed");
+        return Ok(());
+    }
+
     let removed = hz_command::remove_worktree(hz_command::RemoveWorktree {
         target: args.target,
         repo: args.repo,
@@ -296,6 +312,19 @@ fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
     }
 
     Ok(())
+}
+
+fn confirm_unmanaged_removal(worktree: &hz_command::WorktreeEntry) -> HzResult<bool> {
+    eprint!(
+        "{} at {} is not managed by hz. Delete it with git worktree remove? [y/N] ",
+        worktree_branch_or_handle(worktree),
+        worktree.path.display()
+    );
+    io::stderr().flush()?;
+
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
 }
 
 fn worktree_branch_or_handle(worktree: &hz_command::WorktreeEntry) -> &str {
