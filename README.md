@@ -21,8 +21,44 @@ call `hz-command` instead of duplicating workflow logic. If agent providers or a
 runtime become necessary later, they can sit beside these crates without forcing
 the existing command surface to depend on plugin machinery.
 
-The command handlers intentionally return `not implemented yet` until the first
-real behavior is added.
+Some command handlers still intentionally return `not implemented yet` until
+their real behavior is added.
+
+## Worktrees
+
+`hz new` creates a Git worktree with a human-facing branch/handle and a UUID
+directory under `~/.hz/worktrees/<repo>/` by default:
+
+```sh
+hz new fix-login
+hz new
+hz ls
+hz ls --all
+hz path fix-login
+hz cd fix-login
+hz cd
+hz rm fix-login
+```
+
+`hz new` without a name generates a `word-word` branch/handle. Managed
+worktrees are registered in `~/.config/hz/registry.json` or
+`$XDG_CONFIG_HOME/hz/registry.json`.
+
+`hz cd` prints a path for scripts. To make `hz new` and `hz cd` change the
+current shell directory, run `hz init <shell>` once to update your shell rc
+file:
+
+```sh
+hz init zsh
+hz init bash
+hz init fish
+```
+
+For zsh, this updates `~/.zshrc`. Restart your shell or run `source ~/.zshrc`
+after init. With the integration loaded, plain `hz new ...` creates the
+worktree and changes into it, and `hz cd` returns to the local repo root.
+`--json`, `--path-only`, and help calls still pass through to the real binary
+without changing directories.
 
 ## Development
 
@@ -37,6 +73,21 @@ Or enter the Nix development shell:
 ```sh
 nix develop
 ```
+
+Run the local development binary without typing `target/debug/hz`:
+
+```sh
+just setup
+just dev-init-zsh
+just check
+just build
+just hz --help
+hz new test-branch
+```
+
+`just hz ...` is useful for commands that print output, but it cannot change the
+current shell directory. Use `just dev-init-zsh` once, then call `hz new` or
+`hz cd` directly for auto-cd behavior.
 
 ```sh
 cargo check --workspace --all-targets --all-features --locked

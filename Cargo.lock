@@ -315,6 +315,7 @@ dependencies = [
  "hz-command",
  "hz-core",
  "hz-tui",
+ "serde_json",
 ]
 
 [[package]]
@@ -365,6 +366,7 @@ dependencies = [
  "hz-core",
  "hz-git",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
