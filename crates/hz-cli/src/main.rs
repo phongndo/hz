@@ -242,6 +242,10 @@ fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
 }
 
 fn render_worktree_list(worktrees: &[hz_command::WorktreeEntry]) -> String {
+    if worktrees.is_empty() {
+        return String::new();
+    }
+
     let name_width = worktrees
         .iter()
         .map(|worktree| worktree.branch.as_deref().unwrap_or("-").len())
@@ -360,20 +364,29 @@ mod tests {
     }
 
     #[test]
+    fn list_output_is_empty_when_there_are_no_worktrees() {
+        assert_eq!(render_worktree_list(&[]), "");
+    }
+
+    #[test]
     fn list_output_marks_missing_branch() {
         let output = render_worktree_list(&[hz_command::WorktreeEntry {
             id: "entry-id".to_owned(),
             handle: "generated-handle".to_owned(),
             repo: PathBuf::from("/repo"),
-            path: PathBuf::from("/worktrees/entry-id"),
+            path: PathBuf::from("/worktrees/entry"),
             branch: None,
             base: None,
             source: hz_command::WorktreeSource::Git,
             created_at_unix: 0,
         }]);
+        let row = output
+            .lines()
+            .nth(1)
+            .expect("worktree row should be rendered");
+        let columns: Vec<_> = row.split_whitespace().collect();
 
-        assert!(output.contains("-"));
-        assert!(output.contains("git"));
+        assert_eq!(columns, vec!["-", "/worktrees/entry", "git"]);
         assert!(!output.contains("generated-handle"));
     }
 
