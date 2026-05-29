@@ -24,9 +24,7 @@ enum Command {
     #[command(about = "Create a Git worktree for a parallel agent")]
     New(NewWorktreeArgs),
     #[command(alias = "cd", about = "Print the directory for a worktree")]
-    Switch(SwitchWorktreeArgs),
-    #[command(about = "Print the directory for a worktree")]
-    Path(SwitchWorktreeArgs),
+    Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
     #[command(alias = "rm", about = "Remove a worktree")]
@@ -48,9 +46,7 @@ enum WorktreeCommand {
     #[command(about = "Create a Git worktree for a parallel agent")]
     New(NewWorktreeArgs),
     #[command(alias = "cd", about = "Print the directory for a worktree")]
-    Switch(SwitchWorktreeArgs),
-    #[command(about = "Print the directory for a worktree")]
-    Path(SwitchWorktreeArgs),
+    Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
     #[command(alias = "rm", about = "Remove a worktree")]
@@ -79,7 +75,7 @@ struct NewWorktreeArgs {
 }
 
 #[derive(Debug, Args)]
-struct SwitchWorktreeArgs {
+struct PathWorktreeArgs {
     target: Option<String>,
     #[arg(long)]
     repo: Option<PathBuf>,
@@ -163,14 +159,12 @@ fn run() -> HzResult<()> {
         }
         Some(Command::Worktree { command }) => match command {
             WorktreeCommand::New(args) => create_worktree(args),
-            WorktreeCommand::Switch(args) => switch_worktree(args),
             WorktreeCommand::Path(args) => path_worktree(args),
             WorktreeCommand::List(args) => list_worktrees(args),
             WorktreeCommand::Remove(args) => remove_worktree(args),
             WorktreeCommand::Handoff(args) => handoff_worktree(args),
         },
         Some(Command::New(args)) => create_worktree(args),
-        Some(Command::Switch(args)) => switch_worktree(args),
         Some(Command::Path(args)) => path_worktree(args),
         Some(Command::List(args)) => list_worktrees(args),
         Some(Command::Remove(args)) => remove_worktree(args),
@@ -210,9 +204,9 @@ fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
     Ok(())
 }
 
-fn switch_worktree(args: SwitchWorktreeArgs) -> HzResult<()> {
+fn path_worktree(args: PathWorktreeArgs) -> HzResult<()> {
     let _ = args.path_only;
-    let target = hz_command::switch_worktree(hz_command::SwitchWorktree {
+    let target = hz_command::path_worktree(hz_command::PathWorktree {
         target: args.target.unwrap_or_else(|| "local".to_owned()),
         repo: args.repo,
     })?;
@@ -224,10 +218,6 @@ fn switch_worktree(args: SwitchWorktreeArgs) -> HzResult<()> {
     }
 
     Ok(())
-}
-
-fn path_worktree(args: SwitchWorktreeArgs) -> HzResult<()> {
-    switch_worktree(args)
 }
 
 fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {

@@ -7,16 +7,16 @@ use hz_core::{HzError, HzResult};
 
 pub use hz_diff::DiffOptions;
 pub use hz_worktree::{
-    CreateWorktree, CreatedWorktree, FindWorktree, HandoffWorktree, ListWorktrees, RemoveWorktree,
-    SwitchWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource,
+    CreateWorktree, CreatedWorktree, FindWorktree, HandoffWorktree, ListWorktrees, PathWorktree,
+    RemoveWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource,
 };
 
 pub fn create_worktree(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     hz_worktree::create(input)
 }
 
-pub fn switch_worktree(input: SwitchWorktree) -> HzResult<hz_core::paths::WorktreeTarget> {
-    hz_worktree::switch(input)
+pub fn path_worktree(input: PathWorktree) -> HzResult<hz_core::paths::WorktreeTarget> {
+    hz_worktree::path(input)
 }
 
 pub fn handoff_worktree(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {

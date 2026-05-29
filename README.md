@@ -11,7 +11,7 @@ crates/hz-cli       command parsing and CLI argument shape
 crates/hz-command   command facade shared by CLI and future TUI/runtime callers
 crates/hz-core      shared errors and common models
 crates/hz-git       low-level git integration boundary
-crates/hz-worktree  worktree domain boundary: new, switch, handoff
+crates/hz-worktree  worktree domain boundary: new, path, handoff
 crates/hz-diff      diff domain boundary
 crates/hz-tui       ratatui/crossterm UI boundary
 ```

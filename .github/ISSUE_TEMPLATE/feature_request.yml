@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a new capability or behavior change.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow, limitation, or user need should this solve?
+      placeholder: When coordinating worktrees, I need ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the smallest behavior that would solve the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or different designs have you considered?
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Example usage
+      description: Include command examples, expected output, or UI sketches if helpful.
+      render: shell
+
+  - type: textarea
+    id: risk
+    attributes:
+      label: Compatibility and risk
+      description: Note any public API, CLI behavior, config, or workflow compatibility concerns.
