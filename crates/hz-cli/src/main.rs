@@ -249,7 +249,7 @@ fn render_worktree_list(worktrees: &[hz_command::WorktreeEntry]) -> String {
     let name_width = worktrees
         .iter()
         .map(|worktree| display_width(worktree_branch_or_handle(worktree)))
-        .chain([4])
+        .chain([6])
         .max()
         .expect("width candidates should not be empty");
     let path_width = worktrees
@@ -262,7 +262,7 @@ fn render_worktree_list(worktrees: &[hz_command::WorktreeEntry]) -> String {
 
     output.push_str(&format!(
         "{:<name_width$}  {:<path_width$}  SOURCE\n",
-        "NAME", "PATH"
+        "branch", "PATH"
     ));
     for worktree in worktrees {
         let name = worktree_branch_or_handle(worktree);
@@ -374,7 +374,7 @@ mod tests {
             created_at_unix: 0,
         }]);
 
-        assert!(output.contains("NAME"));
+        assert!(output.contains("branch"));
         assert!(output.contains("feature/ui"));
         assert!(!output.contains("generated-handle"));
     }
@@ -418,7 +418,7 @@ mod tests {
             created_at_unix: 0,
         }]);
 
-        assert!(output.starts_with("NAME   PATH"));
+        assert!(output.starts_with("branch  PATH"));
     }
 
     #[test]
