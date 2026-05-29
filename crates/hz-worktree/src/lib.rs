@@ -199,10 +199,10 @@ pub fn remove(input: RemoveWorktree) -> HzResult<WorktreeEntry> {
         return Ok(entry);
     }
 
-    let entry = find_git_entry(&repo, &input.target)?;
-    hz_git::remove_worktree(&repo, &entry.path)?;
-
-    Ok(entry)
+    Err(HzError::Usage(format!(
+        "unknown worktree: {}",
+        input.target
+    )))
 }
 
 pub fn remove_found(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
@@ -236,11 +236,15 @@ fn remove_registered_entry(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
 
 fn resolve_repo(repo: Option<&Path>, registry: &Registry) -> HzResult<PathBuf> {
     let current = hz_git::repository_root(repo)?;
-    if let Some(entry) = registry.find_by_path(&current) {
-        return Ok(entry.repo.clone());
-    }
+    let main = hz_git::main_worktree(&current)?;
+    Ok(resolve_registered_repo(registry, &current, &main).unwrap_or(main))
+}
 
-    Ok(current)
+fn resolve_registered_repo(registry: &Registry, current: &Path, main: &Path) -> Option<PathBuf> {
+    registry
+        .find_by_path(current)
+        .or_else(|| registry.find_by_repo(main))
+        .map(|entry| entry.repo.clone())
 }
 
 fn resolve_target(registry: &Registry, repo: &Path, target: &str) -> HzResult<WorktreeTarget> {
@@ -396,6 +400,12 @@ impl Registry {
         self.entries
             .iter()
             .find(|entry| same_path(&entry.path, path))
+    }
+
+    fn find_by_repo(&self, repo: &Path) -> Option<&WorktreeEntry> {
+        self.entries
+            .iter()
+            .find(|entry| same_path(&entry.repo, repo))
     }
 }
 
@@ -686,6 +696,55 @@ mod tests {
             resolve_worktree_path(&repo, PathBuf::from("/tmp/worktree")),
             PathBuf::from("/tmp/worktree")
         );
+    }
+
+    #[test]
+    fn repo_resolution_uses_registered_repo_for_managed_linked_worktree() {
+        let repo = PathBuf::from("/repo/hz");
+        let linked = PathBuf::from("/worktrees/managed");
+        let registry = Registry {
+            entries: vec![WorktreeEntry {
+                id: "managed-id".to_owned(),
+                handle: "managed".to_owned(),
+                repo: repo.clone(),
+                path: linked.clone(),
+                branch: Some("managed".to_owned()),
+                base: None,
+                source: WorktreeSource::Managed,
+                created_at_unix: 0,
+            }],
+        };
+
+        assert_eq!(
+            resolve_registered_repo(&registry, &linked, &repo),
+            Some(repo)
+        );
+    }
+
+    #[test]
+    fn repo_resolution_uses_registered_primary_for_unmanaged_linked_worktree() {
+        let repo = PathBuf::from("/repo/hz");
+        let unmanaged = PathBuf::from("/worktrees/unmanaged");
+        let registry = Registry {
+            entries: vec![test_entry(&repo, "managed".to_owned())],
+        };
+
+        assert_eq!(
+            resolve_registered_repo(&registry, &unmanaged, &repo),
+            Some(repo)
+        );
+    }
+
+    #[test]
+    fn repo_resolution_falls_back_when_registry_has_no_repo_match() {
+        let repo = PathBuf::from("/repo/hz");
+        let other_repo = PathBuf::from("/repo/other");
+        let unmanaged = PathBuf::from("/worktrees/unmanaged");
+        let registry = Registry {
+            entries: vec![test_entry(&other_repo, "managed".to_owned())],
+        };
+
+        assert_eq!(resolve_registered_repo(&registry, &unmanaged, &repo), None);
     }
 
     #[test]
