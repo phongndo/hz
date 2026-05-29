@@ -68,6 +68,8 @@ struct NewWorktreeArgs {
     branch: Option<String>,
     #[arg(long)]
     json: bool,
+    #[arg(long)]
+    debug: bool,
     #[arg(long, hide = true)]
     path_only: bool,
 }
@@ -100,6 +102,8 @@ struct RemoveWorktreeArgs {
     repo: Option<PathBuf>,
     #[arg(long)]
     json: bool,
+    #[arg(long)]
+    debug: bool,
 }
 
 #[derive(Debug, Args)]
@@ -195,8 +199,8 @@ fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
         println!("{}", serde_json::to_string_pretty(&created)?);
     } else if args.path_only {
         println!("{}", created.path.display());
-    } else {
-        println!("created {} at {}", created.handle, created.path.display());
+    } else if args.debug {
+        println!("created {} at {}", created.branch, created.path.display());
     }
 
     Ok(())
@@ -231,23 +235,52 @@ fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&worktrees)?);
     } else {
-        for worktree in worktrees {
-            let branch = worktree.branch.as_deref().unwrap_or("-");
-            let source = match worktree.source {
-                hz_command::WorktreeSource::Managed => "managed",
-                hz_command::WorktreeSource::Git => "git",
-            };
-            println!(
-                "{}\t{}\t{}\t{}",
-                worktree.handle,
-                branch,
-                worktree.path.display(),
-                source
-            );
-        }
+        print!("{}", render_worktree_list(&worktrees));
     }
 
     Ok(())
+}
+
+fn render_worktree_list(worktrees: &[hz_command::WorktreeEntry]) -> String {
+    if worktrees.is_empty() {
+        return String::new();
+    }
+
+    let name_width = worktrees
+        .iter()
+        .map(|worktree| display_width(worktree_branch_or_handle(worktree)))
+        .chain([4])
+        .max()
+        .expect("width candidates should not be empty");
+    let path_width = worktrees
+        .iter()
+        .map(|worktree| display_width(&worktree.path.display().to_string()))
+        .chain([4])
+        .max()
+        .expect("width candidates should not be empty");
+    let mut output = String::new();
+
+    output.push_str(&format!(
+        "{:<name_width$}  {:<path_width$}  SOURCE\n",
+        "NAME", "PATH"
+    ));
+    for worktree in worktrees {
+        let name = worktree_branch_or_handle(worktree);
+        let path = worktree.path.display().to_string();
+        let source = match worktree.source {
+            hz_command::WorktreeSource::Managed => "managed",
+            hz_command::WorktreeSource::Git => "git",
+        };
+        output.push_str(&format!(
+            "{name:<name_width$}  {path:<path_width$}  {source}\n"
+        ));
+    }
+
+    output
+}
+
+fn display_width(value: &str) -> usize {
+    value.chars().count()
 }
 
 fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
@@ -258,11 +291,15 @@ fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&removed)?);
-    } else {
-        println!("removed {}", removed.handle);
+    } else if args.debug {
+        println!("removed {}", worktree_branch_or_handle(&removed));
     }
 
     Ok(())
+}
+
+fn worktree_branch_or_handle(worktree: &hz_command::WorktreeEntry) -> &str {
+    worktree.branch.as_deref().unwrap_or(&worktree.handle)
 }
 
 fn handoff_worktree(args: HandoffWorktreeArgs) -> HzResult<()> {
@@ -304,4 +341,87 @@ fn shell_script(args: InitArgs) -> HzResult<()> {
 
     print!("{}", hz_command::shell_integration(shell));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn list_output_uses_branch_as_display_identifier() {
+        let output = render_worktree_list(&[hz_command::WorktreeEntry {
+            id: "entry-id".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry-id"),
+            branch: Some("feature/ui".to_owned()),
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            created_at_unix: 0,
+        }]);
+
+        assert!(output.contains("NAME"));
+        assert!(output.contains("feature/ui"));
+        assert!(!output.contains("generated-handle"));
+    }
+
+    #[test]
+    fn list_output_is_empty_when_there_are_no_worktrees() {
+        assert_eq!(render_worktree_list(&[]), "");
+    }
+
+    #[test]
+    fn list_output_uses_handle_when_branch_is_missing() {
+        let output = render_worktree_list(&[hz_command::WorktreeEntry {
+            id: "entry-id".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry"),
+            branch: None,
+            base: None,
+            source: hz_command::WorktreeSource::Git,
+            created_at_unix: 0,
+        }]);
+        let row = output
+            .lines()
+            .nth(1)
+            .expect("worktree row should be rendered");
+        let columns: Vec<_> = row.split_whitespace().collect();
+
+        assert_eq!(columns, vec!["generated-handle", "/worktrees/entry", "git"]);
+    }
+
+    #[test]
+    fn list_output_widths_count_characters() {
+        let output = render_worktree_list(&[hz_command::WorktreeEntry {
+            id: "entry-id".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry"),
+            branch: Some("ééééé".to_owned()),
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            created_at_unix: 0,
+        }]);
+
+        assert!(output.starts_with("NAME   PATH"));
+    }
+
+    #[test]
+    fn removed_worktree_display_identifier_prefers_branch() {
+        let worktree = hz_command::WorktreeEntry {
+            id: "entry-id".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry-id"),
+            branch: Some("feature/ui".to_owned()),
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            created_at_unix: 0,
+        };
+
+        assert_eq!(worktree_branch_or_handle(&worktree), "feature/ui");
+    }
 }
