@@ -1,7 +1,8 @@
 use std::{
     env, fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
+    process,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -88,6 +89,8 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
         None => generate_unique_handle(&registry, &repo),
     };
     let branch = input.branch.unwrap_or_else(|| handle.clone());
+    validate_worktree_name("worktree handle", &handle)?;
+    validate_worktree_name("worktree branch", &branch)?;
 
     if registry.find(&repo, &handle).is_some() {
         return Err(HzError::Usage(format!(
@@ -97,7 +100,7 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
 
     let id = new_uuid_v4()?;
     let path = match input.path {
-        Some(path) => path,
+        Some(path) => resolve_worktree_path(&repo, path),
         None => default_worktree_path(&repo, &id)?,
     };
 
@@ -113,6 +116,7 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     }
 
     hz_git::add_worktree(&repo, &path, &branch, input.base.as_deref())?;
+    let path = fs::canonicalize(&path)?;
 
     let entry = WorktreeEntry {
         id: id.clone(),
@@ -142,14 +146,14 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
 pub fn switch(input: SwitchWorktree) -> HzResult<WorktreeTarget> {
     let registry = Registry::load()?;
     let repo = resolve_repo(input.repo.as_deref(), &registry)?;
-    resolve_target(&repo, &input.target)
+    resolve_target(&registry, &repo, &input.target)
 }
 
 pub fn handoff(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {
     let registry = Registry::load()?;
     let repo = resolve_repo(input.repo.as_deref(), &registry)?;
-    let from = resolve_target(&repo, &input.from)?;
-    let to = resolve_target(&repo, &input.to)?;
+    let from = resolve_target(&registry, &repo, &input.from)?;
+    let to = resolve_target(&registry, &repo, &input.to)?;
 
     Ok(WorktreeHandoff { repo, from, to })
 }
@@ -165,7 +169,10 @@ pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
 
     if input.all {
         for worktree in hz_git::list_worktrees(&repo)? {
-            if entries.iter().any(|entry| entry.path == worktree.path) {
+            if entries
+                .iter()
+                .any(|entry| same_path(&entry.path, &worktree.path))
+            {
                 continue;
             }
 
@@ -222,7 +229,7 @@ fn resolve_repo(repo: Option<&Path>, registry: &Registry) -> HzResult<PathBuf> {
     Ok(current)
 }
 
-fn resolve_target(repo: &Path, target: &str) -> HzResult<WorktreeTarget> {
+fn resolve_target(registry: &Registry, repo: &Path, target: &str) -> HzResult<WorktreeTarget> {
     if target == "local" {
         return Ok(WorktreeTarget {
             name: "local".to_owned(),
@@ -230,7 +237,6 @@ fn resolve_target(repo: &Path, target: &str) -> HzResult<WorktreeTarget> {
         });
     }
 
-    let registry = Registry::load()?;
     if let Some(entry) = registry.find(repo, target) {
         return Ok(WorktreeTarget {
             name: entry.handle.clone(),
@@ -266,8 +272,13 @@ impl Registry {
             return Ok(Self::default());
         }
 
-        let contents = fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&contents)?)
+        let contents = fs::read_to_string(&path)?;
+        serde_json::from_str(&contents).map_err(|error| {
+            HzError::Usage(format!(
+                "failed to parse registry {}: {error}",
+                path.display()
+            ))
+        })
     }
 
     fn save(&self) -> HzResult<()> {
@@ -276,7 +287,26 @@ impl Registry {
             fs::create_dir_all(parent)?;
         }
 
-        fs::write(path, serde_json::to_string_pretty(self)?)?;
+        let file_name = path.file_name().ok_or_else(|| {
+            HzError::Usage(format!(
+                "registry path has no file name: {}",
+                path.display()
+            ))
+        })?;
+        let temp_path = path.with_file_name(format!(
+            ".{}.{}.tmp",
+            file_name.to_string_lossy(),
+            process::id()
+        ));
+
+        {
+            let mut file = fs::File::create(&temp_path)?;
+            file.write_all(serde_json::to_string_pretty(self)?.as_bytes())?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+        }
+
+        fs::rename(&temp_path, &path)?;
         Ok(())
     }
 
@@ -303,6 +333,24 @@ fn same_path(left: &Path, right: &Path) -> bool {
 
 fn matches_target(entry: &WorktreeEntry, target: &str) -> bool {
     entry.id == target || entry.handle == target || entry.branch.as_deref() == Some(target)
+}
+
+fn validate_worktree_name(label: &str, name: &str) -> HzResult<()> {
+    if name == "local" {
+        return Err(HzError::Usage(format!(
+            "{label} 'local' is reserved for the repository root"
+        )));
+    }
+
+    Ok(())
+}
+
+fn resolve_worktree_path(repo: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        repo.join(path)
+    }
 }
 
 fn default_worktree_path(repo: &Path, id: &str) -> HzResult<PathBuf> {
@@ -408,6 +456,31 @@ mod tests {
             handle
                 .chars()
                 .all(|character| { character.is_ascii_lowercase() || character == '-' })
+        );
+    }
+
+    #[test]
+    fn local_is_reserved_for_repository_root() {
+        assert!(validate_worktree_name("worktree handle", "feature").is_ok());
+
+        let error = validate_worktree_name("worktree handle", "local").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "worktree handle 'local' is reserved for the repository root"
+        );
+    }
+
+    #[test]
+    fn relative_worktree_paths_are_resolved_from_repo_root() {
+        let repo = PathBuf::from("/repo");
+
+        assert_eq!(
+            resolve_worktree_path(&repo, PathBuf::from("../worktree")),
+            PathBuf::from("/repo/../worktree")
+        );
+        assert_eq!(
+            resolve_worktree_path(&repo, PathBuf::from("/tmp/worktree")),
+            PathBuf::from("/tmp/worktree")
         );
     }
 }
