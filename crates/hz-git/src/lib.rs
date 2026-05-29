@@ -129,7 +129,7 @@ pub fn worktree_state(path: &Path) -> HzResult<GitWorktreeState> {
     let output = Command::new("git")
         .arg("-C")
         .arg(path)
-        .args(["status", "--porcelain", "--untracked-files=all"])
+        .args(["status", "--porcelain", "--untracked-files=normal"])
         .output()?;
 
     if !output.status.success() {

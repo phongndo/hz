@@ -295,9 +295,13 @@ fn render_worktree_list_with_style(worktrees: &[hz_command::WorktreeEntry], colo
         .chain([6])
         .max()
         .expect("width candidates should not be empty");
-    let modified_width = worktrees
+    let modified_values: Vec<_> = worktrees
         .iter()
-        .map(|worktree| display_width(&format_modified_at(worktree_display_timestamp(worktree))))
+        .map(|worktree| format_modified_at(worktree_display_timestamp(worktree)))
+        .collect();
+    let modified_width = modified_values
+        .iter()
+        .map(|modified| display_width(modified))
         .chain([8])
         .max()
         .expect("width candidates should not be empty");
@@ -310,15 +314,14 @@ fn render_worktree_list_with_style(worktrees: &[hz_command::WorktreeEntry], colo
     output.push_str(&format!(
         "  {branch_header}  {status_header}  {modified_header}  {path_header}\n"
     ));
-    for worktree in worktrees {
+    for (worktree, modified) in worktrees.iter().zip(modified_values.iter()) {
         let name = worktree_branch_or_handle(worktree);
         let status = worktree_status_label(worktree.status);
-        let modified = format_modified_at(worktree_display_timestamp(worktree));
         let path = worktree.path.display().to_string();
         let marker = styled("*", StyleColor::Green, color);
         let name = styled_cell(name, name_width, StyleColor::White, color);
         let status = styled_cell(status, 6, worktree_status_color(worktree.status), color);
-        let modified = styled_cell(&modified, modified_width, StyleColor::White, color);
+        let modified = styled_cell(modified, modified_width, StyleColor::White, color);
         let path = styled(&path, StyleColor::White, color);
         output.push_str(&format!("{marker} {name}  {status}  {modified}  {path}\n"));
     }

@@ -17,5 +17,4 @@ hz *args:
     ./target/debug/hz {{ args }}
 
 dev:
-    just build
     zsh scripts/dev-zsh --enter

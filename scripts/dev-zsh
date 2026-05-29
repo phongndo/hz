@@ -12,7 +12,8 @@ cargo build -p hz-cli --locked
 
 zshrc="$HOME/.zshrc"
 touch "$zshrc"
-tmp_zshrc="$(mktemp)"
+zshrc_target="${zshrc:A}"
+tmp_zshrc="$(mktemp "${zshrc_target:h}/.zshrc.tmp.XXXXXX")"
 awk '
   skip_hz_dev_path {
     if ($0 ~ /^export PATH=".*\/target\/debug:\$PATH"$/) {
@@ -26,9 +27,9 @@ awk '
     next
   }
   { print }
-' "$zshrc" > "$tmp_zshrc"
-mv "$tmp_zshrc" "$zshrc"
-printf '\n# hz dev binary\nexport PATH="%s/target/debug:$PATH"\n' "$repo_dir" >> "$zshrc"
+' "$zshrc_target" > "$tmp_zshrc"
+mv "$tmp_zshrc" "$zshrc_target"
+printf '\n# hz dev binary\nexport PATH="%s/target/debug:$PATH"\n' "$repo_dir" >> "$zshrc_target"
 
 PATH="$repo_dir/target/debug:$PATH" "$repo_dir/target/debug/hz" init zsh
 
