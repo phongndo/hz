@@ -31,9 +31,12 @@ jobs:
           }
 
           require_text "## Summary"
+          require_text "## Motivation"
+          require_text "## Changes"
           require_text "## Verification"
           require_text "## AI Review"
           require_text "## Risk"
+          require_text "## Reviewer Notes"
 
           if ! printf '%s\n' "$body" | grep -Eq -- '- \[[xX]\] CodeRabbit reviewed or was requested'; then
             printf 'Mark the CodeRabbit review checklist item as completed.\n'

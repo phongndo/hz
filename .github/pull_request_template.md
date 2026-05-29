@@ -2,6 +2,15 @@
 
 - 
 
+## Motivation
+
+- Problem:
+- Why now:
+
+## Changes
+
+-
+
 ## Verification
 
 - [ ] `cargo check --workspace --all-targets --all-features --locked`
@@ -9,6 +18,7 @@
 - [ ] `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
 - [ ] `cargo test --workspace --all-targets --all-features --locked`
 - [ ] `cargo build --workspace --all-targets --all-features --locked`
+- Not run:
 
 ## AI Review
 
@@ -17,4 +27,9 @@
 
 ## Risk
 
-- 
+- Blast radius:
+- Rollback:
+
+## Reviewer Notes
+
+- Review focus:
