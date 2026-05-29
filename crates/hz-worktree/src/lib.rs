@@ -394,14 +394,28 @@ fn home_dir() -> HzResult<PathBuf> {
 }
 
 fn generate_unique_handle(registry: &Registry, repo: &Path) -> String {
-    for attempt in 0..128 {
-        let handle = generate_handle(attempt);
+    generate_unique_handle_from_seed(registry, repo, handle_seed())
+}
+
+fn generate_unique_handle_from_seed(registry: &Registry, repo: &Path, seed: u128) -> String {
+    let max_attempts = handle_space_size();
+
+    for attempt in 0..max_attempts {
+        let handle = generate_handle_from_seed(seed, attempt);
         if registry.find(repo, &handle).is_none() {
             return handle;
         }
     }
 
-    generate_handle(128)
+    let fallback = generate_handle_from_seed(seed, max_attempts);
+    for suffix in 2.. {
+        let handle = format!("{fallback}-{suffix}");
+        if registry.find(repo, &handle).is_none() {
+            return handle;
+        }
+    }
+
+    unreachable!("suffix search is unbounded")
 }
 
 const HANDLE_ADJECTIVES: &[&str] = &[
@@ -456,17 +470,24 @@ const HANDLE_NOUNS: &[&str] = &[
     "zeta",
 ];
 
-fn generate_handle(attempt: u128) -> String {
-    let seed = SystemTime::now()
+fn generate_handle_from_seed(seed: u128, attempt: u128) -> String {
+    let offset = seed + attempt;
+    let left = HANDLE_ADJECTIVES[(offset as usize) % HANDLE_ADJECTIVES.len()];
+    let right =
+        HANDLE_NOUNS[((offset / HANDLE_ADJECTIVES.len() as u128) as usize) % HANDLE_NOUNS.len()];
+
+    format!("{left}-{right}")
+}
+
+fn handle_seed() -> u128 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default()
-        + attempt;
-    let left = HANDLE_ADJECTIVES[(seed as usize) % HANDLE_ADJECTIVES.len()];
-    let right =
-        HANDLE_NOUNS[((seed / HANDLE_ADJECTIVES.len() as u128) as usize) % HANDLE_NOUNS.len()];
+}
 
-    format!("{left}-{right}")
+fn handle_space_size() -> u128 {
+    (HANDLE_ADJECTIVES.len() * HANDLE_NOUNS.len()) as u128
 }
 
 fn unix_now() -> HzResult<u64> {
@@ -510,7 +531,7 @@ mod tests {
 
     #[test]
     fn generated_handle_is_easy_to_type() {
-        let handle = generate_handle(0);
+        let handle = generate_handle_from_seed(0, 0);
 
         assert!(handle.contains('-'));
         assert!(
@@ -522,13 +543,49 @@ mod tests {
 
     #[test]
     fn generated_handle_uses_adjective_noun_parts() {
-        let handle = generate_handle(0);
+        let handle = generate_handle_from_seed(0, 0);
         let (left, right) = handle
             .split_once('-')
             .expect("generated handle should have two parts");
 
         assert!(HANDLE_ADJECTIVES.contains(&left));
         assert!(HANDLE_NOUNS.contains(&right));
+    }
+
+    #[test]
+    fn generated_unique_handle_searches_past_old_probe_window() {
+        let repo = PathBuf::from("/repo");
+        let seed = 0;
+        let mut registry = Registry::default();
+
+        for attempt in 0..128 {
+            registry
+                .entries
+                .push(test_entry(&repo, generate_handle_from_seed(seed, attempt)));
+        }
+
+        assert_eq!(
+            generate_unique_handle_from_seed(&registry, &repo, seed),
+            generate_handle_from_seed(seed, 128)
+        );
+    }
+
+    #[test]
+    fn generated_unique_handle_uses_suffix_after_name_space_is_full() {
+        let repo = PathBuf::from("/repo");
+        let seed = 0;
+        let mut registry = Registry::default();
+
+        for attempt in 0..handle_space_size() {
+            registry
+                .entries
+                .push(test_entry(&repo, generate_handle_from_seed(seed, attempt)));
+        }
+
+        assert_eq!(
+            generate_unique_handle_from_seed(&registry, &repo, seed),
+            "abelian-algorithm-2"
+        );
     }
 
     #[test]
@@ -571,5 +628,18 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".registry.json.")
         );
+    }
+
+    fn test_entry(repo: &Path, handle: String) -> WorktreeEntry {
+        WorktreeEntry {
+            id: handle.clone(),
+            handle: handle.clone(),
+            repo: repo.to_path_buf(),
+            path: PathBuf::from("/worktrees").join(&handle),
+            branch: Some(handle),
+            base: None,
+            source: WorktreeSource::Managed,
+            created_at_unix: 0,
+        }
     }
 }
