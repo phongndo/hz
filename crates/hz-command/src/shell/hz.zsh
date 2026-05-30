@@ -187,7 +187,7 @@ _hz_complete_command_args() {
 _hz_completion() {
   if (( CURRENT == 2 )); then
     if [[ "$PREFIX" == -* ]]; then
-      compadd -h --help -V --version
+      compadd -- -h --help -V --version
       return
     fi
     _hz_complete_main
