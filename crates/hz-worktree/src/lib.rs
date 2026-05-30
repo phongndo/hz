@@ -638,8 +638,8 @@ pub fn local(input: LocalWorktree) -> HzResult<LocalWorktreeInfo> {
     })
 }
 
-pub fn current_path(input: ListWorktrees) -> HzResult<PathBuf> {
-    hz_git::repository_root(input.repo.as_deref())
+pub fn current_path(_input: ListWorktrees) -> HzResult<PathBuf> {
+    hz_git::repository_root(None)
 }
 
 fn local_handoff_from(

@@ -297,14 +297,14 @@ fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
             repo: args.repo.clone(),
         })?;
         let current_path =
-            hz_command::current_worktree_path(hz_command::ListWorktrees { repo: args.repo })?;
+            hz_command::current_worktree_path(hz_command::ListWorktrees { repo: None }).ok();
         let terminal = io::stdout().is_terminal();
         print!(
             "{}",
             render_worktree_list_with_context(
                 &local,
                 &worktrees,
-                &current_path,
+                current_path.as_deref(),
                 terminal,
                 list_glyphs(terminal && !ascii_output_requested())
             )
@@ -331,12 +331,12 @@ fn render_worktree_list_with_style(worktrees: &[hz_command::WorktreeEntry], colo
 fn render_worktree_list_with_context(
     local: &hz_command::LocalWorktreeInfo,
     worktrees: &[hz_command::WorktreeEntry],
-    current_path: &Path,
+    current_path: Option<&Path>,
     color: bool,
     glyphs: ListGlyphs,
 ) -> String {
     render_worktree_rows(
-        &worktree_rows(Some(local), worktrees, Some(current_path), glyphs),
+        &worktree_rows(Some(local), worktrees, current_path, glyphs),
         color,
         glyphs,
     )
@@ -1138,7 +1138,7 @@ mod tests {
                 modified_at_unix: 0,
                 status: hz_command::WorktreeStatus::Unknown,
             }],
-            &PathBuf::from("/worktrees/entry"),
+            Some(&PathBuf::from("/worktrees/entry")),
             false,
             list_glyphs(false),
         );
@@ -1154,6 +1154,28 @@ mod tests {
     }
 
     #[test]
+    fn list_output_does_not_mark_local_without_current_worktree() {
+        let local = hz_command::LocalWorktreeInfo {
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/repo"),
+            branch: Some("main".to_owned()),
+            status: hz_command::WorktreeStatus::Clean,
+            modified_at_unix: 0,
+            handoff_from: None,
+        };
+        let output =
+            render_worktree_list_with_context(&local, &[], None, false, list_glyphs(false));
+
+        let local_row = output
+            .lines()
+            .find(|line| line.contains("local"))
+            .expect("local worktree row should be rendered");
+
+        assert!(local_row.starts_with("~ local"));
+        assert!(!local_row.starts_with("@ local"));
+    }
+
+    #[test]
     fn local_list_row_renders_handoff_note() {
         let local = hz_command::LocalWorktreeInfo {
             repo: PathBuf::from("/repo"),
@@ -1166,7 +1188,7 @@ mod tests {
         let output = render_worktree_list_with_context(
             &local,
             &[],
-            &PathBuf::from("/repo"),
+            Some(&PathBuf::from("/repo")),
             false,
             list_glyphs(false),
         );
@@ -1189,7 +1211,7 @@ mod tests {
         let output = render_worktree_list_with_context(
             &local,
             &[],
-            &PathBuf::from("/repo"),
+            Some(&PathBuf::from("/repo")),
             true,
             list_glyphs(true),
         );
