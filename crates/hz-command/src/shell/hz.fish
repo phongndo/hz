@@ -60,3 +60,61 @@ end
 function hzlocal
     hz cd local $argv
 end
+
+function __hz_complete_worktree_targets
+    command hz __complete worktree-targets 2>/dev/null
+end
+
+function __hz_complete_removable_worktrees
+    command hz __complete removable-worktrees 2>/dev/null
+end
+
+function __hz_needs_worktree_subcommand
+    set -l tokens (commandline -opc)
+    test (count $tokens) -ge 2; or return 1
+    contains -- $tokens[2] worktree wt; or return 1
+
+    if test (count $tokens) -eq 2
+        return 0
+    end
+
+    set -l current (commandline -ct)
+    test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
+end
+
+complete -c hz -e
+complete -c hzcd -e
+complete -c hzlocal -e
+
+complete -c hz -f
+complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init shell diff tui worktree wt" -a "new path cd list ls remove rm handoff init shell diff tui worktree wt"
+complete -c hz -n "__hz_needs_worktree_subcommand" -a "new path cd list ls remove rm handoff"
+
+complete -c hz -n "__fish_seen_subcommand_from cd path handoff" -a "(__hz_complete_worktree_targets)"
+complete -c hz -n "__fish_seen_subcommand_from rm remove" -a "(__hz_complete_removable_worktrees)"
+complete -c hz -n "__fish_seen_subcommand_from init shell" -a "zsh bash fish"
+
+complete -c hz -n "__fish_seen_subcommand_from new path cd list ls remove rm handoff diff" -s r -l repo -r -F
+complete -c hz -n "__fish_seen_subcommand_from new" -s p -l path -r -F
+complete -c hz -n "__fish_seen_subcommand_from new" -s B -l base -r
+complete -c hz -n "__fish_seen_subcommand_from new" -s b -l branch -r
+complete -c hz -n "__fish_seen_subcommand_from new path cd list ls remove rm handoff" -s j -l json
+complete -c hz -n "__fish_seen_subcommand_from new remove rm" -s d -l debug
+complete -c hz -n "__fish_seen_subcommand_from remove rm" -s f -l force
+complete -c hz -n "__fish_seen_subcommand_from remove rm" -l yes
+complete -c hz -n "__fish_seen_subcommand_from handoff" -s b -l branch
+complete -c hz -n "__fish_seen_subcommand_from diff" -s b -l base -r
+complete -c hz -n "__fish_seen_subcommand_from diff" -s s -l stat
+complete -c hz -s h -l help
+complete -c hz -s V -l version
+
+complete -c hzcd -f
+complete -c hzcd -a "(__hz_complete_worktree_targets)"
+complete -c hzcd -s r -l repo -r -F
+complete -c hzcd -s j -l json
+complete -c hzcd -s h -l help
+
+complete -c hzlocal -f
+complete -c hzlocal -s r -l repo -r -F
+complete -c hzlocal -s j -l json
+complete -c hzlocal -s h -l help

@@ -44,7 +44,11 @@ hz rm fix-login
 worktrees are registered in `~/.config/hz/registry.json` or
 `$XDG_CONFIG_HOME/hz/registry.json`. `hz ls`, `hz cd`, and `hz rm` also detect
 unmanaged Git worktrees created by other tools. Removing an unmanaged worktree
-asks for confirmation because the path is not managed by hz.
+asks for confirmation because the path is not managed by hz. `hz ls` includes
+the local worktree, marks the current worktree, and shows local branch handoff
+context. Interactive terminals use Unicode markers such as `●`, `⌂`, and `←`;
+non-terminal output and `HZ_ASCII=1 hz ls` use ASCII fallbacks such as `@`, `~`,
+and `<-`.
 
 `hz cd` prints a path for scripts. To make `hz new` and `hz cd` change the
 current shell directory, run `hz init <shell>` once to update your shell rc
@@ -61,6 +65,11 @@ after init. With the integration loaded, plain `hz new ...` creates the
 worktree and changes into it, and `hz cd` returns to the local repo root.
 `--json`, `--path-only`, and help calls still pass through to the real binary
 without changing directories.
+
+The shell integration also installs completions for zsh, bash, and fish.
+Completions include command aliases such as `hz cd`, `hz ls`, and `hz rm`,
+nested `hz worktree ...` commands, command flags, shell names for
+`hz init`/`hz shell`, and live worktree targets for commands that accept them.
 
 `hz handoff` applies the current worktree's uncommitted diff to its linked
 counterpart by default. From a linked worktree it applies the patch to `local`.

@@ -36,6 +36,21 @@ pub struct ListWorktrees {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalWorktree {
+    pub repo: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalWorktreeInfo {
+    pub repo: PathBuf,
+    pub path: PathBuf,
+    pub branch: Option<String>,
+    pub status: WorktreeStatus,
+    pub modified_at_unix: u64,
+    pub handoff_from: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoveWorktree {
     pub target: String,
     pub repo: Option<PathBuf>,
@@ -594,6 +609,55 @@ pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
 
     sort_worktree_entries(&mut entries);
     Ok(entries)
+}
+
+pub fn local(input: LocalWorktree) -> HzResult<LocalWorktreeInfo> {
+    let registry = Registry::load()?;
+    let repo = resolve_repo(input.repo.as_deref(), &registry)?;
+    let branch = hz_git::current_branch(&repo)?;
+    let state = hz_git::worktree_state(&repo)?;
+    let status = if state.dirty {
+        WorktreeStatus::Dirty
+    } else {
+        WorktreeStatus::Clean
+    };
+    let modified_at_unix = if state.modified_at_unix == 0 {
+        worktree_path_timestamp(&repo)
+    } else {
+        state.modified_at_unix
+    };
+    let handoff_from = local_handoff_from(&registry, &repo, branch.as_deref())?;
+
+    Ok(LocalWorktreeInfo {
+        repo: repo.clone(),
+        path: repo,
+        branch,
+        status,
+        modified_at_unix,
+        handoff_from,
+    })
+}
+
+pub fn current_path(_input: ListWorktrees) -> HzResult<PathBuf> {
+    hz_git::repository_root(None)
+}
+
+fn local_handoff_from(
+    registry: &Registry,
+    repo: &Path,
+    branch: Option<&str>,
+) -> HzResult<Option<String>> {
+    let Some(branch) = branch else {
+        return Ok(None);
+    };
+    let Some(link) = registry.handoff_link(repo, branch) else {
+        return Ok(None);
+    };
+    if linked_worktree_exists(repo, &link.path)? {
+        Ok(Some(link.handle.clone()))
+    } else {
+        Ok(None)
+    }
 }
 
 fn discover_entries(registry: &Registry, repo: &Path) -> HzResult<Vec<WorktreeEntry>> {
