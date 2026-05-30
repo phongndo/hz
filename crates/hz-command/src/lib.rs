@@ -8,7 +8,8 @@ use hz_core::{HzError, HzResult};
 pub use hz_diff::DiffOptions;
 pub use hz_worktree::{
     CreateWorktree, CreatedWorktree, FindWorktree, HandoffMode, HandoffWorktree, ListWorktrees,
-    PathWorktree, RemoveWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
+    LocalWorktree, LocalWorktreeInfo, PathWorktree, RemoveWorktree, WorktreeEntry, WorktreeHandoff,
+    WorktreeSource, WorktreeStatus,
 };
 
 pub fn create_worktree(input: CreateWorktree) -> HzResult<CreatedWorktree> {
@@ -25,6 +26,14 @@ pub fn handoff_worktree(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {
 
 pub fn list_worktrees(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
     hz_worktree::list(input)
+}
+
+pub fn local_worktree(input: LocalWorktree) -> HzResult<LocalWorktreeInfo> {
+    hz_worktree::local(input)
+}
+
+pub fn current_worktree_path(input: ListWorktrees) -> HzResult<PathBuf> {
+    hz_worktree::current_path(input)
 }
 
 pub fn find_worktree(input: FindWorktree) -> HzResult<WorktreeEntry> {
@@ -162,6 +171,12 @@ mod tests {
         assert!(script.contains("handoff)"));
         assert!(script.contains("--json|--path-only|--help|-h|-j"));
         assert!(script.contains("builtin cd \"$hz_target_path\" || return"));
+        assert!(script.contains("command hz __complete worktree-targets"));
+        assert!(script.contains("compdef _hz_completion hz"));
+        assert!(script.contains("compinit -C"));
+        assert!(script.contains("shift words"));
+        assert!(script.contains("shift 2 words"));
+        assert!(script.contains("'rm:remove a worktree'"));
     }
 
     #[test]
@@ -170,6 +185,17 @@ mod tests {
 
         assert!(script.contains("case --json --path-only --help -h -j"));
         assert!(script.contains("or return"));
+        assert!(script.contains("command hz __complete removable-worktrees"));
+        assert!(script.contains("complete -c hz -n \"__fish_seen_subcommand_from rm remove\""));
+    }
+
+    #[test]
+    fn bash_integration_registers_completion() {
+        let script = shell_integration(Shell::Bash);
+
+        assert!(script.contains("complete -F _hz_completion hz"));
+        assert!(script.contains("_hz_dynamic_reply worktree-targets"));
+        assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
     }
 
     #[test]

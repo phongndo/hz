@@ -67,3 +67,116 @@ hzcd() {
 hzlocal() {
   hz cd local "$@"
 }
+
+_hz_top_commands="new path cd list ls remove rm handoff init shell diff tui worktree wt"
+_hz_worktree_commands="new path cd list ls remove rm handoff"
+_hz_shells="zsh bash fish"
+
+_hz_reply() {
+  local candidates="$1"
+  local current="$2"
+  COMPREPLY+=( $(compgen -W "$candidates" -- "$current") )
+}
+
+_hz_dynamic_reply() {
+  local command="$1"
+  local current="$2"
+  local candidates
+  candidates="$(command hz __complete "$command" 2>/dev/null)" || return
+  _hz_reply "$candidates" "$current"
+}
+
+_hz_complete_command_args() {
+  local cmd="$1"
+  local current="$2"
+
+  case "$cmd" in
+    new)
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -p --path -B --base -b --branch -j --json -d --debug -h --help" "$current"
+      ;;
+    path|cd)
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-r --repo -j --json -h --help" "$current"
+      else
+        _hz_dynamic_reply worktree-targets "$current"
+      fi
+      ;;
+    list|ls)
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json -h --help" "$current"
+      ;;
+    remove|rm)
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-r --repo -j --json -f --force --yes -d --debug -h --help" "$current"
+      else
+        _hz_dynamic_reply removable-worktrees "$current"
+      fi
+      ;;
+    handoff)
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-b --branch -r --repo -j --json -h --help" "$current"
+      else
+        _hz_dynamic_reply worktree-targets "$current"
+      fi
+      ;;
+    init|shell)
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-h --help" "$current"
+      else
+        _hz_reply "$_hz_shells" "$current"
+      fi
+      ;;
+    diff)
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -b --base -s --stat -h --help" "$current"
+      ;;
+    tui)
+      [[ "$current" == -* ]] && _hz_reply "-h --help" "$current"
+      ;;
+  esac
+}
+
+_hz_completion() {
+  local current="${COMP_WORDS[COMP_CWORD]}"
+  COMPREPLY=()
+
+  if [[ "$COMP_CWORD" -eq 1 ]]; then
+    if [[ "$current" == -* ]]; then
+      _hz_reply "-h --help -V --version" "$current"
+    else
+      _hz_reply "$_hz_top_commands" "$current"
+    fi
+    return
+  fi
+
+  local cmd="${COMP_WORDS[1]}"
+  if [[ "$cmd" == "worktree" || "$cmd" == "wt" ]]; then
+    if [[ "$COMP_CWORD" -eq 2 ]]; then
+      _hz_reply "$_hz_worktree_commands" "$current"
+      return
+    fi
+    _hz_complete_command_args "${COMP_WORDS[2]}" "$current"
+    return
+  fi
+
+  _hz_complete_command_args "$cmd" "$current"
+}
+
+_hzcd_completion() {
+  local current="${COMP_WORDS[COMP_CWORD]}"
+  COMPREPLY=()
+
+  if [[ "$current" == -* ]]; then
+    _hz_reply "-r --repo -j --json -h --help" "$current"
+  else
+    _hz_dynamic_reply worktree-targets "$current"
+  fi
+}
+
+_hzlocal_completion() {
+  local current="${COMP_WORDS[COMP_CWORD]}"
+  COMPREPLY=()
+  [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json -h --help" "$current"
+}
+
+complete -F _hz_completion hz
+complete -F _hzcd_completion hzcd
+complete -F _hzlocal_completion hzlocal

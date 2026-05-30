@@ -1,6 +1,7 @@
 use std::{
+    env, fs,
     io::{self, IsTerminal, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitCode},
 };
 
@@ -77,6 +78,8 @@ enum Command {
     Diff(DiffArgs),
     #[command(about = "Open the hz terminal UI")]
     Tui,
+    #[command(name = "__complete", hide = true)]
+    Complete(CompleteArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -179,6 +182,19 @@ struct DiffArgs {
     stat: bool,
 }
 
+#[derive(Debug, Args)]
+struct CompleteArgs {
+    kind: CompletionKind,
+    #[arg(short = 'r', long)]
+    repo: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CompletionKind {
+    WorktreeTargets,
+    RemovableWorktrees,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -225,6 +241,7 @@ fn run() -> HzResult<()> {
             Ok(())
         }
         Some(Command::Tui) => hz_tui::run(),
+        Some(Command::Complete(args)) => complete(args),
     }
 }
 
@@ -269,14 +286,28 @@ fn path_worktree(args: PathWorktreeArgs) -> HzResult<()> {
 }
 
 fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
-    let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees { repo: args.repo })?;
+    let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees {
+        repo: args.repo.clone(),
+    })?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&worktrees)?);
     } else {
+        let local = hz_command::local_worktree(hz_command::LocalWorktree {
+            repo: args.repo.clone(),
+        })?;
+        let current_path =
+            hz_command::current_worktree_path(hz_command::ListWorktrees { repo: args.repo })?;
+        let terminal = io::stdout().is_terminal();
         print!(
             "{}",
-            render_worktree_list_with_style(&worktrees, io::stdout().is_terminal())
+            render_worktree_list_with_context(
+                &local,
+                &worktrees,
+                &current_path,
+                terminal,
+                list_glyphs(terminal && !ascii_output_requested())
+            )
         );
     }
 
@@ -288,20 +319,103 @@ fn render_worktree_list(worktrees: &[hz_command::WorktreeEntry]) -> String {
     render_worktree_list_with_style(worktrees, false)
 }
 
+#[cfg(test)]
 fn render_worktree_list_with_style(worktrees: &[hz_command::WorktreeEntry], color: bool) -> String {
-    if worktrees.is_empty() {
+    render_worktree_rows(
+        &worktree_rows(None, worktrees, None, list_glyphs(color)),
+        color,
+        list_glyphs(color),
+    )
+}
+
+fn render_worktree_list_with_context(
+    local: &hz_command::LocalWorktreeInfo,
+    worktrees: &[hz_command::WorktreeEntry],
+    current_path: &Path,
+    color: bool,
+    glyphs: ListGlyphs,
+) -> String {
+    render_worktree_rows(
+        &worktree_rows(Some(local), worktrees, Some(current_path), glyphs),
+        color,
+        glyphs,
+    )
+}
+
+#[derive(Debug)]
+struct WorktreeListRow {
+    target: String,
+    status: hz_command::WorktreeStatus,
+    modified_at_unix: u64,
+    path: PathBuf,
+    note: Option<String>,
+    local: bool,
+    current: bool,
+}
+
+fn worktree_rows(
+    local: Option<&hz_command::LocalWorktreeInfo>,
+    worktrees: &[hz_command::WorktreeEntry],
+    current_path: Option<&Path>,
+    glyphs: ListGlyphs,
+) -> Vec<WorktreeListRow> {
+    let mut rows = Vec::new();
+
+    if let Some(local) = local {
+        rows.push(WorktreeListRow {
+            target: "local".to_owned(),
+            status: local.status,
+            modified_at_unix: local.modified_at_unix,
+            path: local.path.clone(),
+            note: Some(local_worktree_note_with_glyphs(local, glyphs)),
+            local: true,
+            current: current_path.is_some_and(|current| same_path(&local.path, current)),
+        });
+    }
+
+    rows.extend(worktrees.iter().map(|worktree| WorktreeListRow {
+        target: worktree_branch_or_handle(worktree).to_owned(),
+        status: worktree.status,
+        modified_at_unix: worktree_display_timestamp(worktree),
+        path: worktree.path.clone(),
+        note: None,
+        local: false,
+        current: current_path.is_some_and(|current| same_path(&worktree.path, current)),
+    }));
+
+    rows
+}
+
+fn local_worktree_note_with_glyphs(
+    local: &hz_command::LocalWorktreeInfo,
+    glyphs: ListGlyphs,
+) -> String {
+    let mut notes = Vec::new();
+    match &local.branch {
+        Some(branch) => notes.push(format!("branch {branch}")),
+        None => notes.push("detached".to_owned()),
+    }
+    if let Some(handoff_from) = &local.handoff_from {
+        notes.push(format!("{} {handoff_from}", glyphs.handoff_from));
+    }
+
+    notes.join("; ")
+}
+
+fn render_worktree_rows(rows: &[WorktreeListRow], color: bool, glyphs: ListGlyphs) -> String {
+    if rows.is_empty() {
         return String::new();
     }
 
-    let name_width = worktrees
+    let name_width = rows
         .iter()
-        .map(|worktree| display_width(worktree_branch_or_handle(worktree)))
+        .map(|row| display_width(&row.target))
         .chain([6])
         .max()
         .expect("width candidates should not be empty");
-    let modified_values: Vec<_> = worktrees
+    let modified_values: Vec<_> = rows
         .iter()
-        .map(|worktree| format_modified_at(worktree_display_timestamp(worktree)))
+        .map(|row| format_modified_at(row.modified_at_unix))
         .collect();
     let modified_width = modified_values
         .iter()
@@ -309,33 +423,104 @@ fn render_worktree_list_with_style(worktrees: &[hz_command::WorktreeEntry], colo
         .chain([8])
         .max()
         .expect("width candidates should not be empty");
+    let show_note = rows.iter().any(|row| row.note.is_some());
     let mut output = String::new();
 
-    let branch_header = styled_cell("branch", name_width, StyleColor::Cyan, color);
+    let target_header = styled_cell("target", name_width, StyleColor::Cyan, color);
     let status_header = styled_cell("status", 6, StyleColor::Cyan, color);
     let modified_header = styled_cell("modified", modified_width, StyleColor::Cyan, color);
     let path_header = styled("path", StyleColor::Cyan, color);
+    let note_header = styled("note", StyleColor::Cyan, color);
     output.push_str(&format!(
-        "  {branch_header}  {status_header}  {modified_header}  {path_header}\n"
+        "  {target_header}  {status_header}  {modified_header}  {path_header}"
     ));
-    for (worktree, modified) in worktrees.iter().zip(modified_values.iter()) {
-        let name = worktree_branch_or_handle(worktree);
-        let status = worktree_status_label(worktree.status);
-        let path = worktree.path.display().to_string();
-        let marker = styled("*", StyleColor::Green, color);
-        let name = styled_cell(name, name_width, StyleColor::White, color);
-        let status = styled_cell(status, 6, worktree_status_color(worktree.status), color);
+    if show_note {
+        output.push_str(&format!("  {note_header}"));
+    }
+    output.push('\n');
+
+    for (row, modified) in rows.iter().zip(modified_values.iter()) {
+        let status = worktree_status_label(row.status, glyphs);
+        let path = row.path.display().to_string();
+        let marker = styled(
+            worktree_marker(row, glyphs),
+            worktree_marker_color(row),
+            color,
+        );
+        let target = styled_cell(&row.target, name_width, StyleColor::White, color);
+        let status = styled_cell(status, 6, worktree_status_color(row.status), color);
         let modified = styled_cell(modified, modified_width, StyleColor::White, color);
         let path = styled(&path, StyleColor::White, color);
-        output.push_str(&format!("{marker} {name}  {status}  {modified}  {path}\n"));
+        output.push_str(&format!("{marker} {target}  {status}  {modified}  {path}"));
+        if show_note && let Some(note) = &row.note {
+            output.push_str("  ");
+            output.push_str(&styled(note, StyleColor::White, color));
+        }
+        output.push('\n');
     }
 
     output
 }
 
-fn worktree_status_label(status: hz_command::WorktreeStatus) -> &'static str {
+#[derive(Clone, Copy)]
+struct ListGlyphs {
+    current: &'static str,
+    local: &'static str,
+    handoff_from: &'static str,
+    clean: &'static str,
+}
+
+fn list_glyphs(unicode: bool) -> ListGlyphs {
+    if unicode {
+        ListGlyphs {
+            current: "●",
+            local: "⌂",
+            handoff_from: "←",
+            clean: "[✓]",
+        }
+    } else {
+        ListGlyphs {
+            current: "@",
+            local: "~",
+            handoff_from: "<-",
+            clean: "[ok]",
+        }
+    }
+}
+
+fn ascii_output_requested() -> bool {
+    env::var_os("HZ_ASCII").is_some()
+}
+
+fn worktree_marker(row: &WorktreeListRow, glyphs: ListGlyphs) -> &'static str {
+    if row.current {
+        glyphs.current
+    } else if row.local {
+        glyphs.local
+    } else {
+        " "
+    }
+}
+
+fn worktree_marker_color(row: &WorktreeListRow) -> StyleColor {
+    if row.current {
+        StyleColor::Green
+    } else {
+        StyleColor::Cyan
+    }
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    left == right
+        || fs::canonicalize(left)
+            .ok()
+            .zip(fs::canonicalize(right).ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
+fn worktree_status_label(status: hz_command::WorktreeStatus, glyphs: ListGlyphs) -> &'static str {
     match status {
-        hz_command::WorktreeStatus::Clean => "[✓]",
+        hz_command::WorktreeStatus::Clean => glyphs.clean,
         hz_command::WorktreeStatus::Dirty => "[!]",
         hz_command::WorktreeStatus::Unknown => "[?]",
     }
@@ -714,6 +899,49 @@ fn shell_name(shell: ShellArg) -> &'static str {
     }
 }
 
+fn complete(args: CompleteArgs) -> HzResult<()> {
+    let include_local = args.kind == CompletionKind::WorktreeTargets;
+    let Ok(candidates) = worktree_completion_candidates(args.repo, include_local) else {
+        return Ok(());
+    };
+
+    for candidate in candidates {
+        println!("{candidate}");
+    }
+
+    Ok(())
+}
+
+fn worktree_completion_candidates(
+    repo: Option<PathBuf>,
+    include_local: bool,
+) -> HzResult<Vec<String>> {
+    let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees { repo })?;
+    let mut candidates = Vec::new();
+
+    if include_local {
+        candidates.push("local".to_owned());
+    }
+
+    for worktree in worktrees {
+        push_completion_candidate(&mut candidates, worktree.branch);
+        push_completion_candidate(&mut candidates, Some(worktree.handle));
+        push_completion_candidate(&mut candidates, Some(worktree.id));
+    }
+
+    Ok(candidates)
+}
+
+fn push_completion_candidate(candidates: &mut Vec<String>, candidate: Option<String>) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+
+    if !candidate.is_empty() && !candidates.iter().any(|existing| existing == &candidate) {
+        candidates.push(candidate);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -735,7 +963,7 @@ mod tests {
             status: hz_command::WorktreeStatus::Unknown,
         }]);
 
-        assert!(output.contains("branch"));
+        assert!(output.contains("target"));
         assert!(output.contains("feature/ui"));
         assert!(!output.contains("generated-handle"));
     }
@@ -767,7 +995,7 @@ mod tests {
 
         assert_eq!(
             columns,
-            vec!["*", "generated-handle", "[?]", "-", "/worktrees/entry"]
+            vec!["generated-handle", "[?]", "-", "/worktrees/entry"]
         );
     }
 
@@ -786,7 +1014,7 @@ mod tests {
             status: hz_command::WorktreeStatus::Unknown,
         }]);
 
-        assert!(output.starts_with("  branch  status  modified  path"));
+        assert!(output.starts_with("  target  status  modified  path"));
     }
 
     #[test]
@@ -857,7 +1085,7 @@ mod tests {
         assert!(output.contains("status"));
         assert!(output.contains("modified"));
         assert!(output.contains("[!]"));
-        assert!(output.contains("[✓]"));
+        assert!(output.contains("[ok]"));
         assert!(output.contains(&format_modified_at(dirty_at)));
         assert!(output.contains(&format_modified_at(created_at)));
     }
@@ -881,10 +1109,94 @@ mod tests {
         );
 
         assert!(output.contains("\x1b["));
-        assert!(output.contains("*"));
         assert!(output.contains("\x1b[37mfeature/ui"));
         assert!(!output.contains("\x1b[34m"));
         assert!(!output.contains("\x1b[35m"));
+    }
+
+    #[test]
+    fn list_output_marks_current_worktree() {
+        let local = hz_command::LocalWorktreeInfo {
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/repo"),
+            branch: Some("main".to_owned()),
+            status: hz_command::WorktreeStatus::Clean,
+            modified_at_unix: 0,
+            handoff_from: None,
+        };
+        let output = render_worktree_list_with_context(
+            &local,
+            &[hz_command::WorktreeEntry {
+                id: "entry-id".to_owned(),
+                handle: "generated-handle".to_owned(),
+                repo: PathBuf::from("/repo"),
+                path: PathBuf::from("/worktrees/entry"),
+                branch: Some("feature/ui".to_owned()),
+                base: None,
+                source: hz_command::WorktreeSource::Managed,
+                created_at_unix: 0,
+                modified_at_unix: 0,
+                status: hz_command::WorktreeStatus::Unknown,
+            }],
+            &PathBuf::from("/worktrees/entry"),
+            false,
+            list_glyphs(false),
+        );
+
+        let current_row = output
+            .lines()
+            .find(|line| line.contains("feature/ui"))
+            .expect("current worktree row should be rendered");
+
+        assert!(current_row.starts_with("@ feature/ui"));
+        assert!(output.contains("~ local"));
+        assert!(output.contains("branch main"));
+    }
+
+    #[test]
+    fn local_list_row_renders_handoff_note() {
+        let local = hz_command::LocalWorktreeInfo {
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/repo"),
+            branch: Some("feature/ui".to_owned()),
+            status: hz_command::WorktreeStatus::Dirty,
+            modified_at_unix: 0,
+            handoff_from: Some("f7a7".to_owned()),
+        };
+        let output = render_worktree_list_with_context(
+            &local,
+            &[],
+            &PathBuf::from("/repo"),
+            false,
+            list_glyphs(false),
+        );
+
+        assert!(output.contains("note"));
+        assert!(output.contains("@ local"));
+        assert!(output.contains("branch feature/ui; <- f7a7"));
+    }
+
+    #[test]
+    fn list_output_can_render_unicode_glyphs() {
+        let local = hz_command::LocalWorktreeInfo {
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/repo"),
+            branch: Some("feature/ui".to_owned()),
+            status: hz_command::WorktreeStatus::Clean,
+            modified_at_unix: 0,
+            handoff_from: Some("f7a7".to_owned()),
+        };
+        let output = render_worktree_list_with_context(
+            &local,
+            &[],
+            &PathBuf::from("/repo"),
+            true,
+            list_glyphs(true),
+        );
+
+        assert!(output.contains("●"));
+        assert!(output.contains("[✓]"));
+        assert!(output.contains("branch feature/ui; ← f7a7"));
     }
 
     #[test]
@@ -1086,6 +1398,32 @@ mod tests {
             }
             command => panic!("expected list command, got {command:?}"),
         }
+    }
+
+    #[test]
+    fn hidden_completion_command_accepts_kind_and_repo() {
+        let cli =
+            Cli::try_parse_from(["hz", "__complete", "worktree-targets", "-r", "/repo"]).unwrap();
+
+        match cli.command {
+            Some(Command::Complete(args)) => {
+                assert_eq!(args.kind, CompletionKind::WorktreeTargets);
+                assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            }
+            command => panic!("expected complete command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn completion_candidates_are_deduplicated() {
+        let mut candidates = vec!["local".to_owned()];
+
+        push_completion_candidate(&mut candidates, Some("feature/ui".to_owned()));
+        push_completion_candidate(&mut candidates, Some("feature/ui".to_owned()));
+        push_completion_candidate(&mut candidates, Some(String::new()));
+        push_completion_candidate(&mut candidates, None);
+
+        assert_eq!(candidates, vec!["local", "feature/ui"]);
     }
 
     #[test]
