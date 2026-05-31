@@ -30,12 +30,8 @@ pub fn create_worktree_with_lifecycle(
 ) -> HzResult<CreatedWorktree> {
     let created = hz_worktree::create(input)?;
     if run_setup {
-        run_lifecycle_for_path(
-            &created.repo,
-            &created.path,
-            &created.handle,
-            LifecycleKind::Setup,
-        )?;
+        let target = created_worktree_target(&created);
+        run_lifecycle_for_path(&created.repo, &created.path, &target, LifecycleKind::Setup)?;
     }
     Ok(created)
 }
@@ -254,7 +250,15 @@ fn looks_like_path(program: &str) -> bool {
 }
 
 fn worktree_target(entry: &WorktreeEntry) -> String {
-    entry.branch.as_deref().unwrap_or(&entry.handle).to_owned()
+    branch_or_handle(entry.branch.as_deref(), &entry.handle)
+}
+
+fn created_worktree_target(created: &CreatedWorktree) -> String {
+    branch_or_handle(created.branch.as_deref(), &created.handle)
+}
+
+fn branch_or_handle(branch: Option<&str>, handle: &str) -> String {
+    branch.unwrap_or(handle).to_owned()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -556,6 +560,41 @@ mod tests {
         assert_eq!(run.target, "local");
 
         fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_target_is_consistent_for_created_and_found_worktrees() {
+        let created = CreatedWorktree {
+            id: "id".to_owned(),
+            name: "handle".to_owned(),
+            handle: "handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/repo/../worktrees/handle"),
+            branch: Some("feature/login".to_owned()),
+            base: None,
+            source: WorktreeSource::Managed,
+        };
+        let found = WorktreeEntry {
+            id: "id".to_owned(),
+            handle: "handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/repo/../worktrees/handle"),
+            branch: Some("feature/login".to_owned()),
+            base: None,
+            source: WorktreeSource::Managed,
+            created_at_unix: 0,
+            modified_at_unix: 0,
+            status: WorktreeStatus::Unknown,
+        };
+
+        assert_eq!(created_worktree_target(&created), "feature/login");
+        assert_eq!(worktree_target(&found), "feature/login");
+
+        let detached = CreatedWorktree {
+            branch: None,
+            ..created
+        };
+        assert_eq!(created_worktree_target(&detached), "handle");
     }
 
     #[test]
