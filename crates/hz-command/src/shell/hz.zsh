@@ -91,7 +91,10 @@ _hz_complete_main() {
     'remove:remove a worktree'
     'rm:remove a worktree'
     'handoff:apply changes between linked worktrees'
-    'init:install shell integration'
+    'init:initialize hz repo config'
+    'install:install shell integration'
+    'setup:run worktree setup'
+    'cleanup:run worktree cleanup'
     'shell:print shell integration'
     'diff:render a git diff'
     'tui:open the terminal UI'
@@ -134,6 +137,7 @@ _hz_complete_command_args() {
         '(-b --branch)'{-b,--branch}'[worktree branch]:branch' \
         '(-j --json)'{-j,--json}'[print JSON]' \
         '(-d --debug)'{-d,--debug}'[print debug output]' \
+        '--no-setup[skip configured setup]' \
         '(-h --help)'{-h,--help}'[print help]'
       ;;
     path|cd)
@@ -155,6 +159,7 @@ _hz_complete_command_args() {
         '(-j --json)'{-j,--json}'[print JSON]' \
         '(-f --force --yes)'{-f,--force,--yes}'[skip confirmation]' \
         '(-d --debug)'{-d,--debug}'[print debug output]' \
+        '--no-cleanup[skip configured cleanup]' \
         '(-h --help)'{-h,--help}'[print help]' \
         '1:worktree target:_hz_removable_worktrees'
       ;;
@@ -166,7 +171,19 @@ _hz_complete_command_args() {
         '(-h --help)'{-h,--help}'[print help]' \
         '1:worktree target:_hz_worktree_targets'
       ;;
-    init|shell)
+    setup|cleanup)
+      _arguments \
+        '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
+        '(-h --help)'{-h,--help}'[print help]' \
+        '1:worktree target:_hz_worktree_targets'
+      ;;
+    init)
+      _arguments \
+        '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
+        '(-h --help)'{-h,--help}'[print help]' \
+        '1:shell:_hz_complete_shells'
+      ;;
+    install|shell)
       _arguments \
         '(-h --help)'{-h,--help}'[print help]' \
         '1:shell:_hz_complete_shells'

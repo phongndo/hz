@@ -1,9 +1,12 @@
 use std::{
     env, fs,
+    io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
+    process::{Command as ProcessCommand, Stdio},
 };
 
 use hz_core::{HzError, HzResult};
+use serde::{Deserialize, Serialize};
 
 pub use hz_diff::DiffOptions;
 pub use hz_worktree::{
@@ -12,8 +15,29 @@ pub use hz_worktree::{
     WorktreeSource, WorktreeStatus,
 };
 
+const CONFIG_FILE: &str = "hz.toml";
+const LIFECYCLE_DIR: &str = ".hz";
+const SETUP_SCRIPT: &str = "setup";
+const CLEANUP_SCRIPT: &str = "cleanup";
+
 pub fn create_worktree(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     hz_worktree::create(input)
+}
+
+pub fn create_worktree_with_lifecycle(
+    input: CreateWorktree,
+    run_setup: bool,
+) -> HzResult<CreatedWorktree> {
+    let created = hz_worktree::create(input)?;
+    if run_setup {
+        run_lifecycle_for_path(
+            &created.repo,
+            &created.path,
+            &created.handle,
+            LifecycleKind::Setup,
+        )?;
+    }
+    Ok(created)
 }
 
 pub fn path_worktree(input: PathWorktree) -> HzResult<hz_core::paths::WorktreeTarget> {
@@ -55,8 +79,279 @@ pub fn remove_found_worktree_with_force(
     hz_worktree::remove_found_with_force(entry, force)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitRepo {
+    pub repo: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RepoInit {
+    pub repo: PathBuf,
+    pub config_path: PathBuf,
+    pub setup_path: PathBuf,
+    pub cleanup_path: PathBuf,
+    pub config_created: bool,
+    pub setup_created: bool,
+    pub cleanup_created: bool,
+}
+
+pub fn init_repo(input: InitRepo) -> HzResult<RepoInit> {
+    let repo = hz_git::repository_root(input.repo.as_deref())?;
+    let config_path = repo.join(CONFIG_FILE);
+    let lifecycle_path = repo.join(LIFECYCLE_DIR);
+    let setup_path = lifecycle_path.join(SETUP_SCRIPT);
+    let cleanup_path = lifecycle_path.join(CLEANUP_SCRIPT);
+
+    let config_created = write_new_file(&config_path, default_config())?;
+    let setup_created = write_new_script(&setup_path, default_setup_script())?;
+    let cleanup_created = write_new_script(&cleanup_path, default_cleanup_script())?;
+
+    Ok(RepoInit {
+        repo,
+        config_path,
+        setup_path,
+        cleanup_path,
+        config_created,
+        setup_created,
+        cleanup_created,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleKind {
+    Setup,
+    Cleanup,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunLifecycle {
+    pub target: Option<String>,
+    pub repo: Option<PathBuf>,
+    pub kind: LifecycleKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LifecycleRun {
+    pub repo: PathBuf,
+    pub path: PathBuf,
+    pub target: String,
+    pub kind: LifecycleKind,
+    pub configured: bool,
+}
+
+pub fn run_lifecycle(input: RunLifecycle) -> HzResult<LifecycleRun> {
+    let target = input.target.unwrap_or_else(|| "local".to_owned());
+    if target == "local" {
+        let local = hz_worktree::local(LocalWorktree { repo: input.repo })?;
+        return run_lifecycle_for_path(&local.repo, &local.path, "local", input.kind);
+    }
+
+    let worktree = hz_worktree::find(FindWorktree {
+        target: target.clone(),
+        repo: input.repo,
+    })?;
+
+    run_lifecycle_for_entry(&worktree, input.kind)
+}
+
+pub fn run_lifecycle_for_entry(
+    entry: &WorktreeEntry,
+    kind: LifecycleKind,
+) -> HzResult<LifecycleRun> {
+    run_lifecycle_for_path(&entry.repo, &entry.path, &worktree_target(entry), kind)
+}
+
 pub fn diff(input: DiffOptions) -> HzResult<String> {
     hz_diff::render(input)
+}
+
+fn run_lifecycle_for_path(
+    repo: &Path,
+    path: &Path,
+    target: &str,
+    kind: LifecycleKind,
+) -> HzResult<LifecycleRun> {
+    let config = HzConfig::load(path)?;
+    let Some(command) = config.lifecycle_command(kind) else {
+        return Ok(LifecycleRun {
+            repo: repo.to_path_buf(),
+            path: path.to_path_buf(),
+            target: target.to_owned(),
+            kind,
+            configured: false,
+        });
+    };
+
+    run_lifecycle_command(repo, path, target, kind, command)?;
+    Ok(LifecycleRun {
+        repo: repo.to_path_buf(),
+        path: path.to_path_buf(),
+        target: target.to_owned(),
+        kind,
+        configured: true,
+    })
+}
+
+fn run_lifecycle_command(
+    repo: &Path,
+    worktree: &Path,
+    target: &str,
+    kind: LifecycleKind,
+    argv: &[String],
+) -> HzResult<()> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| HzError::Usage(format!("{} command cannot be empty", kind.label())))?;
+    if program.is_empty() {
+        return Err(HzError::Usage(format!(
+            "{} command program cannot be empty",
+            kind.label()
+        )));
+    }
+
+    let program = lifecycle_program(worktree, program)?;
+    let output = ProcessCommand::new(&program)
+        .args(args)
+        .current_dir(worktree)
+        .env("HZ_REPO", repo)
+        .env("HZ_WORKTREE", worktree)
+        .env("HZ_TARGET", target)
+        .env("HZ_LIFECYCLE", kind.label())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .output()?;
+    io::stderr().write_all(&output.stdout)?;
+
+    if !output.status.success() {
+        return Err(HzError::Usage(format!(
+            "{} command failed with status {}",
+            kind.label(),
+            output.status
+        )));
+    }
+
+    Ok(())
+}
+
+fn lifecycle_program(worktree: &Path, program: &str) -> HzResult<PathBuf> {
+    if looks_like_path(program) {
+        let path = worktree.join(program);
+        if !path.exists() {
+            return Err(HzError::Usage(format!(
+                "lifecycle command not found in worktree: {}",
+                path.display()
+            )));
+        }
+        return Ok(path);
+    }
+
+    Ok(PathBuf::from(program))
+}
+
+fn looks_like_path(program: &str) -> bool {
+    program.contains('/') || program.contains('\\') || program == "." || program == ".."
+}
+
+fn worktree_target(entry: &WorktreeEntry) -> String {
+    entry.branch.as_deref().unwrap_or(&entry.handle).to_owned()
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct HzConfig {
+    lifecycle: Option<LifecycleConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct LifecycleConfig {
+    setup: Option<Vec<String>>,
+    cleanup: Option<Vec<String>>,
+}
+
+impl HzConfig {
+    fn load(worktree: &Path) -> HzResult<Self> {
+        let path = worktree.join(CONFIG_FILE);
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+
+        let contents = fs::read_to_string(&path)?;
+        toml::from_str(&contents)
+            .map_err(|error| HzError::Usage(format!("failed to parse {}: {error}", path.display())))
+    }
+
+    fn lifecycle_command(&self, kind: LifecycleKind) -> Option<&[String]> {
+        let lifecycle = self.lifecycle.as_ref()?;
+        match kind {
+            LifecycleKind::Setup => lifecycle.setup.as_deref(),
+            LifecycleKind::Cleanup => lifecycle.cleanup.as_deref(),
+        }
+        .filter(|command| !command.is_empty())
+    }
+}
+
+impl LifecycleKind {
+    fn label(self) -> &'static str {
+        match self {
+            LifecycleKind::Setup => "setup",
+            LifecycleKind::Cleanup => "cleanup",
+        }
+    }
+}
+
+fn write_new_file(path: &Path, contents: &str) -> HzResult<bool> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(contents.as_bytes())?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_new_script(path: &Path, contents: &str) -> HzResult<bool> {
+    let created = write_new_file(path, contents)?;
+    if created {
+        make_executable(path)?;
+    }
+    Ok(created)
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> HzResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> HzResult<()> {
+    Ok(())
+}
+
+fn default_config() -> &'static str {
+    "[lifecycle]\nsetup = [\".hz/setup\"]\ncleanup = [\".hz/cleanup\"]\n"
+}
+
+fn default_setup_script() -> &'static str {
+    "#!/usr/bin/env sh\nset -eu\n\n# Add repo setup commands here.\n"
+}
+
+fn default_cleanup_script() -> &'static str {
+    "#!/usr/bin/env sh\nset -eu\n\n# Add repo cleanup commands here.\n"
 }
 
 pub fn shell_init_line(shell: Shell) -> &'static str {
@@ -159,6 +454,111 @@ mod tests {
     use super::*;
 
     #[test]
+    fn init_repo_creates_config_and_lifecycle_scripts_once() {
+        let test_dir = test_repo("hz-repo-init-test");
+
+        let init = init_repo(InitRepo {
+            repo: Some(test_dir.clone()),
+        })
+        .unwrap();
+
+        assert!(init.config_created);
+        assert!(init.setup_created);
+        assert!(init.cleanup_created);
+        assert_eq!(
+            fs::read_to_string(&init.config_path).unwrap(),
+            default_config()
+        );
+        assert!(
+            fs::read_to_string(&init.setup_path)
+                .unwrap()
+                .contains("Add repo setup commands here.")
+        );
+        assert!(
+            fs::read_to_string(&init.cleanup_path)
+                .unwrap()
+                .contains("Add repo cleanup commands here.")
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(
+                fs::metadata(&init.setup_path).unwrap().permissions().mode() & 0o111,
+                0
+            );
+            assert_ne!(
+                fs::metadata(&init.cleanup_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o111,
+                0
+            );
+        }
+
+        let second = init_repo(InitRepo {
+            repo: Some(test_dir.clone()),
+        })
+        .unwrap();
+        assert!(!second.config_created);
+        assert!(!second.setup_created);
+        assert!(!second.cleanup_created);
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_setup_runs_configured_script_in_worktree() {
+        let test_dir = test_repo("hz-lifecycle-test");
+        fs::create_dir_all(test_dir.join(".hz")).unwrap();
+        fs::write(
+            test_dir.join(CONFIG_FILE),
+            "[lifecycle]\nsetup = [\".hz/setup\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            test_dir.join(".hz").join("setup"),
+            "#!/usr/bin/env sh\nset -eu\nprintf '%s' \"$HZ_TARGET:$HZ_LIFECYCLE\" > lifecycle.out\n",
+        )
+        .unwrap();
+        make_executable(&test_dir.join(".hz").join("setup")).unwrap();
+
+        let run = run_lifecycle(RunLifecycle {
+            target: None,
+            repo: Some(test_dir.clone()),
+            kind: LifecycleKind::Setup,
+        })
+        .unwrap();
+
+        assert!(run.configured);
+        assert_eq!(run.target, "local");
+        assert_eq!(
+            fs::read_to_string(test_dir.join("lifecycle.out")).unwrap(),
+            "local:setup"
+        );
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_is_noop_without_configured_command() {
+        let test_dir = test_repo("hz-lifecycle-noop-test");
+
+        let run = run_lifecycle(RunLifecycle {
+            target: None,
+            repo: Some(test_dir.clone()),
+            kind: LifecycleKind::Cleanup,
+        })
+        .unwrap();
+
+        assert!(!run.configured);
+        assert_eq!(run.target, "local");
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
     fn zsh_init_line_is_rc_file_friendly() {
         assert_eq!(shell_init_line(Shell::Zsh), r#"eval "$(hz shell zsh)""#);
     }
@@ -178,6 +578,9 @@ mod tests {
         assert!(script.contains("shift words"));
         assert!(script.contains("shift 2 words"));
         assert!(script.contains("'rm:remove a worktree'"));
+        assert!(script.contains("'install:install shell integration'"));
+        assert!(script.contains("--no-setup[skip configured setup]"));
+        assert!(script.contains("--no-cleanup[skip configured cleanup]"));
     }
 
     #[test]
@@ -188,6 +591,9 @@ mod tests {
         assert!(script.contains("or return"));
         assert!(script.contains("command hz __complete removable-worktrees"));
         assert!(script.contains("complete -c hz -n \"__fish_seen_subcommand_from rm remove\""));
+        assert!(script.contains("init install setup cleanup shell"));
+        assert!(script.contains("-l no-setup"));
+        assert!(script.contains("-l no-cleanup"));
     }
 
     #[test]
@@ -197,6 +603,9 @@ mod tests {
         assert!(script.contains("complete -F _hz_completion hz"));
         assert!(script.contains("_hz_dynamic_reply worktree-targets"));
         assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
+        assert!(script.contains("init install setup cleanup shell"));
+        assert!(script.contains("--no-setup"));
+        assert!(script.contains("--no-cleanup"));
     }
 
     #[test]
@@ -240,5 +649,24 @@ mod tests {
         assert_eq!(contents.matches(shell_init_comment()).count(), 0);
 
         fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    fn test_repo(prefix: &str) -> PathBuf {
+        let test_dir = env::temp_dir().join(format!(
+            "{prefix}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&test_dir).unwrap();
+        let status = ProcessCommand::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg(&test_dir)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        test_dir
     }
 }

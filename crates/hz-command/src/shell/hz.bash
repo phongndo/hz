@@ -68,7 +68,7 @@ hzlocal() {
   hz cd local "$@"
 }
 
-_hz_top_commands="new path cd list ls remove rm handoff init shell diff tui worktree wt"
+_hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell diff tui worktree wt"
 _hz_worktree_commands="new path cd list ls remove rm handoff"
 _hz_shells="zsh bash fish"
 
@@ -92,7 +92,7 @@ _hz_complete_command_args() {
 
   case "$cmd" in
     new)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -p --path -B --base -b --branch -j --json -d --debug -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -p --path -B --base -b --branch -j --json -d --debug --no-setup -h --help" "$current"
       ;;
     path|cd)
       if [[ "$current" == -* ]]; then
@@ -106,7 +106,7 @@ _hz_complete_command_args() {
       ;;
     remove|rm)
       if [[ "$current" == -* ]]; then
-        _hz_reply "-r --repo -j --json -f --force --yes -d --debug -h --help" "$current"
+        _hz_reply "-r --repo -j --json -f --force --yes -d --debug --no-cleanup -h --help" "$current"
       else
         _hz_dynamic_reply removable-worktrees "$current"
       fi
@@ -118,7 +118,21 @@ _hz_complete_command_args() {
         _hz_dynamic_reply worktree-targets "$current"
       fi
       ;;
-    init|shell)
+    setup|cleanup)
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-r --repo -h --help" "$current"
+      else
+        _hz_dynamic_reply worktree-targets "$current"
+      fi
+      ;;
+    init)
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-r --repo -h --help" "$current"
+      else
+        _hz_reply "$_hz_shells" "$current"
+      fi
+      ;;
+    install|shell)
       if [[ "$current" == -* ]]; then
         _hz_reply "-h --help" "$current"
       else

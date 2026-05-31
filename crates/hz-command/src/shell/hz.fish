@@ -87,21 +87,23 @@ complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init shell diff tui worktree wt" -a "new path cd list ls remove rm handoff init shell diff tui worktree wt"
+complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell diff tui worktree wt" -a "new path cd list ls remove rm handoff init install setup cleanup shell diff tui worktree wt"
 complete -c hz -n "__hz_needs_worktree_subcommand" -a "new path cd list ls remove rm handoff"
 
-complete -c hz -n "__fish_seen_subcommand_from cd path handoff" -a "(__hz_complete_worktree_targets)"
+complete -c hz -n "__fish_seen_subcommand_from cd path handoff setup cleanup" -a "(__hz_complete_worktree_targets)"
 complete -c hz -n "__fish_seen_subcommand_from rm remove" -a "(__hz_complete_removable_worktrees)"
-complete -c hz -n "__fish_seen_subcommand_from init shell" -a "zsh bash fish"
+complete -c hz -n "__fish_seen_subcommand_from init install shell" -a "zsh bash fish"
 
-complete -c hz -n "__fish_seen_subcommand_from new path cd list ls remove rm handoff diff" -s r -l repo -r -F
+complete -c hz -n "__fish_seen_subcommand_from new path cd list ls remove rm handoff init setup cleanup diff" -s r -l repo -r -F
 complete -c hz -n "__fish_seen_subcommand_from new" -s p -l path -r -F
 complete -c hz -n "__fish_seen_subcommand_from new" -s B -l base -r
 complete -c hz -n "__fish_seen_subcommand_from new" -s b -l branch -r
+complete -c hz -n "__fish_seen_subcommand_from new" -l no-setup
 complete -c hz -n "__fish_seen_subcommand_from new path cd list ls remove rm handoff" -s j -l json
 complete -c hz -n "__fish_seen_subcommand_from new remove rm" -s d -l debug
 complete -c hz -n "__fish_seen_subcommand_from remove rm" -s f -l force
 complete -c hz -n "__fish_seen_subcommand_from remove rm" -l yes
+complete -c hz -n "__fish_seen_subcommand_from remove rm" -l no-cleanup
 complete -c hz -n "__fish_seen_subcommand_from handoff" -s b -l branch
 complete -c hz -n "__fish_seen_subcommand_from diff" -s b -l base -r
 complete -c hz -n "__fish_seen_subcommand_from diff" -s s -l stat

@@ -24,9 +24,13 @@ options:
 {options}
 
 examples:
+  hz init
+  hz install zsh
   hz new feature/ui
   hz ls
   hz rm -f feature/ui
+  hz setup feature/ui
+  hz cleanup feature/ui
   hz cd feature/ui
   hz handoff feature/ui";
 
@@ -70,10 +74,16 @@ enum Command {
     Remove(RemoveWorktreeArgs),
     #[command(about = "Apply changes between local and a linked worktree")]
     Handoff(HandoffWorktreeArgs),
-    #[command(about = "Install shell integration into your shell rc file")]
+    #[command(about = "Initialize hz repo lifecycle config")]
     Init(InitArgs),
+    #[command(about = "Install shell integration into your shell rc file")]
+    Install(ShellArgs),
+    #[command(about = "Run the configured setup command for a worktree")]
+    Setup(LifecycleArgs),
+    #[command(about = "Run the configured cleanup command for a worktree")]
+    Cleanup(LifecycleArgs),
     #[command(about = "Print shell integration script")]
-    Shell(InitArgs),
+    Shell(ShellArgs),
     #[command(about = "Render a Git diff")]
     Diff(DiffArgs),
     #[command(about = "Open the hz terminal UI")]
@@ -111,6 +121,8 @@ struct NewWorktreeArgs {
     json: bool,
     #[arg(short = 'd', long)]
     debug: bool,
+    #[arg(long)]
+    no_setup: bool,
     #[arg(long, hide = true)]
     path_only: bool,
 }
@@ -145,6 +157,8 @@ struct RemoveWorktreeArgs {
     force: bool,
     #[arg(short = 'd', long)]
     debug: bool,
+    #[arg(long)]
+    no_cleanup: bool,
 }
 
 #[derive(Debug, Args)]
@@ -162,10 +176,25 @@ struct HandoffWorktreeArgs {
 
 #[derive(Debug, Args)]
 struct InitArgs {
+    #[arg(value_enum)]
+    shell: Option<ShellArg>,
+    #[arg(short = 'r', long)]
+    repo: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct ShellArgs {
     shell: ShellArg,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Args)]
+struct LifecycleArgs {
+    target: Option<String>,
+    #[arg(short = 'r', long)]
+    repo: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ShellArg {
     Zsh,
     Bash,
@@ -229,7 +258,10 @@ fn run() -> HzResult<()> {
         Some(Command::List(args)) => list_worktrees(args),
         Some(Command::Remove(args)) => remove_worktree(args),
         Some(Command::Handoff(args)) => handoff_worktree(args),
-        Some(Command::Init(args)) => init_shell(args),
+        Some(Command::Init(args)) => init_repo_or_shell(args),
+        Some(Command::Install(args)) => install_shell(args),
+        Some(Command::Setup(args)) => run_lifecycle(args, hz_command::LifecycleKind::Setup),
+        Some(Command::Cleanup(args)) => run_lifecycle(args, hz_command::LifecycleKind::Cleanup),
         Some(Command::Shell(args)) => shell_script(args),
         Some(Command::Diff(args)) => {
             let output = hz_command::diff(hz_command::DiffOptions {
@@ -247,13 +279,17 @@ fn run() -> HzResult<()> {
 
 fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
     let debug = args.debug;
-    let created = hz_command::create_worktree(hz_command::CreateWorktree {
-        name: args.name,
-        repo: args.repo,
-        path: args.path,
-        base: args.base,
-        branch: args.branch,
-    })?;
+    let run_setup = !args.no_setup;
+    let created = hz_command::create_worktree_with_lifecycle(
+        hz_command::CreateWorktree {
+            name: args.name,
+            repo: args.repo,
+            path: args.path,
+            base: args.base,
+            branch: args.branch,
+        },
+        run_setup,
+    )?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&created)?);
@@ -721,6 +757,88 @@ fn render_shell_init(shell: &str, init: &hz_command::ShellInit, color: bool) -> 
     output
 }
 
+fn render_repo_init(init: &hz_command::RepoInit, color: bool) -> String {
+    let changed = init.config_created || init.setup_created || init.cleanup_created;
+    let (marker, status, status_color) = if changed {
+        ("+", "initialized", StyleColor::Green)
+    } else {
+        ("=", "exists", StyleColor::Yellow)
+    };
+
+    let mut output = format!(
+        "{} {}  repo\n",
+        styled(marker, status_color, color),
+        styled(status, status_color, color)
+    );
+    output.push_str(&render_field(
+        "repo",
+        &init.repo.display().to_string(),
+        StyleColor::White,
+        color,
+    ));
+    output.push_str(&render_created_field(
+        "config",
+        &init.config_path,
+        init.config_created,
+        color,
+    ));
+    output.push_str(&render_created_field(
+        "setup",
+        &init.setup_path,
+        init.setup_created,
+        color,
+    ));
+    output.push_str(&render_created_field(
+        "cleanup",
+        &init.cleanup_path,
+        init.cleanup_created,
+        color,
+    ));
+
+    output
+}
+
+fn render_created_field(label: &str, path: &Path, created: bool, color: bool) -> String {
+    let state = if created { "created" } else { "exists" };
+    render_field(
+        label,
+        &format!("{} ({state})", path.display()),
+        StyleColor::White,
+        color,
+    )
+}
+
+fn render_lifecycle_run(run: &hz_command::LifecycleRun, color: bool) -> String {
+    let label = lifecycle_kind_label(run.kind);
+    let (marker, status, status_color) = if run.configured {
+        ("+", label, StyleColor::Green)
+    } else {
+        ("=", "no-op", StyleColor::Yellow)
+    };
+
+    let mut output = format!(
+        "{} {}  {}\n",
+        styled(marker, status_color, color),
+        styled(status, status_color, color),
+        styled(&run.target, StyleColor::White, color)
+    );
+    output.push_str(&render_field(
+        "path",
+        &run.path.display().to_string(),
+        StyleColor::White,
+        color,
+    ));
+
+    output
+}
+
+fn lifecycle_kind_label(kind: hz_command::LifecycleKind) -> &'static str {
+    match kind {
+        hz_command::LifecycleKind::Setup => "setup",
+        hz_command::LifecycleKind::Cleanup => "cleanup",
+    }
+}
+
 fn render_field(label: &str, value: &str, value_color: StyleColor, color: bool) -> String {
     format!(
         "  {}  {}\n",
@@ -775,6 +893,10 @@ fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
     {
         eprintln!("not removed");
         return Ok(());
+    }
+
+    if !args.no_cleanup {
+        hz_command::run_lifecycle_for_entry(&candidate, hz_command::LifecycleKind::Cleanup)?;
     }
 
     let removed = hz_command::remove_found_worktree_with_force(candidate, force)?;
@@ -872,12 +994,24 @@ fn handoff_worktree(args: HandoffWorktreeArgs) -> HzResult<()> {
     Ok(())
 }
 
-fn init_shell(args: InitArgs) -> HzResult<()> {
-    let shell = match args.shell {
-        ShellArg::Zsh => hz_command::Shell::Zsh,
-        ShellArg::Bash => hz_command::Shell::Bash,
-        ShellArg::Fish => hz_command::Shell::Fish,
-    };
+fn init_repo_or_shell(args: InitArgs) -> HzResult<()> {
+    if let Some(shell) = args.shell {
+        if args.repo.is_some() {
+            return Err(hz_core::HzError::Usage(
+                "hz init <shell> does not accept --repo; use hz install <shell>".to_owned(),
+            ));
+        }
+        return install_shell(ShellArgs { shell });
+    }
+
+    let init = hz_command::init_repo(hz_command::InitRepo { repo: args.repo })?;
+    print!("{}", render_repo_init(&init, io::stdout().is_terminal()));
+
+    Ok(())
+}
+
+fn install_shell(args: ShellArgs) -> HzResult<()> {
+    let shell = shell_to_command(args.shell);
 
     let init = hz_command::install_shell_integration(shell)?;
     print!(
@@ -888,15 +1022,29 @@ fn init_shell(args: InitArgs) -> HzResult<()> {
     Ok(())
 }
 
-fn shell_script(args: InitArgs) -> HzResult<()> {
-    let shell = match args.shell {
-        ShellArg::Zsh => hz_command::Shell::Zsh,
-        ShellArg::Bash => hz_command::Shell::Bash,
-        ShellArg::Fish => hz_command::Shell::Fish,
-    };
+fn shell_script(args: ShellArgs) -> HzResult<()> {
+    let shell = shell_to_command(args.shell);
 
     print!("{}", hz_command::shell_integration(shell));
     Ok(())
+}
+
+fn run_lifecycle(args: LifecycleArgs, kind: hz_command::LifecycleKind) -> HzResult<()> {
+    let run = hz_command::run_lifecycle(hz_command::RunLifecycle {
+        target: args.target,
+        repo: args.repo,
+        kind,
+    })?;
+    print!("{}", render_lifecycle_run(&run, io::stdout().is_terminal()));
+    Ok(())
+}
+
+fn shell_to_command(shell: ShellArg) -> hz_command::Shell {
+    match shell {
+        ShellArg::Zsh => hz_command::Shell::Zsh,
+        ShellArg::Bash => hz_command::Shell::Bash,
+        ShellArg::Fish => hz_command::Shell::Fish,
+    }
 }
 
 fn shell_name(shell: ShellArg) -> &'static str {
@@ -1360,8 +1508,18 @@ mod tests {
 
     #[test]
     fn remove_accepts_short_force_flag() {
-        let cli =
-            Cli::try_parse_from(["hz", "rm", "-r", "/repo", "-j", "-d", "-f", "target"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "hz",
+            "rm",
+            "-r",
+            "/repo",
+            "-j",
+            "-d",
+            "-f",
+            "--no-cleanup",
+            "target",
+        ])
+        .unwrap();
 
         match cli.command {
             Some(Command::Remove(args)) => {
@@ -1370,6 +1528,7 @@ mod tests {
                 assert!(args.json);
                 assert!(args.debug);
                 assert!(args.force);
+                assert!(args.no_cleanup);
             }
             command => panic!("expected remove command, got {command:?}"),
         }
@@ -1422,6 +1581,7 @@ mod tests {
             "feature/ui",
             "-j",
             "-d",
+            "--no-setup",
             "handle",
         ])
         .unwrap();
@@ -1435,6 +1595,7 @@ mod tests {
                 assert_eq!(args.branch.as_deref(), Some("feature/ui"));
                 assert!(args.json);
                 assert!(args.debug);
+                assert!(args.no_setup);
             }
             command => panic!("expected new command, got {command:?}"),
         }
@@ -1483,6 +1644,45 @@ mod tests {
                 assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             }
             command => panic!("expected complete command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn init_install_and_lifecycle_commands_parse() {
+        let cli = Cli::try_parse_from(["hz", "init", "-r", "/repo"]).unwrap();
+        match cli.command {
+            Some(Command::Init(args)) => {
+                assert_eq!(args.shell, None);
+                assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            }
+            command => panic!("expected init command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "init", "zsh"]).unwrap();
+        match cli.command {
+            Some(Command::Init(args)) => assert_eq!(args.shell, Some(ShellArg::Zsh)),
+            command => panic!("expected init command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "install", "fish"]).unwrap();
+        match cli.command {
+            Some(Command::Install(args)) => assert_eq!(args.shell, ShellArg::Fish),
+            command => panic!("expected install command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "setup", "-r", "/repo", "target"]).unwrap();
+        match cli.command {
+            Some(Command::Setup(args)) => {
+                assert_eq!(args.target.as_deref(), Some("target"));
+                assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            }
+            command => panic!("expected setup command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "cleanup"]).unwrap();
+        match cli.command {
+            Some(Command::Cleanup(args)) => assert_eq!(args.target, None),
+            command => panic!("expected cleanup command, got {command:?}"),
         }
     }
 
@@ -1574,6 +1774,7 @@ mod tests {
             json,
             force,
             debug: false,
+            no_cleanup: false,
         }
     }
 
