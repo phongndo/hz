@@ -7,13 +7,13 @@ command shapes, crate boundaries, and placeholder domain types.
 ## Crates
 
 ```text
-crates/hz-cli       command parsing and CLI argument shape
-crates/hz-command   command facade shared by CLI and future TUI/runtime callers
-crates/hz-core      shared errors and common models
-crates/hz-git       low-level git integration boundary
-crates/hz-worktree  worktree domain boundary: new, path, handoff
-crates/hz-diff      diff domain boundary
-crates/hz-tui       ratatui/crossterm UI boundary
+hz-cli       command parsing and CLI argument shape
+hz-command   command facade shared by CLI and future TUI/runtime callers
+hz-core      shared errors and common models
+hz-git       low-level git integration boundary
+hz-worktree  worktree domain boundary: new, path, handoff
+hz-diff      diff domain boundary
+hz-tui       ratatui/crossterm UI boundary
 ```
 
 The command crate is the main extension seam for now. CLI and TUI code should
