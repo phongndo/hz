@@ -322,7 +322,7 @@ fn render_worktree_list(worktrees: &[hz_command::WorktreeEntry]) -> String {
 #[cfg(test)]
 fn render_worktree_list_with_style(worktrees: &[hz_command::WorktreeEntry], color: bool) -> String {
     render_worktree_rows(
-        &worktree_rows(None, worktrees, None, list_glyphs(color)),
+        &worktree_rows(None, worktrees, None),
         color,
         list_glyphs(color),
     )
@@ -336,7 +336,7 @@ fn render_worktree_list_with_context(
     glyphs: ListGlyphs,
 ) -> String {
     render_worktree_rows(
-        &worktree_rows(Some(local), worktrees, current_path, glyphs),
+        &worktree_rows(Some(local), worktrees, current_path),
         color,
         glyphs,
     )
@@ -348,7 +348,6 @@ struct WorktreeListRow {
     status: hz_command::WorktreeStatus,
     modified_at_unix: u64,
     path: PathBuf,
-    note: Option<String>,
     local: bool,
     current: bool,
 }
@@ -357,7 +356,6 @@ fn worktree_rows(
     local: Option<&hz_command::LocalWorktreeInfo>,
     worktrees: &[hz_command::WorktreeEntry],
     current_path: Option<&Path>,
-    glyphs: ListGlyphs,
 ) -> Vec<WorktreeListRow> {
     let mut rows = Vec::new();
 
@@ -367,7 +365,6 @@ fn worktree_rows(
             status: local.status,
             modified_at_unix: local.modified_at_unix,
             path: local.path.clone(),
-            note: Some(local_worktree_note_with_glyphs(local, glyphs)),
             local: true,
             current: current_path.is_some_and(|current| same_path(&local.path, current)),
         });
@@ -378,28 +375,11 @@ fn worktree_rows(
         status: worktree.status,
         modified_at_unix: worktree_display_timestamp(worktree),
         path: worktree.path.clone(),
-        note: None,
         local: false,
         current: current_path.is_some_and(|current| same_path(&worktree.path, current)),
     }));
 
     rows
-}
-
-fn local_worktree_note_with_glyphs(
-    local: &hz_command::LocalWorktreeInfo,
-    glyphs: ListGlyphs,
-) -> String {
-    let mut notes = Vec::new();
-    match &local.branch {
-        Some(branch) => notes.push(format!("branch {branch}")),
-        None => notes.push("detached".to_owned()),
-    }
-    if let Some(handoff_from) = &local.handoff_from {
-        notes.push(format!("{} {handoff_from}", glyphs.handoff_from));
-    }
-
-    notes.join("; ")
 }
 
 fn render_worktree_rows(rows: &[WorktreeListRow], color: bool, glyphs: ListGlyphs) -> String {
@@ -423,25 +403,20 @@ fn render_worktree_rows(rows: &[WorktreeListRow], color: bool, glyphs: ListGlyph
         .chain([8])
         .max()
         .expect("width candidates should not be empty");
-    let show_note = rows.iter().any(|row| row.note.is_some());
     let mut output = String::new();
 
     let target_header = styled_cell("target", name_width, StyleColor::Cyan, color);
     let status_header = styled_cell("status", 6, StyleColor::Cyan, color);
     let modified_header = styled_cell("modified", modified_width, StyleColor::Cyan, color);
     let path_header = styled("path", StyleColor::Cyan, color);
-    let note_header = styled("note", StyleColor::Cyan, color);
     output.push_str(&format!(
         "  {target_header}  {status_header}  {modified_header}  {path_header}"
     ));
-    if show_note {
-        output.push_str(&format!("  {note_header}"));
-    }
     output.push('\n');
 
     for (row, modified) in rows.iter().zip(modified_values.iter()) {
         let status = worktree_status_label(row.status, glyphs);
-        let path = row.path.display().to_string();
+        let path = display_path(&row.path);
         let marker = styled(
             worktree_marker(row, glyphs),
             worktree_marker_color(row),
@@ -452,10 +427,6 @@ fn render_worktree_rows(rows: &[WorktreeListRow], color: bool, glyphs: ListGlyph
         let modified = styled_cell(modified, modified_width, StyleColor::White, color);
         let path = styled(&path, StyleColor::White, color);
         output.push_str(&format!("{marker} {target}  {status}  {modified}  {path}"));
-        if show_note && let Some(note) = &row.note {
-            output.push_str("  ");
-            output.push_str(&styled(note, StyleColor::White, color));
-        }
         output.push('\n');
     }
 
@@ -466,7 +437,6 @@ fn render_worktree_rows(rows: &[WorktreeListRow], color: bool, glyphs: ListGlyph
 struct ListGlyphs {
     current: &'static str,
     local: &'static str,
-    handoff_from: &'static str,
     clean: &'static str,
 }
 
@@ -475,14 +445,12 @@ fn list_glyphs(unicode: bool) -> ListGlyphs {
         ListGlyphs {
             current: "●",
             local: "⌂",
-            handoff_from: "←",
             clean: "[✓]",
         }
     } else {
         ListGlyphs {
             current: "@",
             local: "~",
-            handoff_from: "<-",
             clean: "[ok]",
         }
     }
@@ -516,6 +484,37 @@ fn same_path(left: &Path, right: &Path) -> bool {
             .ok()
             .zip(fs::canonicalize(right).ok())
             .is_some_and(|(left, right)| left == right)
+}
+
+fn display_path(path: &Path) -> String {
+    let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+        return path.display().to_string();
+    };
+
+    home_relative_path(path, &home)
+        .or_else(|| {
+            fs::canonicalize(&home)
+                .ok()
+                .and_then(|home| home_relative_path(path, &home))
+        })
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn home_relative_path(path: &Path, home: &Path) -> Option<String> {
+    if home.as_os_str().is_empty() {
+        return None;
+    }
+
+    if path == home {
+        return Some("~".to_owned());
+    }
+
+    let relative = path.strip_prefix(home).ok()?;
+    if relative.as_os_str().is_empty() {
+        Some("~".to_owned())
+    } else {
+        Some(format!("~/{}", relative.display()))
+    }
 }
 
 fn worktree_status_label(status: hz_command::WorktreeStatus, glyphs: ListGlyphs) -> &'static str {
@@ -580,17 +579,30 @@ fn unix_now() -> u64 {
 }
 
 fn render_created_worktree(created: &hz_command::CreatedWorktree, color: bool) -> String {
+    let target = created.branch.as_deref().unwrap_or(&created.handle);
     let mut output = format!(
         "{} {}  {}\n",
         styled("+", StyleColor::Green, color),
         styled("created", StyleColor::Green, color),
-        styled(&created.branch, StyleColor::White, color)
+        styled(target, StyleColor::White, color)
     );
 
-    if created.handle != created.branch {
+    if created
+        .branch
+        .as_deref()
+        .is_some_and(|branch| branch != created.handle)
+    {
         output.push_str(&render_field(
             "handle",
             &created.handle,
+            StyleColor::White,
+            color,
+        ));
+    }
+    if created.branch.is_none() {
+        output.push_str(&render_field(
+            "branch",
+            "detached",
             StyleColor::White,
             color,
         ));
@@ -1000,6 +1012,24 @@ mod tests {
     }
 
     #[test]
+    fn home_relative_paths_use_tilde_only_for_home_children() {
+        let home = PathBuf::from("/Users/dev");
+
+        assert_eq!(
+            home_relative_path(&PathBuf::from("/Users/dev/.hz/worktrees/hz"), &home).as_deref(),
+            Some("~/.hz/worktrees/hz")
+        );
+        assert_eq!(
+            home_relative_path(&PathBuf::from("/Users/dev"), &home).as_deref(),
+            Some("~")
+        );
+        assert_eq!(
+            home_relative_path(&PathBuf::from("/Users/dev-other/project"), &home),
+            None
+        );
+    }
+
+    #[test]
     fn list_output_widths_count_characters() {
         let output = render_worktree_list(&[hz_command::WorktreeEntry {
             id: "entry-id".to_owned(),
@@ -1150,7 +1180,7 @@ mod tests {
 
         assert!(current_row.starts_with("@ feature/ui"));
         assert!(output.contains("~ local"));
-        assert!(output.contains("branch main"));
+        assert!(!output.contains("note"));
     }
 
     #[test]
@@ -1176,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn local_list_row_renders_handoff_note() {
+    fn local_list_row_omits_note_column() {
         let local = hz_command::LocalWorktreeInfo {
             repo: PathBuf::from("/repo"),
             path: PathBuf::from("/repo"),
@@ -1193,9 +1223,10 @@ mod tests {
             list_glyphs(false),
         );
 
-        assert!(output.contains("note"));
         assert!(output.contains("@ local"));
-        assert!(output.contains("branch feature/ui; <- f7a7"));
+        assert!(!output.contains("note"));
+        assert!(!output.contains("branch feature/ui"));
+        assert!(!output.contains("<- f7a7"));
     }
 
     #[test]
@@ -1218,7 +1249,9 @@ mod tests {
 
         assert!(output.contains("●"));
         assert!(output.contains("[✓]"));
-        assert!(output.contains("branch feature/ui; ← f7a7"));
+        assert!(!output.contains("note"));
+        assert!(!output.contains("branch feature/ui"));
+        assert!(!output.contains("← f7a7"));
     }
 
     #[test]
@@ -1230,7 +1263,7 @@ mod tests {
                 handle: "generated-handle".to_owned(),
                 repo: PathBuf::from("/repo"),
                 path: PathBuf::from("/worktrees/entry"),
-                branch: "feature/ui".to_owned(),
+                branch: Some("feature/ui".to_owned()),
                 base: Some("main".to_owned()),
                 source: hz_command::WorktreeSource::Managed,
             },
@@ -1241,6 +1274,27 @@ mod tests {
         assert!(output.contains("handle  generated-handle"));
         assert!(output.contains("path    /worktrees/entry"));
         assert!(output.contains("base    main"));
+    }
+
+    #[test]
+    fn created_output_renders_detached_worktree_summary() {
+        let output = render_created_worktree(
+            &hz_command::CreatedWorktree {
+                id: "entry-id".to_owned(),
+                name: "generated-handle".to_owned(),
+                handle: "generated-handle".to_owned(),
+                repo: PathBuf::from("/repo"),
+                path: PathBuf::from("/worktrees/entry"),
+                branch: None,
+                base: None,
+                source: hz_command::WorktreeSource::Managed,
+            },
+            false,
+        );
+
+        assert!(output.starts_with("+ created  generated-handle"));
+        assert!(output.contains("branch  detached"));
+        assert!(output.contains("path    /worktrees/entry"));
     }
 
     #[test]
