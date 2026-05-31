@@ -26,8 +26,9 @@ their real behavior is added.
 
 ## Worktrees
 
-`hz new` creates a Git worktree with a human-facing branch/handle and a UUID
-directory under `~/.hz/worktrees/<repo>/` by default:
+`hz new` creates a detached scratch Git worktree with a human-facing handle and
+a UUID directory under `~/.hz/worktrees/<repo>/` by default. Pass a name or
+`--branch` to create a branch-backed worktree:
 
 ```sh
 hz new fix-login
@@ -40,15 +41,15 @@ hz cd
 hz rm fix-login
 ```
 
-`hz new` without a name generates a `word-word` branch/handle. Managed
-worktrees are registered in `~/.config/hz/registry.json` or
+`hz new` without a name generates a four-character lowercase alphanumeric handle
+and leaves the worktree on a detached HEAD. Managed worktrees are registered in
+`~/.config/hz/registry.json` or
 `$XDG_CONFIG_HOME/hz/registry.json`. `hz ls`, `hz cd`, and `hz rm` also detect
 unmanaged Git worktrees created by other tools. Removing an unmanaged worktree
 asks for confirmation because the path is not managed by hz. `hz ls` includes
-the local worktree, marks the current worktree, and shows local branch handoff
-context. Interactive terminals use Unicode markers such as `●`, `⌂`, and `←`;
-non-terminal output and `HZ_ASCII=1 hz ls` use ASCII fallbacks such as `@`, `~`,
-and `<-`.
+the local worktree and marks the current worktree. Interactive terminals use
+Unicode markers such as `●` and `⌂`; non-terminal output and `HZ_ASCII=1 hz ls`
+use ASCII fallbacks such as `@` and `~`.
 
 `hz cd` prints a path for scripts. To make `hz new` and `hz cd` change the
 current shell directory, run `hz init <shell>` once to update your shell rc
