@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     env, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -69,7 +70,7 @@ pub struct CreatedWorktree {
     pub handle: String,
     pub repo: PathBuf,
     pub path: PathBuf,
-    pub branch: String,
+    pub branch: Option<String>,
     pub base: Option<String>,
     pub source: WorktreeSource,
 }
@@ -137,13 +138,16 @@ struct HandoffLink {
 pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     let mut registry = Registry::load()?;
     let repo = resolve_repo(input.repo.as_deref(), &registry)?;
-    let handle = match input.name {
+    let name = input.name;
+    let handle = match name.clone() {
         Some(name) => name,
-        None => generate_unique_handle(&registry, &repo),
+        None => generate_unique_handle(&registry, &repo)?,
     };
-    let branch = input.branch.unwrap_or_else(|| handle.clone());
+    let branch = derive_worktree_branch(name.as_deref(), input.branch.as_deref());
     validate_worktree_name("worktree handle", &handle)?;
-    validate_worktree_name("worktree branch", &branch)?;
+    if let Some(branch) = &branch {
+        validate_worktree_name("worktree branch", branch)?;
+    }
 
     if registry.find(&repo, &handle).is_some() {
         return Err(HzError::Usage(format!(
@@ -168,7 +172,7 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
         fs::create_dir_all(parent)?;
     }
 
-    hz_git::add_worktree(&repo, &path, &branch, input.base.as_deref())?;
+    hz_git::add_worktree(&repo, &path, branch.as_deref(), input.base.as_deref())?;
     let path = fs::canonicalize(&path)?;
 
     let entry = WorktreeEntry {
@@ -176,7 +180,7 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
         handle: handle.clone(),
         repo: repo.clone(),
         path: path.clone(),
-        branch: Some(branch.clone()),
+        branch: branch.clone(),
         base: input.base.clone(),
         source: WorktreeSource::Managed,
         created_at_unix: unix_now()?,
@@ -196,6 +200,10 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
         base: input.base,
         source: WorktreeSource::Managed,
     })
+}
+
+fn derive_worktree_branch(name: Option<&str>, branch: Option<&str>) -> Option<String> {
+    branch.or(name).map(str::to_owned)
 }
 
 pub fn path(input: PathWorktree) -> HzResult<WorktreeTarget> {
@@ -797,21 +805,7 @@ fn resolve_target(registry: &Registry, repo: &Path, target: &str) -> HzResult<Wo
 }
 
 fn find_entry(registry: &Registry, repo: &Path, target: &str) -> HzResult<WorktreeEntry> {
-    if let Some(entry) = registry.find(repo, target) {
-        return Ok(entry.clone());
-    }
-
-    find_git_entry(repo, target)
-}
-
-fn find_git_entry(repo: &Path, target: &str) -> HzResult<WorktreeEntry> {
-    hz_git::list_worktrees(repo)?
-        .into_iter()
-        .enumerate()
-        .filter(|(index, worktree)| *index != 0 && !same_path(&worktree.path, repo))
-        .map(|(_, worktree)| worktree)
-        .map(|worktree| git_entry(repo, worktree))
-        .find(|entry| matches_target(entry, target))
+    find_target_worktree(registry, repo, target)?
         .ok_or_else(|| HzError::Usage(format!("unknown worktree: {target}")))
 }
 
@@ -821,12 +815,15 @@ fn add_git_worktrees(
     worktrees: Vec<hz_git::GitWorktree>,
 ) {
     for (index, worktree) in worktrees.into_iter().enumerate() {
-        if index == 0
-            || same_path(&worktree.path, repo)
-            || entries
-                .iter()
-                .any(|entry| same_path(&entry.path, &worktree.path))
+        if index == 0 || same_path(&worktree.path, repo) {
+            continue;
+        }
+
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| same_path(&entry.path, &worktree.path))
         {
+            entry.branch = worktree.branch;
             continue;
         }
 
@@ -1056,16 +1053,47 @@ fn home_dir() -> HzResult<PathBuf> {
         .ok_or_else(|| HzError::Usage("HOME is not set".to_owned()))
 }
 
-fn generate_unique_handle(registry: &Registry, repo: &Path) -> String {
-    generate_unique_handle_from_seed(registry, repo, handle_seed())
+fn generate_unique_handle(registry: &Registry, repo: &Path) -> HzResult<String> {
+    let targets = discover_entries(registry, repo)?
+        .iter()
+        .flat_map(worktree_targets)
+        .collect();
+    Ok(generate_unique_handle_from_seed_with_targets(
+        handle_seed(),
+        handle_space_size(),
+        &targets,
+    ))
 }
 
+#[cfg(test)]
 fn generate_unique_handle_from_seed(registry: &Registry, repo: &Path, seed: u128) -> String {
-    let max_attempts = handle_space_size();
+    generate_unique_handle_from_seed_with_limit(registry, repo, seed, handle_space_size())
+}
 
+#[cfg(test)]
+fn generate_unique_handle_from_seed_with_limit(
+    registry: &Registry,
+    repo: &Path,
+    seed: u128,
+    max_attempts: u128,
+) -> String {
+    let targets = registry
+        .entries
+        .iter()
+        .filter(|entry| same_path(&entry.repo, repo))
+        .flat_map(worktree_targets)
+        .collect();
+    generate_unique_handle_from_seed_with_targets(seed, max_attempts, &targets)
+}
+
+fn generate_unique_handle_from_seed_with_targets(
+    seed: u128,
+    max_attempts: u128,
+    targets: &HashSet<String>,
+) -> String {
     for attempt in 0..max_attempts {
         let handle = generate_handle_from_seed(seed, attempt);
-        if registry.find(repo, &handle).is_none() {
+        if !targets.contains(&handle) {
             return handle;
         }
     }
@@ -1073,7 +1101,7 @@ fn generate_unique_handle_from_seed(registry: &Registry, repo: &Path, seed: u128
     let fallback = generate_handle_from_seed(seed, max_attempts);
     for suffix in 2.. {
         let handle = format!("{fallback}-{suffix}");
-        if registry.find(repo, &handle).is_none() {
+        if !targets.contains(&handle) {
             return handle;
         }
     }
@@ -1081,65 +1109,27 @@ fn generate_unique_handle_from_seed(registry: &Registry, repo: &Path, seed: u128
     unreachable!("suffix search is unbounded")
 }
 
-const HANDLE_ADJECTIVES: &[&str] = &[
-    "abelian",
-    "analytic",
-    "archimedean",
-    "boolean",
-    "cartesian",
-    "computable",
-    "differential",
-    "euclidean",
-    "gaussian",
-    "geometric",
-    "godelian",
-    "harmonic",
-    "hilbertian",
-    "logical",
-    "modular",
-    "newtonian",
-    "noetherian",
-    "pythagorean",
-    "recursive",
-    "topological",
-];
+fn worktree_targets(entry: &WorktreeEntry) -> Vec<String> {
+    let mut targets = vec![entry.id.clone(), entry.handle.clone()];
+    if let Some(branch) = &entry.branch {
+        targets.push(branch.clone());
+    }
+    targets
+}
 
-const HANDLE_NOUNS: &[&str] = &[
-    "algorithm",
-    "alpha",
-    "axiom",
-    "beta",
-    "calculus",
-    "chi",
-    "delta",
-    "epsilon",
-    "eta",
-    "fractal",
-    "gamma",
-    "iota",
-    "kappa",
-    "lambda",
-    "lemma",
-    "matrix",
-    "omega",
-    "phi",
-    "proof",
-    "sigma",
-    "tensor",
-    "theorem",
-    "theta",
-    "topology",
-    "vector",
-    "zeta",
-];
+const HANDLE_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+const HANDLE_LENGTH: usize = 4;
 
 fn generate_handle_from_seed(seed: u128, attempt: u128) -> String {
-    let offset = mixed_handle_offset(seed).wrapping_add(attempt) % handle_space_size();
-    let left = HANDLE_ADJECTIVES[(offset as usize) % HANDLE_ADJECTIVES.len()];
-    let right =
-        HANDLE_NOUNS[((offset / HANDLE_ADJECTIVES.len() as u128) as usize) % HANDLE_NOUNS.len()];
+    let mut offset = mixed_handle_offset(seed).wrapping_add(attempt) % handle_space_size();
+    let mut handle = [0_u8; HANDLE_LENGTH];
 
-    format!("{left}-{right}")
+    for character in handle.iter_mut().rev() {
+        *character = HANDLE_ALPHABET[(offset % HANDLE_ALPHABET.len() as u128) as usize];
+        offset /= HANDLE_ALPHABET.len() as u128;
+    }
+
+    String::from_utf8(handle.to_vec()).expect("handle alphabet should be valid UTF-8")
 }
 
 fn handle_seed() -> u128 {
@@ -1159,14 +1149,14 @@ fn handle_seed() -> u128 {
 
 fn mixed_handle_offset(seed: u128) -> u128 {
     let mut value = seed;
-    value ^= seed / HANDLE_ADJECTIVES.len() as u128;
+    value ^= seed / HANDLE_ALPHABET.len() as u128;
     value ^= seed >> 32;
     value ^= seed >> 64;
     value
 }
 
 fn handle_space_size() -> u128 {
-    (HANDLE_ADJECTIVES.len() * HANDLE_NOUNS.len()) as u128
+    (HANDLE_ALPHABET.len() as u128).pow(HANDLE_LENGTH as u32)
 }
 
 fn unix_now() -> HzResult<u64> {
@@ -1212,23 +1202,23 @@ mod tests {
     fn generated_handle_is_easy_to_type() {
         let handle = generate_handle_from_seed(0, 0);
 
-        assert!(handle.contains('-'));
+        assert_eq!(handle.len(), 4);
         assert!(
             handle
                 .chars()
-                .all(|character| { character.is_ascii_lowercase() || character == '-' })
+                .all(|character| { character.is_ascii_lowercase() || character.is_ascii_digit() })
         );
     }
 
     #[test]
-    fn generated_handle_uses_adjective_noun_parts() {
-        let handle = generate_handle_from_seed(0, 0);
-        let (left, right) = handle
-            .split_once('-')
-            .expect("generated handle should have two parts");
+    fn generated_handle_space_is_four_lowercase_alphanumeric_characters() {
+        assert_eq!(HANDLE_ALPHABET.len(), 36);
+        assert_eq!(HANDLE_LENGTH, 4);
+        assert_eq!(handle_space_size(), 1_679_616);
 
-        assert!(HANDLE_ADJECTIVES.contains(&left));
-        assert!(HANDLE_NOUNS.contains(&right));
+        assert_eq!(generate_handle_from_seed(0, 0), "aaaa");
+        assert_eq!(generate_handle_from_seed(0, 35), "aaa9");
+        assert_eq!(generate_handle_from_seed(0, 36), "aaba");
     }
 
     #[test]
@@ -1243,6 +1233,19 @@ mod tests {
         assert!(
             handles.len() > 1,
             "timestamp-shaped seeds should not collapse to one handle"
+        );
+    }
+
+    #[test]
+    fn worktree_branch_derivation_keeps_only_unnamed_worktrees_detached() {
+        assert_eq!(derive_worktree_branch(None, None), None);
+        assert_eq!(
+            derive_worktree_branch(Some("feature/ui"), None).as_deref(),
+            Some("feature/ui")
+        );
+        assert_eq!(
+            derive_worktree_branch(None, Some("feature/explicit")).as_deref(),
+            Some("feature/explicit")
         );
     }
 
@@ -1270,15 +1273,40 @@ mod tests {
         let seed = 0;
         let mut registry = Registry::default();
 
-        for attempt in 0..handle_space_size() {
+        let max_attempts = 3;
+        for attempt in 0..max_attempts {
             registry
                 .entries
                 .push(test_entry(&repo, generate_handle_from_seed(seed, attempt)));
         }
 
         assert_eq!(
-            generate_unique_handle_from_seed(&registry, &repo, seed),
-            "abelian-algorithm-2"
+            generate_unique_handle_from_seed_with_limit(&registry, &repo, seed, max_attempts),
+            format!("{}-2", generate_handle_from_seed(seed, max_attempts))
+        );
+    }
+
+    #[test]
+    fn generated_unique_handle_skips_live_worktree_targets() {
+        let seed = 0;
+        let targets = HashSet::from([generate_handle_from_seed(seed, 0)]);
+
+        assert_eq!(
+            generate_unique_handle_from_seed_with_targets(seed, handle_space_size(), &targets),
+            generate_handle_from_seed(seed, 1)
+        );
+    }
+
+    #[test]
+    fn generated_unique_handle_suffix_skips_live_worktree_targets() {
+        let seed = 0;
+        let max_attempts = 1;
+        let fallback = generate_handle_from_seed(seed, max_attempts);
+        let targets = HashSet::from([generate_handle_from_seed(seed, 0), format!("{fallback}-2")]);
+
+        assert_eq!(
+            generate_unique_handle_from_seed_with_targets(seed, max_attempts, &targets),
+            format!("{fallback}-3")
         );
     }
 
@@ -1554,14 +1582,14 @@ mod tests {
     }
 
     #[test]
-    fn git_worktree_merge_skips_current_repo_and_registered_paths() {
+    fn git_worktree_merge_refreshes_registered_branch_and_skips_registered_path() {
         let repo = PathBuf::from("/repo/hz");
         let mut entries = vec![WorktreeEntry {
             id: "managed-id".to_owned(),
             handle: "managed".to_owned(),
             repo: repo.clone(),
             path: PathBuf::from("/worktrees/managed"),
-            branch: Some("managed".to_owned()),
+            branch: None,
             base: None,
             source: WorktreeSource::Managed,
             created_at_unix: 0,
@@ -1579,7 +1607,7 @@ mod tests {
                 },
                 hz_git::GitWorktree {
                     path: PathBuf::from("/worktrees/managed"),
-                    branch: Some("managed".to_owned()),
+                    branch: Some("helloworld".to_owned()),
                 },
                 hz_git::GitWorktree {
                     path: PathBuf::from("/Users/dev/.codex/worktrees/bd16/hz"),
@@ -1589,8 +1617,13 @@ mod tests {
         );
 
         assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].branch.as_deref(), Some("helloworld"));
         assert_eq!(entries[1].handle, "bd16");
         assert_eq!(entries[1].source, WorktreeSource::Git);
+
+        let entry = find_target_entry(entries, &repo, "helloworld").unwrap();
+        assert_eq!(entry.handle, "managed");
+        assert_eq!(entry.source, WorktreeSource::Managed);
     }
 
     #[test]

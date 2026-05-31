@@ -60,14 +60,20 @@ pub fn repository_root(repo: Option<&Path>) -> HzResult<PathBuf> {
     Ok(PathBuf::from(root))
 }
 
-pub fn add_worktree(repo: &Path, path: &Path, branch: &str, base: Option<&str>) -> HzResult<()> {
+pub fn add_worktree(
+    repo: &Path,
+    path: &Path,
+    branch: Option<&str>,
+    base: Option<&str>,
+) -> HzResult<()> {
     let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(repo)
-        .args(["worktree", "add", "-b", branch])
-        .arg("--")
-        .arg(path);
+    command.arg("-C").arg(repo).args(["worktree", "add"]);
+    if let Some(branch) = branch {
+        command.args(["-b", branch]);
+    } else {
+        command.arg("--detach");
+    }
+    command.arg("--").arg(path);
 
     if let Some(base) = base {
         command.arg(base);
@@ -564,6 +570,37 @@ branch refs/heads/feature
             fs::read_to_string(destination.join("new.txt")).unwrap(),
             "new\n"
         );
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn add_worktree_without_branch_creates_detached_worktree() {
+        let test_dir = env::temp_dir().join(format!(
+            "hz-git-detached-worktree-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let repo = test_dir.join("repo");
+        let destination = test_dir.join("destination");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+
+        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
+        git(["config", "user.email", "test@example.com"], &repo);
+        git(["config", "user.name", "Test"], &repo);
+        fs::write(repo.join("file.txt"), "base\n").expect("tracked file should be written");
+        git(["add", "file.txt"], &repo);
+        git(["commit", "-q", "-m", "init"], &repo);
+
+        add_worktree(&repo, &destination, None, None).expect("detached worktree should be added");
+
+        assert_eq!(current_branch(&destination).unwrap(), None);
+        let destination = fs::canonicalize(&destination).unwrap();
+        assert!(list_worktrees(&repo).unwrap().into_iter().any(|worktree| {
+            fs::canonicalize(worktree.path).unwrap() == destination && worktree.branch.is_none()
+        }));
 
         fs::remove_dir_all(test_dir).expect("test directory should be removed");
     }
