@@ -154,6 +154,8 @@ struct HandoffWorktreeArgs {
     target: Option<String>,
     #[arg(short = 'b', long)]
     branch: bool,
+    #[arg(short = 'n', long = "new")]
+    create: bool,
     #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
     #[arg(short = 'j', long)]
@@ -1161,6 +1163,7 @@ fn handoff_worktree(args: HandoffWorktreeArgs) -> HzResult<()> {
             hz_command::HandoffMode::Patch
         },
         repo: args.repo,
+        create: args.create,
     })?;
 
     if args.json {
@@ -1783,6 +1786,7 @@ mod tests {
                 assert_eq!(args.repo, Some(PathBuf::from("/repo")));
                 assert!(args.json);
                 assert!(!args.branch);
+                assert!(!args.create);
             }
             command => panic!("expected handoff command, got {command:?}"),
         }
@@ -1793,6 +1797,15 @@ mod tests {
                 assert_eq!(args.target.as_deref(), Some("708e"));
                 assert!(args.branch);
                 assert!(args.path_only);
+            }
+            command => panic!("expected handoff command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "handoff", "--new", "feature/ui"]).unwrap();
+        match cli.command {
+            Some(Command::Handoff(args)) => {
+                assert_eq!(args.target.as_deref(), Some("feature/ui"));
+                assert!(args.create);
             }
             command => panic!("expected handoff command, got {command:?}"),
         }

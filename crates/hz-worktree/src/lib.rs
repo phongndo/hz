@@ -29,6 +29,7 @@ pub struct HandoffWorktree {
     pub target: Option<String>,
     pub mode: HandoffMode,
     pub repo: Option<PathBuf>,
+    pub create: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +136,17 @@ struct HandoffLink {
     updated_at_unix: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PatchHandoffLink {
+    repo: PathBuf,
+    left_path: PathBuf,
+    left_handle: String,
+    right_path: PathBuf,
+    right_handle: String,
+    patch_hash: String,
+    updated_at_unix: u64,
+}
+
 pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     let mut registry = Registry::load()?;
     let repo = resolve_repo(input.repo.as_deref(), &registry)?;
@@ -219,7 +231,13 @@ pub fn handoff(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {
     let repo = resolve_registered_repo(&registry, &current, &main).unwrap_or(main);
 
     if input.mode == HandoffMode::Patch {
-        return handoff_patch(&mut registry, repo, current, input.target);
+        return handoff_patch(&mut registry, repo, current, input.target, input.create);
+    }
+
+    if input.create {
+        return Err(HzError::Usage(
+            "--new only supports patch handoff".to_owned(),
+        ));
     }
 
     if same_path(&current, &repo) {
@@ -237,10 +255,16 @@ fn handoff_patch(
     repo: PathBuf,
     current: PathBuf,
     target: Option<String>,
+    create: bool,
 ) -> HzResult<WorktreeHandoff> {
     if same_path(&current, &repo) {
-        handoff_patch_from_local(registry, repo, current, target)
+        handoff_patch_from_local(registry, repo, current, target, create)
     } else {
+        if create {
+            return Err(HzError::Usage(
+                "--new patch handoff must be run from local".to_owned(),
+            ));
+        }
         handoff_patch_to_local(registry, repo, current, target)
     }
 }
@@ -265,16 +289,30 @@ fn handoff_patch_to_local(
         name: "local".to_owned(),
         path: repo.clone(),
     };
-    ensure_clean(&repo, "destination")?;
     let patch = hz_git::diff_patch(&current)?;
-    let changed = hz_git::apply_patch(&repo, &patch)?;
     let branch = hz_git::current_branch(&current)?;
+    let patch_hash = hz_git::hash_bytes(&repo, &patch)?;
+    let mut next_registry = registry.clone();
 
     if let Some(branch) = &branch {
         let local_restore_branch = hz_git::current_branch(&repo)?.filter(|local| local != branch);
-        registry.remember_handoff(&repo, branch, &current, &from.name, local_restore_branch)?;
-        registry.save()?;
+        next_registry.remember_handoff(
+            &repo,
+            branch,
+            &current,
+            &from.name,
+            local_restore_branch,
+        )?;
     }
+    next_registry.remember_patch_handoff(&repo, &from, &to, patch_hash)?;
+
+    let applied = apply_patch_handoff(registry, &repo, &from, &to, &patch)?;
+    if let Err(error) = next_registry.save() {
+        return Err(rollback_saved_patch_handoff(
+            &to.path, &patch, applied, error,
+        ));
+    }
+    *registry = next_registry;
 
     Ok(WorktreeHandoff {
         repo,
@@ -282,7 +320,7 @@ fn handoff_patch_to_local(
         branch,
         from,
         to,
-        changed,
+        changed: applied.changed,
     })
 }
 
@@ -291,19 +329,27 @@ fn handoff_patch_from_local(
     repo: PathBuf,
     current: PathBuf,
     target: Option<String>,
+    create: bool,
 ) -> HzResult<WorktreeHandoff> {
     let branch = hz_git::current_branch(&current)?;
-    let destination = match target {
-        Some(target) => find_target_worktree(registry, &repo, &target)?
-            .ok_or_else(|| HzError::Usage(format!("unknown worktree target: {target}")))?,
-        None => {
-            let branch = branch.clone().ok_or_else(|| {
-                HzError::Usage(
-                    "local worktree is detached; pass a worktree target for patch handoff"
-                        .to_owned(),
-                )
-            })?;
-            find_handoff_destination(registry, &repo, &branch)?
+    let destination = if create {
+        create_handoff_destination(registry, &repo, target)?
+    } else {
+        match target {
+            Some(target) => find_target_worktree(registry, &repo, &target)?
+                .ok_or_else(|| HzError::Usage(format!("unknown worktree target: {target}")))?,
+            None => match find_patch_handoff_destination(registry, &repo, &current)? {
+                Some(destination) => destination,
+                None => {
+                    let branch = branch.clone().ok_or_else(|| {
+                        HzError::Usage(
+                            "local worktree is detached; pass a worktree target for patch handoff"
+                                .to_owned(),
+                        )
+                    })?;
+                    find_handoff_destination(registry, &repo, &branch)?
+                }
+            },
         }
     };
     let from = WorktreeTarget {
@@ -314,9 +360,26 @@ fn handoff_patch_from_local(
         name: destination.handle.clone(),
         path: destination.path.clone(),
     };
-    ensure_clean(&destination.path, "destination")?;
     let patch = hz_git::diff_patch(&current)?;
-    let changed = hz_git::apply_patch(&destination.path, &patch)?;
+    let patch_hash = hz_git::hash_bytes(&repo, &patch)?;
+    let mut next_registry = registry.clone();
+    next_registry.remember_patch_handoff(&repo, &from, &to, patch_hash)?;
+
+    let applied = match apply_patch_handoff(registry, &repo, &from, &to, &patch) {
+        Ok(applied) => applied,
+        Err(error) if create => {
+            return Err(cleanup_created_destination(destination, error));
+        }
+        Err(error) => return Err(error),
+    };
+    if let Err(error) = next_registry.save() {
+        let error = rollback_saved_patch_handoff(&to.path, &patch, applied, error);
+        if create {
+            return Err(cleanup_created_destination(destination, error));
+        }
+        return Err(error);
+    }
+    *registry = next_registry;
 
     Ok(WorktreeHandoff {
         repo,
@@ -324,8 +387,127 @@ fn handoff_patch_from_local(
         branch,
         from,
         to,
-        changed,
+        changed: applied.changed,
     })
+}
+
+fn create_handoff_destination(
+    registry: &mut Registry,
+    repo: &Path,
+    target: Option<String>,
+) -> HzResult<WorktreeEntry> {
+    let created = create(CreateWorktree {
+        name: target,
+        repo: Some(repo.to_path_buf()),
+        path: None,
+        base: None,
+        branch: None,
+    })?;
+    *registry = Registry::load()?;
+
+    Ok(WorktreeEntry {
+        id: created.id,
+        handle: created.handle,
+        repo: created.repo,
+        path: created.path,
+        branch: created.branch,
+        base: created.base,
+        source: created.source,
+        created_at_unix: unix_now()?,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
+    })
+}
+
+struct AppliedPatchHandoff {
+    changed: bool,
+    previous_destination_patch: Option<Vec<u8>>,
+}
+
+fn apply_patch_handoff(
+    registry: &Registry,
+    repo: &Path,
+    from: &WorktreeTarget,
+    to: &WorktreeTarget,
+    patch: &[u8],
+) -> HzResult<AppliedPatchHandoff> {
+    let destination_state = hz_git::worktree_state(&to.path)?;
+    if !destination_state.dirty {
+        return hz_git::apply_patch(&to.path, patch).map(|changed| AppliedPatchHandoff {
+            changed,
+            previous_destination_patch: None,
+        });
+    }
+
+    let Some(link) = registry.patch_handoff_link(repo, &from.path, &to.path) else {
+        return Err(dirty_destination_error(&to.path));
+    };
+
+    let destination_patch = hz_git::diff_patch(&to.path)?;
+    let destination_patch_hash = hz_git::hash_bytes(repo, &destination_patch)?;
+    if destination_patch_hash != link.patch_hash {
+        return Err(HzError::Usage(format!(
+            "destination worktree has uncommitted changes not created by the last handoff: {}",
+            to.path.display()
+        )));
+    }
+
+    hz_git::apply_patch_reverse(&to.path, &destination_patch)?;
+    match hz_git::apply_patch(&to.path, patch) {
+        Ok(changed) => Ok(AppliedPatchHandoff {
+            changed: changed || !destination_patch.is_empty(),
+            previous_destination_patch: Some(destination_patch),
+        }),
+        Err(error) => {
+            let rollback = hz_git::apply_patch(&to.path, &destination_patch);
+            Err(match rollback {
+                Ok(_) => error,
+                Err(rollback_error) => HzError::Usage(format!(
+                    "{error}; rollback failed, destination worktree was not restored: {rollback_error}"
+                )),
+            })
+        }
+    }
+}
+
+fn rollback_saved_patch_handoff(
+    destination: &Path,
+    patch: &[u8],
+    applied: AppliedPatchHandoff,
+    save_error: HzError,
+) -> HzError {
+    let rollback = (|| -> HzResult<()> {
+        if applied.changed {
+            hz_git::apply_patch_reverse(destination, patch)?;
+        }
+        if let Some(previous_patch) = applied.previous_destination_patch {
+            hz_git::apply_patch(destination, &previous_patch)?;
+        }
+        Ok(())
+    })();
+
+    match rollback {
+        Ok(()) => save_error,
+        Err(rollback_error) => HzError::Usage(format!(
+            "{save_error}; rollback failed, destination worktree was not restored: {rollback_error}"
+        )),
+    }
+}
+
+fn cleanup_created_destination(destination: WorktreeEntry, error: HzError) -> HzError {
+    match remove_found_with_force(destination, true) {
+        Ok(_) => error,
+        Err(cleanup_error) => HzError::Usage(format!(
+            "{error}; additionally failed to remove created destination worktree: {cleanup_error}"
+        )),
+    }
+}
+
+fn dirty_destination_error(path: &Path) -> HzError {
+    HzError::Usage(format!(
+        "destination worktree has uncommitted changes: {}",
+        path.display()
+    ))
 }
 
 fn resolve_local_branch_handoff_target(
@@ -601,6 +783,25 @@ fn find_handoff_destination(
     Err(HzError::Usage(format!(
         "no linked worktree found for branch: {branch}"
     )))
+}
+
+fn find_patch_handoff_destination(
+    registry: &Registry,
+    repo: &Path,
+    current: &Path,
+) -> HzResult<Option<WorktreeEntry>> {
+    let Some(link) = registry.latest_patch_handoff_for_path(repo, current) else {
+        return Ok(None);
+    };
+    let destination_path = if same_path(&link.left_path, current) {
+        &link.right_path
+    } else {
+        &link.left_path
+    };
+
+    Ok(discover_entries(registry, repo)?
+        .into_iter()
+        .find(|entry| same_path(&entry.path, destination_path)))
 }
 
 fn linked_worktree_exists(repo: &Path, path: &Path) -> HzResult<bool> {
@@ -880,11 +1081,13 @@ fn git_worktree_handle(repo: &Path, worktree: &hz_git::GitWorktree) -> String {
     path_name.unwrap_or_else(|| worktree.path.display().to_string())
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Registry {
     entries: Vec<WorktreeEntry>,
     #[serde(default)]
     handoffs: Vec<HandoffLink>,
+    #[serde(default)]
+    patch_handoffs: Vec<PatchHandoffLink>,
 }
 
 impl Registry {
@@ -958,6 +1161,31 @@ impl Registry {
             .find(|link| same_path(&link.repo, repo) && link.branch == branch)
     }
 
+    fn patch_handoff_link(
+        &self,
+        repo: &Path,
+        left_path: &Path,
+        right_path: &Path,
+    ) -> Option<&PatchHandoffLink> {
+        self.patch_handoffs.iter().find(|link| {
+            same_path(&link.repo, repo)
+                && ((same_path(&link.left_path, left_path)
+                    && same_path(&link.right_path, right_path))
+                    || (same_path(&link.left_path, right_path)
+                        && same_path(&link.right_path, left_path)))
+        })
+    }
+
+    fn latest_patch_handoff_for_path(&self, repo: &Path, path: &Path) -> Option<&PatchHandoffLink> {
+        self.patch_handoffs
+            .iter()
+            .filter(|link| {
+                same_path(&link.repo, repo)
+                    && (same_path(&link.left_path, path) || same_path(&link.right_path, path))
+            })
+            .max_by_key(|link| link.updated_at_unix)
+    }
+
     fn remember_handoff(
         &mut self,
         repo: &Path,
@@ -973,6 +1201,32 @@ impl Registry {
             path: path.to_path_buf(),
             handle: handle.to_owned(),
             local_restore_branch,
+            updated_at_unix: unix_now()?,
+        });
+        Ok(())
+    }
+
+    fn remember_patch_handoff(
+        &mut self,
+        repo: &Path,
+        left: &WorktreeTarget,
+        right: &WorktreeTarget,
+        patch_hash: String,
+    ) -> HzResult<()> {
+        self.patch_handoffs.retain(|link| {
+            !same_path(&link.repo, repo)
+                || !((same_path(&link.left_path, &left.path)
+                    && same_path(&link.right_path, &right.path))
+                    || (same_path(&link.left_path, &right.path)
+                        && same_path(&link.right_path, &left.path)))
+        });
+        self.patch_handoffs.push(PatchHandoffLink {
+            repo: repo.to_path_buf(),
+            left_path: left.path.clone(),
+            left_handle: left.name.clone(),
+            right_path: right.path.clone(),
+            right_handle: right.name.clone(),
+            patch_hash,
             updated_at_unix: unix_now()?,
         });
         Ok(())
@@ -1353,6 +1607,7 @@ mod tests {
                 status: WorktreeStatus::Unknown,
             }],
             handoffs: Vec::new(),
+            patch_handoffs: Vec::new(),
         };
 
         assert_eq!(
@@ -1368,6 +1623,7 @@ mod tests {
         let registry = Registry {
             entries: vec![test_entry(&repo, "managed".to_owned())],
             handoffs: Vec::new(),
+            patch_handoffs: Vec::new(),
         };
 
         assert_eq!(
@@ -1384,6 +1640,7 @@ mod tests {
         let registry = Registry {
             entries: vec![test_entry(&other_repo, "managed".to_owned())],
             handoffs: Vec::new(),
+            patch_handoffs: Vec::new(),
         };
 
         assert_eq!(resolve_registered_repo(&registry, &unmanaged, &repo), None);
@@ -1412,6 +1669,7 @@ mod tests {
         assert_eq!(registry.entries[0].modified_at_unix, 0);
         assert_eq!(registry.entries[0].status, WorktreeStatus::Unknown);
         assert!(registry.handoffs.is_empty());
+        assert!(registry.patch_handoffs.is_empty());
     }
 
     #[test]
@@ -1438,6 +1696,71 @@ mod tests {
         assert_eq!(link.path, second);
         assert_eq!(link.handle, "second");
         assert_eq!(registry.handoffs.len(), 1);
+    }
+
+    #[test]
+    fn registry_remembers_patch_handoffs_by_worktree_pair() {
+        let repo = PathBuf::from("/repo/hz");
+        let local = WorktreeTarget {
+            name: "local".to_owned(),
+            path: repo.clone(),
+        };
+        let detached = WorktreeTarget {
+            name: "13n3".to_owned(),
+            path: PathBuf::from("/worktrees/13n3"),
+        };
+        let mut registry = Registry::default();
+
+        registry
+            .remember_patch_handoff(&repo, &detached, &local, "first".to_owned())
+            .unwrap();
+        registry
+            .remember_patch_handoff(&repo, &local, &detached, "second".to_owned())
+            .unwrap();
+
+        let link = registry
+            .patch_handoff_link(&repo, &detached.path, &local.path)
+            .unwrap();
+        assert_eq!(link.patch_hash, "second");
+        assert_eq!(registry.patch_handoffs.len(), 1);
+    }
+
+    #[test]
+    fn registry_finds_latest_patch_handoff_for_path() {
+        let repo = PathBuf::from("/repo/hz");
+        let local = PathBuf::from("/repo/hz");
+        let first = PathBuf::from("/worktrees/first");
+        let second = PathBuf::from("/worktrees/second");
+        let registry = Registry {
+            entries: Vec::new(),
+            handoffs: Vec::new(),
+            patch_handoffs: vec![
+                PatchHandoffLink {
+                    repo: repo.clone(),
+                    left_path: first,
+                    left_handle: "first".to_owned(),
+                    right_path: local.clone(),
+                    right_handle: "local".to_owned(),
+                    patch_hash: "older".to_owned(),
+                    updated_at_unix: 1,
+                },
+                PatchHandoffLink {
+                    repo: repo.clone(),
+                    left_path: local.clone(),
+                    left_handle: "local".to_owned(),
+                    right_path: second,
+                    right_handle: "second".to_owned(),
+                    patch_hash: "newer".to_owned(),
+                    updated_at_unix: 2,
+                },
+            ],
+        };
+
+        let link = registry
+            .latest_patch_handoff_for_path(&repo, &local)
+            .unwrap();
+
+        assert_eq!(link.patch_hash, "newer");
     }
 
     #[test]
