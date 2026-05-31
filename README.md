@@ -37,6 +37,8 @@ hz ls
 hz path fix-login
 hz cd fix-login
 hz handoff
+hz setup fix-login
+hz cleanup fix-login
 hz cd
 hz rm fix-login
 ```
@@ -52,17 +54,17 @@ Unicode markers such as `●` and `⌂`; non-terminal output and `HZ_ASCII=1 hz 
 use ASCII fallbacks such as `@` and `~`.
 
 `hz cd` prints a path for scripts. To make `hz new` and `hz cd` change the
-current shell directory, run `hz init <shell>` once to update your shell rc
+current shell directory, run `hz install <shell>` once to update your shell rc
 file:
 
 ```sh
-hz init zsh
-hz init bash
-hz init fish
+hz install zsh
+hz install bash
+hz install fish
 ```
 
 For zsh, this updates `~/.zshrc`. Restart your shell or run `source ~/.zshrc`
-after init. With the integration loaded, plain `hz new ...` creates the
+after install. With the integration loaded, plain `hz new ...` creates the
 worktree and changes into it, and `hz cd` returns to the local repo root.
 `--json`, `--path-only`, and help calls still pass through to the real binary
 without changing directories.
@@ -89,6 +91,39 @@ branch-backed destination worktree named `fix-login`.
 Use `hz handoff <worktree> --branch` to move branch ownership instead
 of applying a patch. Branch handoff is clean-only on both sides.
 
+## Repo lifecycle
+
+`hz init` initializes repo-local lifecycle config:
+
+```text
+hz.toml
+.hz/setup
+.hz/cleanup
+```
+
+`hz.toml` declares the commands `hz` should run:
+
+```toml
+[lifecycle]
+setup = [".hz/setup"]
+cleanup = [".hz/cleanup"]
+```
+
+`.hz/setup` and `.hz/cleanup` are executable script files. Edit them with the
+repo setup and cleanup commands an agent worktree should run. `hz new` runs the
+configured setup command after creating a worktree, and `hz rm` runs the
+configured cleanup command before removing one. Use `--no-setup` or
+`--no-cleanup` to bypass a hook for one command. Use `hz setup [target]` or
+`hz cleanup [target]` to run a hook manually. Hook stdout is forwarded to stderr
+so `--json` and `--path-only` output stays machine-readable.
+
+Lifecycle config is read from the target worktree. Commit `hz.toml` and any
+referenced scripts before relying on `hz new` to run setup in newly created
+worktrees.
+
+For compatibility, `hz init <shell>` still installs shell integration, but
+`hz install <shell>` is the documented command for shell setup.
+
 ## Development
 
 Install the repo Rust toolchain:
@@ -107,7 +142,7 @@ Run the local development binary without typing `target/debug/hz`:
 
 ```sh
 just setup
-just dev-init-zsh
+hz install zsh
 just check
 just build
 just hz --help
@@ -115,7 +150,7 @@ hz new test-branch
 ```
 
 `just hz ...` is useful for commands that print output, but it cannot change the
-current shell directory. Use `just dev-init-zsh` once, then call `hz new` or
+current shell directory. Use `hz install zsh` once, then call `hz new` or
 `hz cd` directly for auto-cd behavior.
 
 ```sh
