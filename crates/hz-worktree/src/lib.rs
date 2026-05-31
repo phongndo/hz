@@ -290,15 +290,29 @@ fn handoff_patch_to_local(
         path: repo.clone(),
     };
     let patch = hz_git::diff_patch(&current)?;
-    let changed = apply_patch_handoff(registry, &repo, &from, &to, &patch)?;
     let branch = hz_git::current_branch(&current)?;
+    let patch_hash = hz_git::hash_bytes(&repo, &patch)?;
+    let mut next_registry = registry.clone();
 
     if let Some(branch) = &branch {
         let local_restore_branch = hz_git::current_branch(&repo)?.filter(|local| local != branch);
-        registry.remember_handoff(&repo, branch, &current, &from.name, local_restore_branch)?;
+        next_registry.remember_handoff(
+            &repo,
+            branch,
+            &current,
+            &from.name,
+            local_restore_branch,
+        )?;
     }
-    registry.remember_patch_handoff(&repo, &from, &to, hz_git::hash_bytes(&repo, &patch)?)?;
-    registry.save()?;
+    next_registry.remember_patch_handoff(&repo, &from, &to, patch_hash)?;
+
+    let applied = apply_patch_handoff(registry, &repo, &from, &to, &patch)?;
+    if let Err(error) = next_registry.save() {
+        return Err(rollback_saved_patch_handoff(
+            &to.path, &patch, applied, error,
+        ));
+    }
+    *registry = next_registry;
 
     Ok(WorktreeHandoff {
         repo,
@@ -306,7 +320,7 @@ fn handoff_patch_to_local(
         branch,
         from,
         to,
-        changed,
+        changed: applied.changed,
     })
 }
 
@@ -347,16 +361,25 @@ fn handoff_patch_from_local(
         path: destination.path.clone(),
     };
     let patch = hz_git::diff_patch(&current)?;
-    let changed = match apply_patch_handoff(registry, &repo, &from, &to, &patch) {
-        Ok(changed) => changed,
+    let patch_hash = hz_git::hash_bytes(&repo, &patch)?;
+    let mut next_registry = registry.clone();
+    next_registry.remember_patch_handoff(&repo, &from, &to, patch_hash)?;
+
+    let applied = match apply_patch_handoff(registry, &repo, &from, &to, &patch) {
+        Ok(applied) => applied,
         Err(error) if create => {
-            let _ = remove_found_with_force(destination, true);
-            return Err(error);
+            return Err(cleanup_created_destination(destination, error));
         }
         Err(error) => return Err(error),
     };
-    registry.remember_patch_handoff(&repo, &from, &to, hz_git::hash_bytes(&repo, &patch)?)?;
-    registry.save()?;
+    if let Err(error) = next_registry.save() {
+        let error = rollback_saved_patch_handoff(&to.path, &patch, applied, error);
+        if create {
+            return Err(cleanup_created_destination(destination, error));
+        }
+        return Err(error);
+    }
+    *registry = next_registry;
 
     Ok(WorktreeHandoff {
         repo,
@@ -364,7 +387,7 @@ fn handoff_patch_from_local(
         branch,
         from,
         to,
-        changed,
+        changed: applied.changed,
     })
 }
 
@@ -396,16 +419,24 @@ fn create_handoff_destination(
     })
 }
 
+struct AppliedPatchHandoff {
+    changed: bool,
+    previous_destination_patch: Option<Vec<u8>>,
+}
+
 fn apply_patch_handoff(
     registry: &Registry,
     repo: &Path,
     from: &WorktreeTarget,
     to: &WorktreeTarget,
     patch: &[u8],
-) -> HzResult<bool> {
+) -> HzResult<AppliedPatchHandoff> {
     let destination_state = hz_git::worktree_state(&to.path)?;
     if !destination_state.dirty {
-        return hz_git::apply_patch(&to.path, patch);
+        return hz_git::apply_patch(&to.path, patch).map(|changed| AppliedPatchHandoff {
+            changed,
+            previous_destination_patch: None,
+        });
     }
 
     let Some(link) = registry.patch_handoff_link(repo, &from.path, &to.path) else {
@@ -423,7 +454,10 @@ fn apply_patch_handoff(
 
     hz_git::apply_patch_reverse(&to.path, &destination_patch)?;
     match hz_git::apply_patch(&to.path, patch) {
-        Ok(changed) => Ok(changed || !destination_patch.is_empty()),
+        Ok(changed) => Ok(AppliedPatchHandoff {
+            changed: changed || !destination_patch.is_empty(),
+            previous_destination_patch: Some(destination_patch),
+        }),
         Err(error) => {
             let rollback = hz_git::apply_patch(&to.path, &destination_patch);
             Err(match rollback {
@@ -433,6 +467,39 @@ fn apply_patch_handoff(
                 )),
             })
         }
+    }
+}
+
+fn rollback_saved_patch_handoff(
+    destination: &Path,
+    patch: &[u8],
+    applied: AppliedPatchHandoff,
+    save_error: HzError,
+) -> HzError {
+    let rollback = (|| -> HzResult<()> {
+        if applied.changed {
+            hz_git::apply_patch_reverse(destination, patch)?;
+        }
+        if let Some(previous_patch) = applied.previous_destination_patch {
+            hz_git::apply_patch(destination, &previous_patch)?;
+        }
+        Ok(())
+    })();
+
+    match rollback {
+        Ok(()) => save_error,
+        Err(rollback_error) => HzError::Usage(format!(
+            "{save_error}; rollback failed, destination worktree was not restored: {rollback_error}"
+        )),
+    }
+}
+
+fn cleanup_created_destination(destination: WorktreeEntry, error: HzError) -> HzError {
+    match remove_found_with_force(destination, true) {
+        Ok(_) => error,
+        Err(cleanup_error) => HzError::Usage(format!(
+            "{error}; additionally failed to remove created destination worktree: {cleanup_error}"
+        )),
     }
 }
 
@@ -1014,7 +1081,7 @@ fn git_worktree_handle(repo: &Path, worktree: &hz_git::GitWorktree) -> String {
     path_name.unwrap_or_else(|| worktree.path.display().to_string())
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Registry {
     entries: Vec<WorktreeEntry>,
     #[serde(default)]
