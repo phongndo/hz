@@ -1,12 +1,12 @@
 [workspace]
 members = [
-    "crates/hz-cli",
-    "crates/hz-command",
-    "crates/hz-core",
-    "crates/hz-diff",
-    "crates/hz-git",
-    "crates/hz-tui",
-    "crates/hz-worktree",
+    "hz-cli",
+    "hz-command",
+    "hz-core",
+    "hz-diff",
+    "hz-git",
+    "hz-tui",
+    "hz-worktree",
 ]
 resolver = "3"
 
@@ -24,9 +24,9 @@ serde_json = "1"
 toml = "0.8"
 unicode-width = "0.2"
 
-hz-core = { path = "crates/hz-core" }
-hz-command = { path = "crates/hz-command" }
-hz-diff = { path = "crates/hz-diff" }
-hz-git = { path = "crates/hz-git" }
-hz-tui = { path = "crates/hz-tui" }
-hz-worktree = { path = "crates/hz-worktree" }
+hz-core = { path = "hz-core" }
+hz-command = { path = "hz-command" }
+hz-diff = { path = "hz-diff" }
+hz-git = { path = "hz-git" }
+hz-tui = { path = "hz-tui" }
+hz-worktree = { path = "hz-worktree" }
