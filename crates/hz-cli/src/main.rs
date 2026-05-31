@@ -11,6 +11,7 @@ use clap::{
 };
 use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const HELP_TEMPLATE: &str = "\
 {before-help}{name} {version}
@@ -577,20 +578,27 @@ fn render_compact_worktree_rows(
         .chain([2])
         .max()
         .expect("width candidates should not be empty");
-    let show_modified = terminal_width >= 36;
+    let base_width = marker_width + 2 + status_width;
+    let minimum_target_width = 6;
+    let modified_separator_width = 1;
+    let show_modified = terminal_width
+        >= base_width + minimum_target_width + modified_separator_width + 8
+        && terminal_width >= 36;
     let modified_width = if show_modified {
+        let available_modified_width = terminal_width
+            .saturating_sub(base_width + minimum_target_width + modified_separator_width);
         modified_values
             .iter()
             .map(|modified| display_width(modified))
             .chain([8])
             .max()
             .expect("width candidates should not be empty")
+            .min(available_modified_width)
     } else {
         0
     };
-    let fixed_width =
-        marker_width + 2 + status_width + usize::from(show_modified) * (modified_width + 1);
-    let target_width = terminal_width.saturating_sub(fixed_width).max(6);
+    let fixed_width = base_width + usize::from(show_modified) * (modified_width + 1);
+    let target_width = terminal_width.saturating_sub(fixed_width);
     let mut output = String::new();
 
     for (index, row) in rows.iter().enumerate() {
@@ -614,11 +622,12 @@ fn render_compact_worktree_rows(
         );
         output.push_str(&format!("{marker} {target} {status}"));
         if show_modified {
-            let modified = styled_cell(
+            let modified = styled_truncated_cell(
                 &modified_values[index],
                 modified_width,
                 StyleColor::White,
                 color,
+                glyphs,
             );
             output.push_str(&format!(" {modified}"));
         }
@@ -941,7 +950,7 @@ fn render_field(label: &str, value: &str, value_color: StyleColor, color: bool) 
 }
 
 fn display_width(value: &str) -> usize {
-    value.chars().count()
+    UnicodeWidthStr::width(value)
 }
 
 fn max_display_width<T: AsRef<str>>(values: &[T]) -> usize {
@@ -1004,17 +1013,38 @@ fn truncate_middle(value: &str, width: usize, glyphs: ListGlyphs) -> String {
     let available = width - ellipsis_width;
     let prefix_width = available / 2;
     let suffix_width = available - prefix_width;
-    let prefix: String = value.chars().take(prefix_width).collect();
-    let suffix: String = value
-        .chars()
-        .rev()
-        .take(suffix_width)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
+    let prefix = take_display_width(value, prefix_width);
+    let suffix = take_display_width_from_end(value, suffix_width);
 
     format!("{prefix}{}{suffix}", glyphs.ellipsis)
+}
+
+fn take_display_width(value: &str, width: usize) -> String {
+    let mut output = String::new();
+    let mut used_width = 0;
+    for character in value.chars() {
+        let character_width = character.width().unwrap_or(0);
+        if used_width + character_width > width {
+            break;
+        }
+        used_width += character_width;
+        output.push(character);
+    }
+    output
+}
+
+fn take_display_width_from_end(value: &str, width: usize) -> String {
+    let mut output = Vec::new();
+    let mut used_width = 0;
+    for character in value.chars().rev() {
+        let character_width = character.width().unwrap_or(0);
+        if used_width + character_width > width {
+            break;
+        }
+        used_width += character_width;
+        output.push(character);
+    }
+    output.into_iter().rev().collect()
 }
 
 fn styled(value: &str, color: StyleColor, enabled: bool) -> String {
@@ -1298,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn list_output_widths_count_characters() {
+    fn list_output_widths_count_terminal_columns() {
         let output = render_worktree_list(&[hz_command::WorktreeEntry {
             id: "entry-id".to_owned(),
             handle: "generated-handle".to_owned(),
@@ -1581,6 +1611,40 @@ mod tests {
 
         assert!(!output.contains("target"));
         assert!(output.lines().all(|line| display_width(line) <= 32));
+    }
+
+    #[test]
+    fn compact_rows_truncate_modified_column_to_terminal_width() {
+        let modified_values = vec!["modified-timestamp-that-is-too-wide".to_owned()];
+        let output = render_compact_worktree_rows(
+            &[WorktreeListRow {
+                target: "feat(worktree)/very-long-branch-name".to_owned(),
+                status: hz_command::WorktreeStatus::Dirty,
+                modified_at_unix: 0,
+                path: PathBuf::from("/very/long/worktree/path"),
+                local: false,
+                current: false,
+            }],
+            &["feat(worktree)/very-long-branch-name"],
+            &["!"],
+            &modified_values,
+            36,
+            false,
+            list_glyphs(true),
+        );
+
+        assert!(output.contains("…"));
+        assert!(output.lines().all(|line| display_width(line) <= 36));
+    }
+
+    #[test]
+    fn display_width_uses_terminal_columns() {
+        assert_eq!(display_width("測試"), 4);
+
+        let truncated = truncate_middle("feature/測試/worktree", 12, list_glyphs(true));
+
+        assert!(truncated.contains("…"));
+        assert!(display_width(&truncated) <= 12);
     }
 
     #[test]
