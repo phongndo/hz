@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     env, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -140,9 +141,9 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     let name = input.name;
     let handle = match name.clone() {
         Some(name) => name,
-        None => generate_unique_handle(&registry, &repo),
+        None => generate_unique_handle(&registry, &repo)?,
     };
-    let branch = input.branch.or(name);
+    let branch = derive_worktree_branch(name.as_deref(), input.branch.as_deref());
     validate_worktree_name("worktree handle", &handle)?;
     if let Some(branch) = &branch {
         validate_worktree_name("worktree branch", branch)?;
@@ -199,6 +200,10 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
         base: input.base,
         source: WorktreeSource::Managed,
     })
+}
+
+fn derive_worktree_branch(name: Option<&str>, branch: Option<&str>) -> Option<String> {
+    branch.or(name).map(str::to_owned)
 }
 
 pub fn path(input: PathWorktree) -> HzResult<WorktreeTarget> {
@@ -800,21 +805,7 @@ fn resolve_target(registry: &Registry, repo: &Path, target: &str) -> HzResult<Wo
 }
 
 fn find_entry(registry: &Registry, repo: &Path, target: &str) -> HzResult<WorktreeEntry> {
-    if let Some(entry) = registry.find(repo, target) {
-        return Ok(entry.clone());
-    }
-
-    find_git_entry(repo, target)
-}
-
-fn find_git_entry(repo: &Path, target: &str) -> HzResult<WorktreeEntry> {
-    hz_git::list_worktrees(repo)?
-        .into_iter()
-        .enumerate()
-        .filter(|(index, worktree)| *index != 0 && !same_path(&worktree.path, repo))
-        .map(|(_, worktree)| worktree)
-        .map(|worktree| git_entry(repo, worktree))
-        .find(|entry| matches_target(entry, target))
+    find_target_worktree(registry, repo, target)?
         .ok_or_else(|| HzError::Usage(format!("unknown worktree: {target}")))
 }
 
@@ -1062,23 +1053,47 @@ fn home_dir() -> HzResult<PathBuf> {
         .ok_or_else(|| HzError::Usage("HOME is not set".to_owned()))
 }
 
-fn generate_unique_handle(registry: &Registry, repo: &Path) -> String {
-    generate_unique_handle_from_seed(registry, repo, handle_seed())
+fn generate_unique_handle(registry: &Registry, repo: &Path) -> HzResult<String> {
+    let targets = discover_entries(registry, repo)?
+        .iter()
+        .flat_map(worktree_targets)
+        .collect();
+    Ok(generate_unique_handle_from_seed_with_targets(
+        handle_seed(),
+        handle_space_size(),
+        &targets,
+    ))
 }
 
+#[cfg(test)]
 fn generate_unique_handle_from_seed(registry: &Registry, repo: &Path, seed: u128) -> String {
     generate_unique_handle_from_seed_with_limit(registry, repo, seed, handle_space_size())
 }
 
+#[cfg(test)]
 fn generate_unique_handle_from_seed_with_limit(
     registry: &Registry,
     repo: &Path,
     seed: u128,
     max_attempts: u128,
 ) -> String {
+    let targets = registry
+        .entries
+        .iter()
+        .filter(|entry| same_path(&entry.repo, repo))
+        .flat_map(worktree_targets)
+        .collect();
+    generate_unique_handle_from_seed_with_targets(seed, max_attempts, &targets)
+}
+
+fn generate_unique_handle_from_seed_with_targets(
+    seed: u128,
+    max_attempts: u128,
+    targets: &HashSet<String>,
+) -> String {
     for attempt in 0..max_attempts {
         let handle = generate_handle_from_seed(seed, attempt);
-        if registry.find(repo, &handle).is_none() {
+        if !targets.contains(&handle) {
             return handle;
         }
     }
@@ -1086,12 +1101,20 @@ fn generate_unique_handle_from_seed_with_limit(
     let fallback = generate_handle_from_seed(seed, max_attempts);
     for suffix in 2.. {
         let handle = format!("{fallback}-{suffix}");
-        if registry.find(repo, &handle).is_none() {
+        if !targets.contains(&handle) {
             return handle;
         }
     }
 
     unreachable!("suffix search is unbounded")
+}
+
+fn worktree_targets(entry: &WorktreeEntry) -> Vec<String> {
+    let mut targets = vec![entry.id.clone(), entry.handle.clone()];
+    if let Some(branch) = &entry.branch {
+        targets.push(branch.clone());
+    }
+    targets
 }
 
 const HANDLE_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
@@ -1214,6 +1237,19 @@ mod tests {
     }
 
     #[test]
+    fn worktree_branch_derivation_keeps_only_unnamed_worktrees_detached() {
+        assert_eq!(derive_worktree_branch(None, None), None);
+        assert_eq!(
+            derive_worktree_branch(Some("feature/ui"), None).as_deref(),
+            Some("feature/ui")
+        );
+        assert_eq!(
+            derive_worktree_branch(None, Some("feature/explicit")).as_deref(),
+            Some("feature/explicit")
+        );
+    }
+
+    #[test]
     fn generated_unique_handle_searches_past_old_probe_window() {
         let repo = PathBuf::from("/repo");
         let seed = 0;
@@ -1247,6 +1283,30 @@ mod tests {
         assert_eq!(
             generate_unique_handle_from_seed_with_limit(&registry, &repo, seed, max_attempts),
             format!("{}-2", generate_handle_from_seed(seed, max_attempts))
+        );
+    }
+
+    #[test]
+    fn generated_unique_handle_skips_live_worktree_targets() {
+        let seed = 0;
+        let targets = HashSet::from([generate_handle_from_seed(seed, 0)]);
+
+        assert_eq!(
+            generate_unique_handle_from_seed_with_targets(seed, handle_space_size(), &targets),
+            generate_handle_from_seed(seed, 1)
+        );
+    }
+
+    #[test]
+    fn generated_unique_handle_suffix_skips_live_worktree_targets() {
+        let seed = 0;
+        let max_attempts = 1;
+        let fallback = generate_handle_from_seed(seed, max_attempts);
+        let targets = HashSet::from([generate_handle_from_seed(seed, 0), format!("{fallback}-2")]);
+
+        assert_eq!(
+            generate_unique_handle_from_seed_with_targets(seed, max_attempts, &targets),
+            format!("{fallback}-3")
         );
     }
 
@@ -1560,6 +1620,10 @@ mod tests {
         assert_eq!(entries[0].branch.as_deref(), Some("helloworld"));
         assert_eq!(entries[1].handle, "bd16");
         assert_eq!(entries[1].source, WorktreeSource::Git);
+
+        let entry = find_target_entry(entries, &repo, "helloworld").unwrap();
+        assert_eq!(entry.handle, "managed");
+        assert_eq!(entry.source, WorktreeSource::Managed);
     }
 
     #[test]

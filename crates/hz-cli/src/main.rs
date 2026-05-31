@@ -510,11 +510,7 @@ fn home_relative_path(path: &Path, home: &Path) -> Option<String> {
     }
 
     let relative = path.strip_prefix(home).ok()?;
-    if relative.as_os_str().is_empty() {
-        Some("~".to_owned())
-    } else {
-        Some(format!("~/{}", relative.display()))
-    }
+    Some(format!("~/{}", relative.display()))
 }
 
 fn worktree_status_label(status: hz_command::WorktreeStatus, glyphs: ListGlyphs) -> &'static str {
