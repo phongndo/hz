@@ -9,6 +9,7 @@ use clap::{
     Args, Parser, Subcommand, ValueEnum,
     builder::styling::{AnsiColor, Styles},
 };
+use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
 
 const HELP_TEMPLATE: &str = "\
@@ -306,7 +307,8 @@ fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
                 &worktrees,
                 current_path.as_deref(),
                 terminal,
-                list_glyphs(terminal && !ascii_output_requested())
+                list_glyphs(terminal && !ascii_output_requested()),
+                terminal.then(terminal_width).flatten(),
             )
         );
     }
@@ -325,6 +327,7 @@ fn render_worktree_list_with_style(worktrees: &[hz_command::WorktreeEntry], colo
         &worktree_rows(None, worktrees, None, list_glyphs(color)),
         color,
         list_glyphs(color),
+        None,
     )
 }
 
@@ -334,11 +337,13 @@ fn render_worktree_list_with_context(
     current_path: Option<&Path>,
     color: bool,
     glyphs: ListGlyphs,
+    terminal_width: Option<usize>,
 ) -> String {
     render_worktree_rows(
         &worktree_rows(Some(local), worktrees, current_path, glyphs),
         color,
         glyphs,
+        terminal_width,
     )
 }
 
@@ -402,59 +407,282 @@ fn local_worktree_note_with_glyphs(
     notes.join("; ")
 }
 
-fn render_worktree_rows(rows: &[WorktreeListRow], color: bool, glyphs: ListGlyphs) -> String {
+fn render_worktree_rows(
+    rows: &[WorktreeListRow],
+    color: bool,
+    glyphs: ListGlyphs,
+    terminal_width: Option<usize>,
+) -> String {
     if rows.is_empty() {
         return String::new();
     }
 
-    let name_width = rows
+    let target_values: Vec<_> = rows.iter().map(|row| row.target.as_str()).collect();
+    let modified_values: Vec<_> = rows
+        .iter()
+        .map(|row| format_modified_at(row.modified_at_unix))
+        .collect();
+    let path_values: Vec<_> = rows
+        .iter()
+        .map(|row| row.path.display().to_string())
+        .collect();
+    let note_values: Vec<_> = rows
+        .iter()
+        .map(|row| row.note.as_deref().unwrap_or(""))
+        .collect();
+    let status_values: Vec<_> = rows
+        .iter()
+        .map(|row| worktree_status_label(row.status, glyphs))
+        .collect();
+
+    if let Some(width) = terminal_width
+        && width < 50
+    {
+        return render_compact_worktree_rows(
+            rows,
+            &target_values,
+            &status_values,
+            &modified_values,
+            width,
+            color,
+            glyphs,
+        );
+    }
+
+    let target_width = rows
         .iter()
         .map(|row| display_width(&row.target))
         .chain([6])
         .max()
         .expect("width candidates should not be empty");
-    let modified_values: Vec<_> = rows
-        .iter()
-        .map(|row| format_modified_at(row.modified_at_unix))
-        .collect();
     let modified_width = modified_values
         .iter()
         .map(|modified| display_width(modified))
         .chain([8])
         .max()
         .expect("width candidates should not be empty");
-    let show_note = rows.iter().any(|row| row.note.is_some());
+    let status_width = status_values
+        .iter()
+        .map(|status| display_width(status))
+        .chain([2])
+        .max()
+        .expect("width candidates should not be empty");
+    let show_path = terminal_width.is_none_or(|width| width >= 64);
+    let show_note = rows.iter().any(|row| row.note.is_some())
+        && terminal_width.is_none_or(|width| width >= 110);
+    let column_widths = worktree_column_widths(WorktreeColumnInput {
+        target_width,
+        status_width,
+        modified_width,
+        path_width: max_display_width(&path_values).max(4),
+        note_width: max_display_width(&note_values).max(4),
+        show_path,
+        show_note,
+        terminal_width,
+    });
     let mut output = String::new();
 
-    let target_header = styled_cell("target", name_width, StyleColor::Cyan, color);
-    let status_header = styled_cell("status", 6, StyleColor::Cyan, color);
-    let modified_header = styled_cell("modified", modified_width, StyleColor::Cyan, color);
-    let path_header = styled("path", StyleColor::Cyan, color);
-    let note_header = styled("note", StyleColor::Cyan, color);
+    let marker_header = plain_cell("", column_widths.marker);
+    let target_header = styled_cell("target", column_widths.target, StyleColor::Cyan, color);
+    let status_header = styled_cell("st", column_widths.status, StyleColor::Cyan, color);
+    let modified_header = styled_cell("modified", column_widths.modified, StyleColor::Cyan, color);
+    let path_header = styled_cell("path", column_widths.path, StyleColor::Cyan, color);
+    let note_header = styled_cell("note", column_widths.note, StyleColor::Cyan, color);
     output.push_str(&format!(
-        "  {target_header}  {status_header}  {modified_header}  {path_header}"
+        "{marker_header} {target_header} {status_header} {modified_header}"
     ));
     if show_note {
-        output.push_str(&format!("  {note_header}"));
+        output.push_str(&format!(" {note_header}"));
+    }
+    if show_path {
+        output.push_str(&format!(" {path_header}"));
     }
     output.push('\n');
 
-    for (row, modified) in rows.iter().zip(modified_values.iter()) {
-        let status = worktree_status_label(row.status, glyphs);
-        let path = row.path.display().to_string();
+    for (index, row) in rows.iter().enumerate() {
         let marker = styled(
-            worktree_marker(row, glyphs),
+            &plain_cell(worktree_marker(row, glyphs), column_widths.marker),
             worktree_marker_color(row),
             color,
         );
-        let target = styled_cell(&row.target, name_width, StyleColor::White, color);
-        let status = styled_cell(status, 6, worktree_status_color(row.status), color);
-        let modified = styled_cell(modified, modified_width, StyleColor::White, color);
-        let path = styled(&path, StyleColor::White, color);
-        output.push_str(&format!("{marker} {target}  {status}  {modified}  {path}"));
-        if show_note && let Some(note) = &row.note {
-            output.push_str("  ");
-            output.push_str(&styled(note, StyleColor::White, color));
+        let target = styled_truncated_cell(
+            target_values[index],
+            column_widths.target,
+            StyleColor::Magenta,
+            color,
+            glyphs,
+        );
+        let status = styled_cell(
+            status_values[index],
+            column_widths.status,
+            worktree_status_color(row.status),
+            color,
+        );
+        let modified = styled_cell(
+            &modified_values[index],
+            column_widths.modified,
+            StyleColor::White,
+            color,
+        );
+        output.push_str(&format!("{marker} {target} {status} {modified}"));
+        if show_note {
+            let note = styled_truncated_cell(
+                note_values[index],
+                column_widths.note,
+                StyleColor::White,
+                color,
+                glyphs,
+            );
+            output.push_str(&format!(" {note}"));
+        }
+        if show_path {
+            let path = styled_truncated_cell(
+                &path_values[index],
+                column_widths.path,
+                StyleColor::White,
+                color,
+                glyphs,
+            );
+            output.push_str(&format!(" {path}"));
+        }
+        output.push('\n');
+    }
+
+    output
+}
+
+#[derive(Clone, Copy)]
+struct WorktreeColumnWidths {
+    marker: usize,
+    target: usize,
+    status: usize,
+    modified: usize,
+    note: usize,
+    path: usize,
+}
+
+struct WorktreeColumnInput {
+    target_width: usize,
+    status_width: usize,
+    modified_width: usize,
+    path_width: usize,
+    note_width: usize,
+    show_path: bool,
+    show_note: bool,
+    terminal_width: Option<usize>,
+}
+
+fn worktree_column_widths(input: WorktreeColumnInput) -> WorktreeColumnWidths {
+    let marker_width = 1;
+    let mut widths = WorktreeColumnWidths {
+        marker: marker_width,
+        target: input.target_width,
+        status: input.status_width,
+        modified: input.modified_width,
+        note: if input.show_note { input.note_width } else { 0 },
+        path: if input.show_path { input.path_width } else { 0 },
+    };
+
+    let Some(terminal_width) = input.terminal_width else {
+        return widths;
+    };
+
+    let visible_columns = 3 + usize::from(input.show_note) + usize::from(input.show_path);
+    let fixed_width = marker_width + visible_columns + input.status_width + input.modified_width;
+    let available_width = terminal_width.saturating_sub(fixed_width);
+
+    if input.show_path {
+        let note_width = if input.show_note {
+            input
+                .note_width
+                .min(24)
+                .min(available_width.saturating_sub(18))
+        } else {
+            0
+        };
+        let target_cap = (terminal_width / 3).max(12);
+        let target_width = input.target_width.min(target_cap).max(6);
+        let remaining = available_width.saturating_sub(target_width + note_width);
+        if remaining >= 16 {
+            widths.target = target_width;
+            widths.note = note_width;
+            widths.path = remaining;
+        } else {
+            widths.target = target_width
+                .min(available_width.saturating_sub(note_width + 16))
+                .max(6);
+            widths.note = note_width;
+            widths.path = available_width.saturating_sub(widths.target + note_width);
+        }
+    } else {
+        widths.target = input.target_width.min(available_width).max(6);
+        widths.note = 0;
+        widths.path = 0;
+    }
+
+    widths
+}
+
+fn render_compact_worktree_rows(
+    rows: &[WorktreeListRow],
+    target_values: &[&str],
+    status_values: &[&str],
+    modified_values: &[String],
+    terminal_width: usize,
+    color: bool,
+    glyphs: ListGlyphs,
+) -> String {
+    let marker_width = 1;
+    let status_width = status_values
+        .iter()
+        .map(|status| display_width(status))
+        .chain([2])
+        .max()
+        .expect("width candidates should not be empty");
+    let show_modified = terminal_width >= 36;
+    let modified_width = if show_modified {
+        modified_values
+            .iter()
+            .map(|modified| display_width(modified))
+            .chain([8])
+            .max()
+            .expect("width candidates should not be empty")
+    } else {
+        0
+    };
+    let fixed_width =
+        marker_width + 2 + status_width + usize::from(show_modified) * (modified_width + 1);
+    let target_width = terminal_width.saturating_sub(fixed_width).max(6);
+    let mut output = String::new();
+
+    for (index, row) in rows.iter().enumerate() {
+        let marker = styled(
+            &plain_cell(worktree_marker(row, glyphs), marker_width),
+            worktree_marker_color(row),
+            color,
+        );
+        let target = styled_truncated_cell(
+            target_values[index],
+            target_width,
+            StyleColor::Magenta,
+            color,
+            glyphs,
+        );
+        let status = styled_cell(
+            status_values[index],
+            status_width,
+            worktree_status_color(row.status),
+            color,
+        );
+        output.push_str(&format!("{marker} {target} {status}"));
+        if show_modified {
+            let modified = styled_cell(
+                &modified_values[index],
+                modified_width,
+                StyleColor::White,
+                color,
+            );
+            output.push_str(&format!(" {modified}"));
         }
         output.push('\n');
     }
@@ -468,6 +696,9 @@ struct ListGlyphs {
     local: &'static str,
     handoff_from: &'static str,
     clean: &'static str,
+    dirty: &'static str,
+    unknown: &'static str,
+    ellipsis: &'static str,
 }
 
 fn list_glyphs(unicode: bool) -> ListGlyphs {
@@ -476,20 +707,33 @@ fn list_glyphs(unicode: bool) -> ListGlyphs {
             current: "●",
             local: "⌂",
             handoff_from: "←",
-            clean: "[✓]",
+            clean: "✓",
+            dirty: "!",
+            unknown: "?",
+            ellipsis: "…",
         }
     } else {
         ListGlyphs {
             current: "@",
             local: "~",
             handoff_from: "<-",
-            clean: "[ok]",
+            clean: "ok",
+            dirty: "!",
+            unknown: "?",
+            ellipsis: "...",
         }
     }
 }
 
 fn ascii_output_requested() -> bool {
     env::var_os("HZ_ASCII").is_some()
+}
+
+fn terminal_width() -> Option<usize> {
+    crossterm_terminal::size()
+        .ok()
+        .map(|(columns, _)| usize::from(columns))
+        .filter(|columns| *columns > 0)
 }
 
 fn worktree_marker(row: &WorktreeListRow, glyphs: ListGlyphs) -> &'static str {
@@ -521,8 +765,8 @@ fn same_path(left: &Path, right: &Path) -> bool {
 fn worktree_status_label(status: hz_command::WorktreeStatus, glyphs: ListGlyphs) -> &'static str {
     match status {
         hz_command::WorktreeStatus::Clean => glyphs.clean,
-        hz_command::WorktreeStatus::Dirty => "[!]",
-        hz_command::WorktreeStatus::Unknown => "[?]",
+        hz_command::WorktreeStatus::Dirty => glyphs.dirty,
+        hz_command::WorktreeStatus::Unknown => glyphs.unknown,
     }
 }
 
@@ -725,17 +969,77 @@ fn display_width(value: &str) -> usize {
     value.chars().count()
 }
 
+fn max_display_width<T: AsRef<str>>(values: &[T]) -> usize {
+    values
+        .iter()
+        .map(|value| display_width(value.as_ref()))
+        .max()
+        .unwrap_or(0)
+}
+
 #[derive(Clone, Copy)]
 enum StyleColor {
     Green,
     Cyan,
+    Magenta,
     Red,
     Yellow,
     White,
 }
 
 fn styled_cell(value: &str, width: usize, color: StyleColor, enabled: bool) -> String {
-    styled(&format!("{value:<width$}"), color, enabled)
+    styled(&plain_cell(value, width), color, enabled)
+}
+
+fn styled_truncated_cell(
+    value: &str,
+    width: usize,
+    color: StyleColor,
+    enabled: bool,
+    glyphs: ListGlyphs,
+) -> String {
+    styled_cell(
+        &truncate_middle(value, width, glyphs),
+        width,
+        color,
+        enabled,
+    )
+}
+
+fn plain_cell(value: &str, width: usize) -> String {
+    format!(
+        "{value}{}",
+        " ".repeat(width.saturating_sub(display_width(value)))
+    )
+}
+
+fn truncate_middle(value: &str, width: usize, glyphs: ListGlyphs) -> String {
+    if display_width(value) <= width {
+        return value.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+
+    let ellipsis_width = display_width(glyphs.ellipsis);
+    if width <= ellipsis_width {
+        return glyphs.ellipsis.chars().take(width).collect();
+    }
+
+    let available = width - ellipsis_width;
+    let prefix_width = available / 2;
+    let suffix_width = available - prefix_width;
+    let prefix: String = value.chars().take(prefix_width).collect();
+    let suffix: String = value
+        .chars()
+        .rev()
+        .take(suffix_width)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    format!("{prefix}{}{suffix}", glyphs.ellipsis)
 }
 
 fn styled(value: &str, color: StyleColor, enabled: bool) -> String {
@@ -746,6 +1050,7 @@ fn styled(value: &str, color: StyleColor, enabled: bool) -> String {
     let code = match color {
         StyleColor::Green => "32",
         StyleColor::Cyan => "36",
+        StyleColor::Magenta => "35",
         StyleColor::Red => "31",
         StyleColor::Yellow => "33",
         StyleColor::White => "37",
@@ -995,7 +1300,7 @@ mod tests {
 
         assert_eq!(
             columns,
-            vec!["generated-handle", "[?]", "-", "/worktrees/entry"]
+            vec!["generated-handle", "?", "-", "/worktrees/entry"]
         );
     }
 
@@ -1014,7 +1319,7 @@ mod tests {
             status: hz_command::WorktreeStatus::Unknown,
         }]);
 
-        assert!(output.starts_with("  target  status  modified  path"));
+        assert!(output.starts_with("  target st modified path"));
     }
 
     #[test]
@@ -1082,10 +1387,10 @@ mod tests {
             },
         ]);
 
-        assert!(output.contains("status"));
+        assert!(output.contains("st"));
         assert!(output.contains("modified"));
-        assert!(output.contains("[!]"));
-        assert!(output.contains("[ok]"));
+        assert!(output.contains("!"));
+        assert!(output.contains("ok"));
         assert!(output.contains(&format_modified_at(dirty_at)));
         assert!(output.contains(&format_modified_at(created_at)));
     }
@@ -1109,9 +1414,9 @@ mod tests {
         );
 
         assert!(output.contains("\x1b["));
-        assert!(output.contains("\x1b[37mfeature/ui"));
+        assert!(output.contains("\x1b[35mfeature/ui"));
+        assert!(output.contains("\x1b[37m/worktrees/entry"));
         assert!(!output.contains("\x1b[34m"));
-        assert!(!output.contains("\x1b[35m"));
     }
 
     #[test]
@@ -1141,6 +1446,7 @@ mod tests {
             Some(&PathBuf::from("/worktrees/entry")),
             false,
             list_glyphs(false),
+            None,
         );
 
         let current_row = output
@@ -1164,7 +1470,7 @@ mod tests {
             handoff_from: None,
         };
         let output =
-            render_worktree_list_with_context(&local, &[], None, false, list_glyphs(false));
+            render_worktree_list_with_context(&local, &[], None, false, list_glyphs(false), None);
 
         let local_row = output
             .lines()
@@ -1191,6 +1497,7 @@ mod tests {
             Some(&PathBuf::from("/repo")),
             false,
             list_glyphs(false),
+            None,
         );
 
         assert!(output.contains("note"));
@@ -1214,11 +1521,71 @@ mod tests {
             Some(&PathBuf::from("/repo")),
             true,
             list_glyphs(true),
+            None,
         );
 
         assert!(output.contains("●"));
-        assert!(output.contains("[✓]"));
+        assert!(output.contains("✓"));
         assert!(output.contains("branch feature/ui; ← f7a7"));
+    }
+
+    #[test]
+    fn list_output_truncates_to_terminal_width() {
+        let local = hz_command::LocalWorktreeInfo {
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/repo"),
+            branch: Some("main".to_owned()),
+            status: hz_command::WorktreeStatus::Clean,
+            modified_at_unix: 0,
+            handoff_from: None,
+        };
+        let output = render_worktree_list_with_context(
+            &local,
+            &[hz_command::WorktreeEntry {
+                id: "entry-id".to_owned(),
+                handle: "generated-handle".to_owned(),
+                repo: PathBuf::from("/repo"),
+                path: PathBuf::from(
+                    "/very/long/worktrees/path/that/would/otherwise/wrap/in/a/small/terminal",
+                ),
+                branch: Some(
+                    "feat(worktree)/very-long-branch-name-that-would-push-the-table".to_owned(),
+                ),
+                base: None,
+                source: hz_command::WorktreeSource::Managed,
+                created_at_unix: 0,
+                modified_at_unix: 0,
+                status: hz_command::WorktreeStatus::Clean,
+            }],
+            Some(&PathBuf::from("/worktrees/entry")),
+            false,
+            list_glyphs(true),
+            Some(72),
+        );
+
+        assert!(output.contains("…"));
+        assert!(output.lines().all(|line| display_width(line) <= 72));
+    }
+
+    #[test]
+    fn list_output_uses_compact_rows_for_tiny_terminals() {
+        let output = render_worktree_rows(
+            &[WorktreeListRow {
+                target: "feat(worktree)/very-long-branch-name".to_owned(),
+                status: hz_command::WorktreeStatus::Dirty,
+                modified_at_unix: 0,
+                path: PathBuf::from("/very/long/worktree/path"),
+                note: None,
+                local: false,
+                current: false,
+            }],
+            false,
+            list_glyphs(true),
+            Some(32),
+        );
+
+        assert!(!output.contains("target"));
+        assert!(output.lines().all(|line| display_width(line) <= 32));
     }
 
     #[test]

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+crossterm.workspace = true
 hz-command.workspace = true
 hz-core.workspace = true
 hz-tui.workspace = true
