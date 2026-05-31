@@ -261,16 +261,52 @@ pub fn apply_patch(repo: &Path, patch: &[u8]) -> HzResult<bool> {
         return Ok(false);
     }
 
-    apply_patch_command(repo, patch, true)?;
-    apply_patch_command(repo, patch, false)?;
+    apply_patch_command(repo, patch, true, false)?;
+    apply_patch_command(repo, patch, false, false)?;
     Ok(true)
 }
 
-fn apply_patch_command(repo: &Path, patch: &[u8], check: bool) -> HzResult<()> {
+pub fn apply_patch_reverse(repo: &Path, patch: &[u8]) -> HzResult<bool> {
+    if patch.iter().all(|byte| byte.is_ascii_whitespace()) {
+        return Ok(false);
+    }
+
+    apply_patch_command(repo, patch, true, true)?;
+    apply_patch_command(repo, patch, false, true)?;
+    Ok(true)
+}
+
+pub fn hash_bytes(repo: &Path, bytes: &[u8]) -> HzResult<String> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["hash-object", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| HzError::Usage("failed to open git hash-object stdin".to_owned()))?
+        .write_all(bytes)?;
+    let output = child.wait_with_output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to hash bytes", &output));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn apply_patch_command(repo: &Path, patch: &[u8], check: bool, reverse: bool) -> HzResult<()> {
     let mut command = Command::new("git");
     command.arg("-C").arg(repo).arg("apply");
     if check {
         command.arg("--check");
+    }
+    if reverse {
+        command.arg("--reverse");
     }
     command.arg("--binary");
 
@@ -569,6 +605,58 @@ branch refs/heads/feature
         assert_eq!(
             fs::read_to_string(destination.join("new.txt")).unwrap(),
             "new\n"
+        );
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn reverse_patch_restores_worktree() {
+        let test_dir = env::temp_dir().join(format!(
+            "hz-git-reverse-patch-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+
+        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
+        git(["config", "user.email", "test@example.com"], &repo);
+        git(["config", "user.name", "Test"], &repo);
+        fs::write(repo.join("file.txt"), "base\n").expect("tracked file should be written");
+        git(["add", "file.txt"], &repo);
+        git(["commit", "-q", "-m", "init"], &repo);
+
+        fs::write(repo.join("file.txt"), "base\nchanged\n")
+            .expect("tracked file should be changed");
+        let patch = diff_patch(&repo).expect("patch should be created");
+        assert!(apply_patch_reverse(&repo, &patch).expect("patch should reverse"));
+
+        assert_eq!(fs::read_to_string(repo.join("file.txt")).unwrap(), "base\n");
+        assert!(!worktree_state(&repo).unwrap().dirty);
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn hash_bytes_changes_when_input_changes() {
+        let test_dir = env::temp_dir().join(format!(
+            "hz-git-hash-bytes-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+
+        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
+
+        assert_ne!(
+            hash_bytes(&repo, b"one").unwrap(),
+            hash_bytes(&repo, b"two").unwrap()
         );
 
         fs::remove_dir_all(test_dir).expect("test directory should be removed");

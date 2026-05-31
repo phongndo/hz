@@ -103,6 +103,7 @@ complete -c hz -n "__fish_seen_subcommand_from new remove rm" -s d -l debug
 complete -c hz -n "__fish_seen_subcommand_from remove rm" -s f -l force
 complete -c hz -n "__fish_seen_subcommand_from remove rm" -l yes
 complete -c hz -n "__fish_seen_subcommand_from handoff" -s b -l branch
+complete -c hz -n "__fish_seen_subcommand_from handoff" -s n -l new
 complete -c hz -n "__fish_seen_subcommand_from diff" -s b -l base -r
 complete -c hz -n "__fish_seen_subcommand_from diff" -s s -l stat
 complete -c hz -s h -l help

@@ -75,9 +75,16 @@ nested `hz worktree ...` commands, command flags, shell names for
 `hz handoff` applies the current worktree's uncommitted diff to its linked
 counterpart by default. From a linked worktree it applies the patch to `local`.
 From `local`, pass a worktree handle such as `hz handoff fix-login` to apply the
-local patch there. The destination must be clean, and source changes are left in
+local patch there. After a patch handoff, running `hz handoff` from `local`
+defaults back to the last linked worktree. The destination must be clean unless
+its current diff still matches the last patch handed off between that pair; in
+that case hz safely replaces it with the source diff. Source changes are left in
 place. With shell integration loaded, successful handoffs change into the
 destination worktree unless `--json`, `--path-only`, or help is passed.
+
+Use `hz handoff --new` to create a new detached destination worktree and apply
+the current patch there. Use `hz handoff --new fix-login` to create a
+branch-backed destination worktree named `fix-login`.
 
 Use `hz handoff <worktree> --branch` to move branch ownership instead
 of applying a patch. Branch handoff is clean-only on both sides.

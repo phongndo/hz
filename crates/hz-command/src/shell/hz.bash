@@ -113,7 +113,7 @@ _hz_complete_command_args() {
       ;;
     handoff)
       if [[ "$current" == -* ]]; then
-        _hz_reply "-b --branch -r --repo -j --json -h --help" "$current"
+        _hz_reply "-b --branch -n --new -r --repo -j --json -h --help" "$current"
       else
         _hz_dynamic_reply worktree-targets "$current"
       fi

@@ -161,6 +161,7 @@ _hz_complete_command_args() {
     handoff)
       _arguments \
         '(-b --branch)'{-b,--branch}'[move branch ownership]' \
+        '(-n --new)'{-n,--new}'[create a destination worktree]' \
         '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
         '(-j --json)'{-j,--json}'[print JSON]' \
         '(-h --help)'{-h,--help}'[print help]' \
