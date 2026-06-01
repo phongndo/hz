@@ -96,6 +96,7 @@ _hz_complete_main() {
     'setup:run worktree setup'
     'cleanup:run worktree cleanup'
     'shell:print shell integration'
+    'update:update hz from GitHub releases'
     'diff:render a git diff'
     'tui:open the terminal UI'
     'worktree:worktree commands'
@@ -166,6 +167,18 @@ _hz_complete_option_value() {
           ;;
       esac
       ;;
+    --target-version)
+      if [[ "$cmd" == "update" ]]; then
+        _message 'version'
+        return 0
+      fi
+      ;;
+    --install-dir)
+      if [[ "$cmd" == "update" ]]; then
+        _files -/
+        return 0
+      fi
+      ;;
   esac
 
   return 1
@@ -198,6 +211,9 @@ _hz_complete_command_options() {
       ;;
     install|shell)
       compadd -- -h --help
+      ;;
+    update)
+      compadd -- --target-version --install-dir -h --help
       ;;
     diff)
       compadd -- -r --repo -b --base -s --stat -h --help

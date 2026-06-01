@@ -3,7 +3,7 @@ use std::{
     env, fs,
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode},
+    process::{Command as ProcessCommand, ExitCode, Stdio},
 };
 
 use clap::{
@@ -36,6 +36,8 @@ examples:
   hz cleanup feature/ui
   hz cd feature/ui
   hz handoff feature/ui";
+
+const INSTALL_SCRIPT: &str = include_str!("../../scripts/install.sh");
 
 #[derive(Debug, Parser)]
 #[command(
@@ -87,6 +89,8 @@ enum Command {
     Cleanup(LifecycleArgs),
     #[command(about = "Print shell integration script")]
     Shell(ShellArgs),
+    #[command(about = "Update hz from GitHub releases")]
+    Update(UpdateArgs),
     #[command(about = "Render a Git diff")]
     Diff(DiffArgs),
     #[command(about = "Open the hz terminal UI")]
@@ -204,6 +208,14 @@ struct LifecycleArgs {
     repo: Option<PathBuf>,
 }
 
+#[derive(Debug, Args)]
+struct UpdateArgs {
+    #[arg(long = "target-version", value_name = "VERSION")]
+    version: Option<String>,
+    #[arg(long, value_name = "DIR")]
+    install_dir: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ShellArg {
     Zsh,
@@ -273,6 +285,7 @@ fn run() -> HzResult<()> {
         Some(Command::Setup(args)) => run_lifecycle(args, hz_command::LifecycleKind::Setup),
         Some(Command::Cleanup(args)) => run_lifecycle(args, hz_command::LifecycleKind::Cleanup),
         Some(Command::Shell(args)) => shell_script(args),
+        Some(Command::Update(args)) => update(args),
         Some(Command::Diff(args)) => {
             let output = hz_command::diff(hz_command::DiffOptions {
                 repo: args.repo,
@@ -1581,6 +1594,47 @@ fn shell_script(args: ShellArgs) -> HzResult<()> {
     Ok(())
 }
 
+fn update(args: UpdateArgs) -> HzResult<()> {
+    let install_dir = match args.install_dir {
+        Some(path) => path,
+        None => env::current_exe()?
+            .parent()
+            .ok_or_else(|| {
+                hz_core::HzError::Usage(
+                    "could not determine current executable directory".to_owned(),
+                )
+            })?
+            .to_path_buf(),
+    };
+    let version = args.version.unwrap_or_else(|| "latest".to_owned());
+
+    let mut child = ProcessCommand::new("sh")
+        .arg("-s")
+        .env("HZ_INSTALL_DIR", install_dir)
+        .env("HZ_VERSION", version)
+        .stdin(Stdio::piped())
+        .spawn()?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| hz_core::HzError::Usage("could not open installer stdin".to_owned()))?;
+    stdin.write_all(INSTALL_SCRIPT.as_bytes())?;
+    drop(stdin);
+
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(hz_core::HzError::Usage(format!(
+            "update failed with status {}",
+            status
+                .code()
+                .map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+        )));
+    }
+
+    Ok(())
+}
+
 fn run_lifecycle(args: LifecycleArgs, kind: hz_command::LifecycleKind) -> HzResult<()> {
     let run = hz_command::run_lifecycle(hz_command::RunLifecycle {
         target: args.target,
@@ -2510,6 +2564,23 @@ mod tests {
         match cli.command {
             Some(Command::Cleanup(args)) => assert_eq!(args.target, None),
             command => panic!("expected cleanup command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "hz",
+            "update",
+            "--target-version",
+            "0.1.1",
+            "--install-dir",
+            "/tmp/hz-bin",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Update(args)) => {
+                assert_eq!(args.version.as_deref(), Some("0.1.1"));
+                assert_eq!(args.install_dir, Some(PathBuf::from("/tmp/hz-bin")));
+            }
+            command => panic!("expected update command, got {command:?}"),
         }
     }
 

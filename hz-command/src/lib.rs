@@ -917,6 +917,7 @@ mod tests {
         assert!(script.contains("shift 2 words"));
         assert!(script.contains("'rm:remove one or more worktrees'"));
         assert!(script.contains("'install:install shell integration'"));
+        assert!(script.contains("'update:update hz from GitHub releases'"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
@@ -930,10 +931,11 @@ mod tests {
         assert!(script.contains("or return"));
         assert!(script.contains("command hz __complete removable-worktrees"));
         assert!(script.contains("complete -c hz -n \"__fish_seen_subcommand_from rm remove\""));
-        assert!(script.contains("init install setup cleanup shell"));
+        assert!(script.contains("init install setup cleanup shell update"));
         assert!(script.contains("-l no-setup"));
         assert!(script.contains("-l no-cleanup"));
         assert!(script.contains("-l max-detached"));
+        assert!(script.contains("-l target-version"));
     }
 
     #[test]
@@ -943,10 +945,11 @@ mod tests {
         assert!(script.contains("complete -F _hz_completion hz"));
         assert!(script.contains("_hz_dynamic_reply worktree-targets"));
         assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
-        assert!(script.contains("init install setup cleanup shell"));
+        assert!(script.contains("init install setup cleanup shell update"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
+        assert!(script.contains("--target-version"));
     }
 
     #[test]

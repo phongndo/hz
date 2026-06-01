@@ -87,7 +87,7 @@ complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell diff tui worktree wt" -a "new path cd list ls remove rm handoff init install setup cleanup shell diff tui worktree wt"
+complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell update diff tui worktree wt" -a "new path cd list ls remove rm handoff init install setup cleanup shell update diff tui worktree wt"
 complete -c hz -n "__hz_needs_worktree_subcommand" -a "new path cd list ls remove rm handoff"
 
 complete -c hz -n "__fish_seen_subcommand_from cd path handoff setup cleanup" -a "(__hz_complete_worktree_targets)"
@@ -109,6 +109,8 @@ complete -c hz -n "__fish_seen_subcommand_from handoff" -s b -l branch
 complete -c hz -n "__fish_seen_subcommand_from handoff" -s n -l new
 complete -c hz -n "__fish_seen_subcommand_from diff" -s b -l base -r
 complete -c hz -n "__fish_seen_subcommand_from diff" -s s -l stat
+complete -c hz -n "__fish_seen_subcommand_from update" -l target-version -r
+complete -c hz -n "__fish_seen_subcommand_from update" -l install-dir -r -F
 complete -c hz -s h -l help
 complete -c hz -s V -l version
 
