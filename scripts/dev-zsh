@@ -37,8 +37,8 @@ if [[ "$enter_shell" == true ]]; then
   zdotdir="$(mktemp -d)"
   trap 'rm -rf "$zdotdir"' EXIT
   cat > "$zdotdir/.zshrc" <<EOF
-source "$HOME/.zshrc"
 export PATH="$repo_dir/target/debug:\$PATH"
+source "$HOME/.zshrc"
 print 'hz dev shell ready; exit to return'
 EOF
   ZDOTDIR="$zdotdir" zsh -i

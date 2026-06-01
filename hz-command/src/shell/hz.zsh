@@ -88,8 +88,8 @@ _hz_complete_main() {
     'cd:change to a worktree'
     'list:list worktrees'
     'ls:list worktrees'
-    'remove:remove a worktree'
-    'rm:remove a worktree'
+    'remove:remove one or more worktrees'
+    'rm:remove one or more worktrees'
     'handoff:apply changes between linked worktrees'
     'init:initialize hz repo config'
     'install:install shell integration'
@@ -113,8 +113,8 @@ _hz_complete_worktree_subcommand() {
     'cd:change to a worktree'
     'list:list worktrees'
     'ls:list worktrees'
-    'remove:remove a worktree'
-    'rm:remove a worktree'
+    'remove:remove one or more worktrees'
+    'rm:remove one or more worktrees'
     'handoff:apply changes between linked worktrees'
   )
 
@@ -125,83 +125,125 @@ _hz_complete_shells() {
   compadd zsh bash fish
 }
 
-_hz_complete_command_args() {
+_hz_complete_option_value() {
+  local cmd="$1"
+  local previous="${words[$(( CURRENT - 1 ))]}"
+
+  case "$previous" in
+    -r|--repo)
+      case "$cmd" in
+        new|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init|diff)
+          _files -/
+          return 0
+          ;;
+      esac
+      ;;
+    -p|--path)
+      if [[ "$cmd" == "new" ]]; then
+        _files -/
+        return 0
+      fi
+      ;;
+    -B|--base)
+      if [[ "$cmd" == "new" ]]; then
+        _message 'branch'
+        return 0
+      fi
+      ;;
+    -b|--branch)
+      case "$cmd" in
+        new|diff)
+          _message 'branch'
+          return 0
+          ;;
+      esac
+      ;;
+    --max-detached)
+      case "$cmd" in
+        new|handoff)
+          _message 'count'
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+
+  return 1
+}
+
+_hz_complete_command_options() {
   local cmd="$1"
 
   case "$cmd" in
     new)
-      _arguments \
-        '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
-        '(-p --path)'{-p,--path}'[worktree path]:path:_files -/' \
-        '(-B --base)'{-B,--base}'[base branch]:branch' \
-        '(-b --branch)'{-b,--branch}'[worktree branch]:branch' \
-        '--max-detached[maximum detached worktrees to keep; 0 disables pruning]:count' \
-        '(-j --json)'{-j,--json}'[print JSON]' \
-        '(-d --debug)'{-d,--debug}'[print debug output]' \
-        '--no-setup[skip configured setup]' \
-        '(-h --help)'{-h,--help}'[print help]'
+      compadd -- -r --repo -p --path -B --base -b --branch --max-detached -j --json -d --debug --no-setup -h --help
       ;;
     path|cd)
-      _arguments \
-        '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
-        '(-j --json)'{-j,--json}'[print JSON]' \
-        '(-h --help)'{-h,--help}'[print help]' \
-        '1:worktree target:_hz_worktree_targets'
+      compadd -- -r --repo -j --json -h --help
       ;;
     list|ls)
+      compadd -- -r --repo -j --json -h --help
+      ;;
+    remove|rm)
+      compadd -- -r --repo -j --json -f --force --yes -d --debug --no-cleanup -h --help
+      ;;
+    handoff)
+      compadd -- -b --branch -n --new --max-detached -r --repo -j --json -h --help
+      ;;
+    setup|cleanup)
+      compadd -- -r --repo -h --help
+      ;;
+    init)
+      compadd -- -r --repo -h --help
+      ;;
+    install|shell)
+      compadd -- -h --help
+      ;;
+    diff)
+      compadd -- -r --repo -b --base -s --stat -h --help
+      ;;
+    tui)
+      compadd -- -h --help
+      ;;
+  esac
+}
+
+_hz_complete_command_positionals() {
+  local cmd="$1"
+
+  case "$cmd" in
+    path|cd)
       _arguments \
-        '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
-        '(-j --json)'{-j,--json}'[print JSON]' \
-        '(-h --help)'{-h,--help}'[print help]'
+        '1:worktree target:_hz_worktree_targets'
       ;;
     remove|rm)
       _arguments \
-        '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
-        '(-j --json)'{-j,--json}'[print JSON]' \
-        '(-f --force --yes)'{-f,--force,--yes}'[skip confirmation]' \
-        '(-d --debug)'{-d,--debug}'[print debug output]' \
-        '--no-cleanup[skip configured cleanup]' \
-        '(-h --help)'{-h,--help}'[print help]' \
-        '1:worktree target:_hz_removable_worktrees'
+        '*:worktree targets:_hz_removable_worktrees'
       ;;
-    handoff)
+    handoff|setup|cleanup)
       _arguments \
-        '(-b --branch)'{-b,--branch}'[move branch ownership]' \
-        '(-n --new)'{-n,--new}'[create a destination worktree]' \
-        '--max-detached[maximum detached worktrees to keep; 0 disables pruning]:count' \
-        '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
-        '(-j --json)'{-j,--json}'[print JSON]' \
-        '(-h --help)'{-h,--help}'[print help]' \
         '1:worktree target:_hz_worktree_targets'
       ;;
-    setup|cleanup)
+    init|install|shell)
       _arguments \
-        '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
-        '(-h --help)'{-h,--help}'[print help]' \
-        '1:worktree target:_hz_worktree_targets'
-      ;;
-    init)
-      _arguments \
-        '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
-        '(-h --help)'{-h,--help}'[print help]' \
         '1:shell:_hz_complete_shells'
-      ;;
-    install|shell)
-      _arguments \
-        '(-h --help)'{-h,--help}'[print help]' \
-        '1:shell:_hz_complete_shells'
-      ;;
-    diff)
-      _arguments \
-        '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
-        '(-b --base)'{-b,--base}'[base branch]:branch' \
-        '(-s --stat)'{-s,--stat}'[print diff stat]' \
-        '(-h --help)'{-h,--help}'[print help]'
-      ;;
-    tui)
-      _arguments '(-h --help)'{-h,--help}'[print help]'
       ;;
   esac
+}
+
+_hz_complete_command_args() {
+  local cmd="$1"
+
+  if _hz_complete_option_value "$cmd"; then
+    return
+  fi
+
+  if [[ "$PREFIX" == -* ]]; then
+    _hz_complete_command_options "$cmd"
+    return
+  fi
+
+  _hz_complete_command_positionals "$cmd"
 }
 
 _hz_completion() {
@@ -233,18 +275,29 @@ _hz_completion() {
 }
 
 _hzcd_completion() {
-  _arguments \
-    '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
-    '(-j --json)'{-j,--json}'[print JSON]' \
-    '(-h --help)'{-h,--help}'[print help]' \
-    '1:worktree target:_hz_worktree_targets'
+  if _hz_complete_option_value cd; then
+    return
+  fi
+
+  if [[ "$PREFIX" == -* ]]; then
+    _hz_complete_command_options cd
+    return
+  fi
+
+  _hz_complete_command_positionals cd
 }
 
 _hzlocal_completion() {
-  _arguments \
-    '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
-    '(-j --json)'{-j,--json}'[print JSON]' \
-    '(-h --help)'{-h,--help}'[print help]'
+  if _hz_complete_option_value cd; then
+    return
+  fi
+
+  if [[ "$PREFIX" == -* ]]; then
+    _hz_complete_command_options cd
+    return
+  fi
+
+  _hz_complete_command_positionals cd
 }
 
 _hz_register_completion() {
