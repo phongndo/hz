@@ -304,11 +304,14 @@ fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
         println!("{}", serde_json::to_string_pretty(&created)?);
     } else if args.path_only {
         println!("{}", created.path.display());
+        print_created_warnings(&created, io::stderr().is_terminal());
     } else if debug {
         print!(
             "{}",
             render_created_worktree(&created, io::stdout().is_terminal())
         );
+    } else {
+        print_created_warnings(&created, io::stderr().is_terminal());
     }
 
     Ok(())
@@ -1046,8 +1049,20 @@ fn render_created_worktree(created: &hz_command::CreatedWorktree, color: bool) -
     if let Some(base) = &created.base {
         output.push_str(&render_field("base", base, StyleColor::White, color));
     }
+    for warning in &created.warnings {
+        output.push_str(&render_field("warning", warning, StyleColor::Yellow, color));
+    }
 
     output
+}
+
+fn print_created_warnings(created: &hz_command::CreatedWorktree, color: bool) {
+    for warning in &created.warnings {
+        eprintln!(
+            "{} {warning}",
+            styled("warning:", StyleColor::Yellow, color)
+        );
+    }
 }
 
 fn render_removed_worktree(worktree: &hz_command::WorktreeEntry, color: bool) -> String {
@@ -2054,6 +2069,7 @@ mod tests {
                 branch: Some("feature/ui".to_owned()),
                 base: Some("main".to_owned()),
                 source: hz_command::WorktreeSource::Managed,
+                warnings: Vec::new(),
             },
             false,
         );
@@ -2076,6 +2092,7 @@ mod tests {
                 branch: None,
                 base: None,
                 source: hz_command::WorktreeSource::Managed,
+                warnings: Vec::new(),
             },
             false,
         );
@@ -2083,6 +2100,31 @@ mod tests {
         assert!(output.starts_with("+ created  generated-handle"));
         assert!(output.contains("branch  detached"));
         assert!(output.contains("path    /worktrees/entry"));
+    }
+
+    #[test]
+    fn created_output_renders_prune_warnings() {
+        let output = render_created_worktree(
+            &hz_command::CreatedWorktree {
+                id: "entry-id".to_owned(),
+                name: "generated-handle".to_owned(),
+                handle: "generated-handle".to_owned(),
+                repo: PathBuf::from("/repo"),
+                path: PathBuf::from("/worktrees/entry"),
+                branch: None,
+                base: None,
+                source: hz_command::WorktreeSource::Managed,
+                warnings: vec![
+                    "created worktree, but failed to prune detached worktrees: permission denied"
+                        .to_owned(),
+                ],
+            },
+            false,
+        );
+
+        assert!(output.contains(
+            "warning  created worktree, but failed to prune detached worktrees: permission denied"
+        ));
     }
 
     #[test]

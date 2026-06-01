@@ -867,6 +867,7 @@ mod tests {
             branch: Some("feature/login".to_owned()),
             base: None,
             source: WorktreeSource::Managed,
+            warnings: Vec::new(),
         };
         let found = WorktreeEntry {
             id: "id".to_owned(),

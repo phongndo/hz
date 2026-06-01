@@ -76,6 +76,8 @@ pub struct CreatedWorktree {
     pub branch: Option<String>,
     pub base: Option<String>,
     pub source: WorktreeSource,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -217,7 +219,10 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     };
     registry.entries.push(entry);
     registry.save()?;
-    prune_detached_worktrees(&mut registry, prune_candidates)?;
+    let warnings = match prune_detached_worktrees(&mut registry, prune_candidates) {
+        Ok(()) => Vec::new(),
+        Err(error) => vec![detached_prune_warning(error)],
+    };
 
     Ok(CreatedWorktree {
         id,
@@ -228,6 +233,7 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
         branch,
         base: input.base,
         source: WorktreeSource::Managed,
+        warnings,
     })
 }
 
@@ -1108,6 +1114,10 @@ fn prune_detached_worktrees(
     Ok(())
 }
 
+fn detached_prune_warning(error: HzError) -> String {
+    format!("created worktree, but failed to prune detached worktrees: {error}")
+}
+
 fn clean_worktree(path: &Path) -> bool {
     hz_git::worktree_state(path).is_ok_and(|state| !state.dirty)
 }
@@ -1734,6 +1744,16 @@ mod tests {
         .unwrap();
 
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn detached_prune_warning_preserves_created_worktree_context() {
+        let warning = detached_prune_warning(HzError::Usage("permission denied".to_owned()));
+
+        assert_eq!(
+            warning,
+            "created worktree, but failed to prune detached worktrees: permission denied"
+        );
     }
 
     #[test]
