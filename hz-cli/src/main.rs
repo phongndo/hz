@@ -1361,10 +1361,13 @@ fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
         }
     }
 
+    let mut removal_errors = Vec::new();
     for candidate in removable {
-        removed.push(hz_command::remove_found_worktree_with_force(
-            candidate, force,
-        )?);
+        let target = worktree_branch_or_handle(&candidate).to_owned();
+        match hz_command::remove_found_worktree_with_force(candidate, force) {
+            Ok(entry) => removed.push(entry),
+            Err(error) => removal_errors.push(format!("{target}: {error}")),
+        }
     }
 
     if args.json {
@@ -1379,6 +1382,13 @@ fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
                 render_removed_worktree(entry, io::stdout().is_terminal())
             );
         }
+    }
+
+    if !removal_errors.is_empty() {
+        return Err(hz_core::HzError::Usage(format!(
+            "failed to remove one or more worktrees: {}",
+            removal_errors.join("; ")
+        )));
     }
 
     Ok(())
