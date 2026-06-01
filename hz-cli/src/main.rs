@@ -304,14 +304,14 @@ fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
         println!("{}", serde_json::to_string_pretty(&created)?);
     } else if args.path_only {
         println!("{}", created.path.display());
-        print_created_warnings(&created, io::stderr().is_terminal());
+        print_warnings(&created.warnings, io::stderr().is_terminal());
     } else if debug {
         print!(
             "{}",
             render_created_worktree(&created, io::stdout().is_terminal())
         );
     } else {
-        print_created_warnings(&created, io::stderr().is_terminal());
+        print_warnings(&created.warnings, io::stderr().is_terminal());
     }
 
     Ok(())
@@ -1056,8 +1056,8 @@ fn render_created_worktree(created: &hz_command::CreatedWorktree, color: bool) -
     output
 }
 
-fn print_created_warnings(created: &hz_command::CreatedWorktree, color: bool) {
-    for warning in &created.warnings {
+fn print_warnings(warnings: &[String], color: bool) {
+    for warning in warnings {
         eprintln!(
             "{} {warning}",
             styled("warning:", StyleColor::Yellow, color)
@@ -1119,6 +1119,9 @@ fn render_handoff(handoff: &hz_command::WorktreeHandoff, color: bool) -> String 
         name_width,
         color,
     ));
+    for warning in &handoff.warnings {
+        output.push_str(&render_field("warning", warning, StyleColor::Yellow, color));
+    }
 
     output
 }
@@ -1465,6 +1468,7 @@ fn handoff_worktree(args: HandoffWorktreeArgs) -> HzResult<()> {
         println!("{}", serde_json::to_string_pretty(&handoff)?);
     } else if args.path_only {
         println!("{}", handoff.to.path.display());
+        print_warnings(&handoff.warnings, io::stderr().is_terminal());
     } else {
         print!("{}", render_handoff(&handoff, io::stdout().is_terminal()));
     }
@@ -2165,6 +2169,7 @@ mod tests {
                     path: PathBuf::from("/worktrees/entry"),
                 },
                 changed: true,
+                warnings: Vec::new(),
             },
             false,
         );
@@ -2174,6 +2179,35 @@ mod tests {
         assert!(output.contains("branch  feature/ui"));
         assert!(output.contains("< from  local"));
         assert!(output.contains("> to    feature/ui"));
+    }
+
+    #[test]
+    fn handoff_output_renders_prune_warnings() {
+        let output = render_handoff(
+            &hz_command::WorktreeHandoff {
+                repo: PathBuf::from("/repo"),
+                mode: hz_command::HandoffMode::Patch,
+                branch: Some("feature/ui".to_owned()),
+                from: hz_core::paths::WorktreeTarget {
+                    name: "local".to_owned(),
+                    path: PathBuf::from("/repo"),
+                },
+                to: hz_core::paths::WorktreeTarget {
+                    name: "generated-handle".to_owned(),
+                    path: PathBuf::from("/worktrees/entry"),
+                },
+                changed: true,
+                warnings: vec![
+                    "created worktree, but failed to prune detached worktrees: permission denied"
+                        .to_owned(),
+                ],
+            },
+            false,
+        );
+
+        assert!(output.contains(
+            "warning  created worktree, but failed to prune detached worktrees: permission denied"
+        ));
     }
 
     #[test]

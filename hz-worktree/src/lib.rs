@@ -88,6 +88,8 @@ pub struct WorktreeHandoff {
     pub from: WorktreeTarget,
     pub to: WorktreeTarget,
     pub changed: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -359,6 +361,7 @@ fn handoff_patch_to_local(
         from,
         to,
         changed: applied.changed,
+        warnings: Vec::new(),
     })
 }
 
@@ -371,10 +374,10 @@ fn handoff_patch_from_local(
     max_detached_worktrees: Option<usize>,
 ) -> HzResult<WorktreeHandoff> {
     let branch = hz_git::current_branch(&current)?;
-    let destination = if create {
+    let (destination, warnings) = if create {
         create_handoff_destination(registry, &repo, target, max_detached_worktrees)?
     } else {
-        match target {
+        let destination = match target {
             Some(target) => find_target_worktree(registry, &repo, &target)?
                 .ok_or_else(|| HzError::Usage(format!("unknown worktree target: {target}")))?,
             None => match find_patch_handoff_destination(registry, &repo, &current)? {
@@ -389,7 +392,8 @@ fn handoff_patch_from_local(
                     find_handoff_destination(registry, &repo, &branch)?
                 }
             },
-        }
+        };
+        (destination, Vec::new())
     };
     let from = WorktreeTarget {
         name: "local".to_owned(),
@@ -427,6 +431,7 @@ fn handoff_patch_from_local(
         from,
         to,
         changed: applied.changed,
+        warnings,
     })
 }
 
@@ -435,7 +440,7 @@ fn create_handoff_destination(
     repo: &Path,
     target: Option<String>,
     max_detached_worktrees: Option<usize>,
-) -> HzResult<WorktreeEntry> {
+) -> HzResult<(WorktreeEntry, Vec<String>)> {
     let created = create(CreateWorktree {
         name: target,
         repo: Some(repo.to_path_buf()),
@@ -446,18 +451,29 @@ fn create_handoff_destination(
     })?;
     *registry = Registry::load()?;
 
-    Ok(WorktreeEntry {
-        id: created.id,
-        handle: created.handle,
-        repo: created.repo,
-        path: created.path,
-        branch: created.branch,
-        base: created.base,
-        source: created.source,
-        created_at_unix: unix_now()?,
-        modified_at_unix: 0,
-        status: WorktreeStatus::Unknown,
-    })
+    Ok(created_worktree_entry(created, unix_now()?))
+}
+
+fn created_worktree_entry(
+    created: CreatedWorktree,
+    created_at_unix: u64,
+) -> (WorktreeEntry, Vec<String>) {
+    let warnings = created.warnings;
+    (
+        WorktreeEntry {
+            id: created.id,
+            handle: created.handle,
+            repo: created.repo,
+            path: created.path,
+            branch: created.branch,
+            base: created.base,
+            source: created.source,
+            created_at_unix,
+            modified_at_unix: 0,
+            status: WorktreeStatus::Unknown,
+        },
+        warnings,
+    )
 }
 
 struct AppliedPatchHandoff {
@@ -643,6 +659,7 @@ fn handoff_worktree_to_local(
         from,
         to,
         changed: true,
+        warnings: Vec::new(),
     })
 }
 
@@ -706,6 +723,7 @@ fn handoff_local_to_worktree(
         from,
         to,
         changed: true,
+        warnings: Vec::new(),
     })
 }
 
@@ -1753,6 +1771,34 @@ mod tests {
         assert_eq!(
             warning,
             "created worktree, but failed to prune detached worktrees: permission denied"
+        );
+    }
+
+    #[test]
+    fn created_handoff_destination_preserves_prune_warnings() {
+        let (entry, warnings) = created_worktree_entry(
+            CreatedWorktree {
+                id: "entry-id".to_owned(),
+                name: "generated-handle".to_owned(),
+                handle: "generated-handle".to_owned(),
+                repo: PathBuf::from("/repo/hz"),
+                path: PathBuf::from("/worktrees/entry"),
+                branch: None,
+                base: None,
+                source: WorktreeSource::Managed,
+                warnings: vec![
+                    "created worktree, but failed to prune detached worktrees: permission denied"
+                        .to_owned(),
+                ],
+            },
+            42,
+        );
+
+        assert_eq!(entry.handle, "generated-handle");
+        assert_eq!(entry.created_at_unix, 42);
+        assert_eq!(
+            warnings,
+            vec!["created worktree, but failed to prune detached worktrees: permission denied"]
         );
     }
 
