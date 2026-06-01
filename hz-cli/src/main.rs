@@ -338,21 +338,26 @@ fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&worktrees)?);
     } else {
+        let config = hz_command::load_repo_config(hz_command::LoadRepoConfig {
+            repo: args.repo.clone(),
+        })?;
         let local = hz_command::local_worktree(hz_command::LocalWorktree {
             repo: args.repo.clone(),
         })?;
         let current_path =
             hz_command::current_worktree_path(hz_command::ListWorktrees { repo: None }).ok();
         let terminal = io::stdout().is_terminal();
+        let color = color_output_enabled(config.color.as_ref(), terminal);
         print!(
             "{}",
-            render_worktree_list_with_context(
+            render_worktree_list_with_options(
                 &local,
                 &worktrees,
                 current_path.as_deref(),
-                terminal,
+                color,
                 list_glyphs(terminal && !ascii_output_requested()),
                 terminal.then(terminal_width).flatten(),
+                list_options(config.list.as_ref(), config.color.as_ref()),
             )
         );
     }
@@ -375,6 +380,7 @@ fn render_worktree_list_with_style(worktrees: &[hz_command::WorktreeEntry], colo
     )
 }
 
+#[cfg(test)]
 fn render_worktree_list_with_context(
     local: &hz_command::LocalWorktreeInfo,
     worktrees: &[hz_command::WorktreeEntry],
@@ -383,17 +389,212 @@ fn render_worktree_list_with_context(
     glyphs: ListGlyphs,
     terminal_width: Option<usize>,
 ) -> String {
-    render_worktree_rows(
+    render_worktree_list_with_options(
+        local,
+        worktrees,
+        current_path,
+        color,
+        glyphs,
+        terminal_width,
+        WorktreeListOptions::default(),
+    )
+}
+
+fn render_worktree_list_with_options(
+    local: &hz_command::LocalWorktreeInfo,
+    worktrees: &[hz_command::WorktreeEntry],
+    current_path: Option<&Path>,
+    color: bool,
+    glyphs: ListGlyphs,
+    terminal_width: Option<usize>,
+    options: WorktreeListOptions,
+) -> String {
+    render_worktree_rows_with_options(
         &worktree_rows(Some(local), worktrees, current_path),
         color,
         glyphs,
         terminal_width,
+        options,
     )
+}
+
+#[derive(Debug, Clone)]
+struct WorktreeListOptions {
+    headers: hz_command::ListHeaders,
+    columns: Vec<hz_command::ListColumn>,
+    compact_columns: Vec<hz_command::ListColumn>,
+    colors: ListColors,
+}
+
+impl Default for WorktreeListOptions {
+    fn default() -> Self {
+        Self {
+            headers: hz_command::ListHeaders::Auto,
+            columns: default_list_columns(),
+            compact_columns: vec![
+                hz_command::ListColumn::Marker,
+                hz_command::ListColumn::Target,
+                hz_command::ListColumn::Status,
+            ],
+            colors: ListColors::default(),
+        }
+    }
+}
+
+fn list_options(
+    config: Option<&hz_command::ListConfig>,
+    color_config: Option<&hz_command::ColorConfig>,
+) -> WorktreeListOptions {
+    let mut options = WorktreeListOptions::default();
+    if let Some(config) = config {
+        if let Some(headers) = config.headers {
+            options.headers = headers;
+        }
+        if let Some(columns) = non_empty_columns(config.columns.as_deref()) {
+            options.columns = columns.to_vec();
+        }
+        if let Some(columns) = non_empty_columns(config.compact_columns.as_deref()) {
+            options.compact_columns = columns.to_vec();
+        }
+    }
+    options.colors = list_colors(color_config);
+    options
+}
+
+fn non_empty_columns(
+    columns: Option<&[hz_command::ListColumn]>,
+) -> Option<&[hz_command::ListColumn]> {
+    columns.filter(|columns| !columns.is_empty())
+}
+
+fn default_list_columns() -> Vec<hz_command::ListColumn> {
+    vec![
+        hz_command::ListColumn::Marker,
+        hz_command::ListColumn::Target,
+        hz_command::ListColumn::Status,
+        hz_command::ListColumn::Modified,
+        hz_command::ListColumn::Path,
+    ]
+}
+
+fn color_output_enabled(config: Option<&hz_command::ColorConfig>, terminal: bool) -> bool {
+    match config.and_then(|config| config.mode) {
+        Some(hz_command::ColorMode::Always) => true,
+        Some(hz_command::ColorMode::Never) => false,
+        Some(hz_command::ColorMode::Auto) | None => terminal,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ListColors {
+    header: StyleColor,
+    target: StyleColor,
+    branch: StyleColor,
+    handle: StyleColor,
+    base: StyleColor,
+    modified: StyleColor,
+    path: StyleColor,
+    clean: StyleColor,
+    dirty: StyleColor,
+    unknown: StyleColor,
+    current: StyleColor,
+    local: StyleColor,
+}
+
+impl Default for ListColors {
+    fn default() -> Self {
+        Self {
+            header: StyleColor::Cyan,
+            target: StyleColor::Magenta,
+            branch: StyleColor::Magenta,
+            handle: StyleColor::Magenta,
+            base: StyleColor::White,
+            modified: StyleColor::White,
+            path: StyleColor::White,
+            clean: StyleColor::Green,
+            dirty: StyleColor::Yellow,
+            unknown: StyleColor::Red,
+            current: StyleColor::Green,
+            local: StyleColor::Cyan,
+        }
+    }
+}
+
+fn list_colors(config: Option<&hz_command::ColorConfig>) -> ListColors {
+    let mut colors = ListColors::default();
+    let Some(config) = config else {
+        return colors;
+    };
+    let Some(scheme_name) = config.scheme.as_deref() else {
+        return colors;
+    };
+    if scheme_name == "terminal" {
+        return colors;
+    }
+    let Some(scheme) = config.schemes.get(scheme_name) else {
+        return colors;
+    };
+
+    if let Some(color) = parse_style_color(scheme.header.as_deref()) {
+        colors.header = color;
+    }
+    if let Some(color) = parse_style_color(scheme.target.as_deref()) {
+        colors.target = color;
+    }
+    if let Some(color) = parse_style_color(scheme.branch.as_deref()) {
+        colors.branch = color;
+    }
+    if let Some(color) = parse_style_color(scheme.handle.as_deref()) {
+        colors.handle = color;
+    }
+    if let Some(color) = parse_style_color(scheme.base.as_deref()) {
+        colors.base = color;
+    }
+    if let Some(color) = parse_style_color(scheme.modified.as_deref()) {
+        colors.modified = color;
+    }
+    if let Some(color) = parse_style_color(scheme.path.as_deref()) {
+        colors.path = color;
+    }
+    if let Some(color) = parse_style_color(scheme.clean.as_deref()) {
+        colors.clean = color;
+    }
+    if let Some(color) = parse_style_color(scheme.dirty.as_deref()) {
+        colors.dirty = color;
+    }
+    if let Some(color) = parse_style_color(scheme.unknown.as_deref()) {
+        colors.unknown = color;
+    }
+    if let Some(color) = parse_style_color(scheme.current.as_deref()) {
+        colors.current = color;
+    }
+    if let Some(color) = parse_style_color(scheme.local.as_deref()) {
+        colors.local = color;
+    }
+
+    colors
+}
+
+fn parse_style_color(value: Option<&str>) -> Option<StyleColor> {
+    match value? {
+        "black" => Some(StyleColor::Black),
+        "red" => Some(StyleColor::Red),
+        "green" => Some(StyleColor::Green),
+        "yellow" => Some(StyleColor::Yellow),
+        "blue" => Some(StyleColor::Blue),
+        "magenta" => Some(StyleColor::Magenta),
+        "cyan" => Some(StyleColor::Cyan),
+        "white" => Some(StyleColor::White),
+        _ => None,
+    }
 }
 
 #[derive(Debug)]
 struct WorktreeListRow {
     target: String,
+    branch: Option<String>,
+    handle: Option<String>,
+    base: Option<String>,
     status: hz_command::WorktreeStatus,
     modified_at_unix: u64,
     path: PathBuf,
@@ -411,6 +612,9 @@ fn worktree_rows(
     if let Some(local) = local {
         rows.push(WorktreeListRow {
             target: "local".to_owned(),
+            branch: local.branch.clone(),
+            handle: None,
+            base: None,
             status: local.status,
             modified_at_unix: local.modified_at_unix,
             path: local.path.clone(),
@@ -421,6 +625,9 @@ fn worktree_rows(
 
     rows.extend(worktrees.iter().map(|worktree| WorktreeListRow {
         target: worktree_branch_or_handle(worktree).to_owned(),
+        branch: worktree.branch.clone(),
+        handle: Some(worktree.handle.clone()),
+        base: worktree.base.clone(),
         status: worktree.status,
         modified_at_unix: worktree_display_timestamp(worktree),
         path: worktree.path.clone(),
@@ -431,118 +638,108 @@ fn worktree_rows(
     rows
 }
 
+#[cfg(test)]
 fn render_worktree_rows(
     rows: &[WorktreeListRow],
     color: bool,
     glyphs: ListGlyphs,
     terminal_width: Option<usize>,
 ) -> String {
+    render_worktree_rows_with_options(
+        rows,
+        color,
+        glyphs,
+        terminal_width,
+        WorktreeListOptions::default(),
+    )
+}
+
+fn render_worktree_rows_with_options(
+    rows: &[WorktreeListRow],
+    color: bool,
+    glyphs: ListGlyphs,
+    terminal_width: Option<usize>,
+    options: WorktreeListOptions,
+) -> String {
     if rows.is_empty() {
         return String::new();
     }
 
-    let target_values: Vec<_> = rows.iter().map(|row| row.target.as_str()).collect();
-    let modified_values: Vec<_> = rows
+    let compact = terminal_width.is_some_and(|width| width < 50);
+    let columns = if compact {
+        &options.compact_columns
+    } else {
+        &options.columns
+    };
+    let columns = if columns.is_empty() {
+        default_list_columns()
+    } else {
+        columns.clone()
+    };
+    let show_headers = match options.headers {
+        hz_command::ListHeaders::Always => true,
+        hz_command::ListHeaders::Never => false,
+        hz_command::ListHeaders::Auto => !compact,
+    };
+    let values: Vec<Vec<String>> = columns
         .iter()
-        .map(|row| format_modified_at(row.modified_at_unix))
+        .map(|column| {
+            rows.iter()
+                .map(|row| list_cell_value(row, *column, glyphs))
+                .collect()
+        })
         .collect();
-    let path_values: Vec<_> = rows.iter().map(|row| display_path(&row.path)).collect();
-    let status_values: Vec<_> = rows
+    let mut widths: Vec<usize> = columns
         .iter()
-        .map(|row| worktree_status_label(row.status, glyphs))
+        .enumerate()
+        .map(|(index, column)| {
+            let header_width = if show_headers {
+                display_width(list_column_header(*column))
+            } else {
+                0
+            };
+            values[index]
+                .iter()
+                .map(|value| display_width(value))
+                .chain([header_width, list_column_min_width(*column)])
+                .max()
+                .expect("width candidates should not be empty")
+        })
         .collect();
 
-    if let Some(width) = terminal_width
-        && width < 50
-    {
-        return render_compact_worktree_rows(
-            rows,
-            &target_values,
-            &status_values,
-            &modified_values,
-            width,
-            color,
-            glyphs,
-        );
-    }
+    shrink_list_columns(&columns, &mut widths, terminal_width);
 
-    let target_width = rows
-        .iter()
-        .map(|row| display_width(&row.target))
-        .chain([6])
-        .max()
-        .expect("width candidates should not be empty");
-    let modified_width = modified_values
-        .iter()
-        .map(|modified| display_width(modified))
-        .chain([8])
-        .max()
-        .expect("width candidates should not be empty");
-    let status_width = status_values
-        .iter()
-        .map(|status| display_width(status))
-        .chain([2])
-        .max()
-        .expect("width candidates should not be empty");
-    let show_path = terminal_width.is_none_or(|width| width >= 64);
-    let column_widths = worktree_column_widths(WorktreeColumnInput {
-        target_width,
-        status_width,
-        modified_width,
-        path_width: max_display_width(&path_values).max(4),
-        show_path,
-        terminal_width,
-    });
     let mut output = String::new();
 
-    let marker_header = plain_cell("", column_widths.marker);
-    let target_header = styled_cell("target", column_widths.target, StyleColor::Cyan, color);
-    let status_header = styled_cell("st", column_widths.status, StyleColor::Cyan, color);
-    let modified_header = styled_cell("modified", column_widths.modified, StyleColor::Cyan, color);
-    let path_header = styled_cell("path", column_widths.path, StyleColor::Cyan, color);
-    output.push_str(&format!(
-        "{marker_header} {target_header} {status_header} {modified_header}"
-    ));
-    if show_path {
-        output.push_str(&format!(" {path_header}"));
+    if show_headers {
+        for (index, column) in columns.iter().enumerate() {
+            if index > 0 {
+                output.push(' ');
+            }
+            output.push_str(&styled_cell(
+                list_column_header(*column),
+                widths[index],
+                options.colors.header,
+                color,
+            ));
+        }
+        output.push('\n');
     }
-    output.push('\n');
 
-    for (index, row) in rows.iter().enumerate() {
-        let marker = styled(
-            &plain_cell(worktree_marker(row, glyphs), column_widths.marker),
-            worktree_marker_color(row),
-            color,
-        );
-        let target = styled_truncated_cell(
-            target_values[index],
-            column_widths.target,
-            StyleColor::Magenta,
-            color,
-            glyphs,
-        );
-        let status = styled_cell(
-            status_values[index],
-            column_widths.status,
-            worktree_status_color(row.status),
-            color,
-        );
-        let modified = styled_cell(
-            &modified_values[index],
-            column_widths.modified,
-            StyleColor::White,
-            color,
-        );
-        output.push_str(&format!("{marker} {target} {status} {modified}"));
-        if show_path {
-            let path = styled_truncated_cell(
-                &path_values[index],
-                column_widths.path,
-                StyleColor::White,
+    for row_index in 0..rows.len() {
+        for (column_index, column) in columns.iter().enumerate() {
+            if column_index > 0 {
+                output.push(' ');
+            }
+            output.push_str(&styled_list_cell(
+                &values[column_index][row_index],
+                widths[column_index],
+                *column,
+                &rows[row_index],
                 color,
                 glyphs,
-            );
-            output.push_str(&format!(" {path}"));
+                options.colors,
+            ));
         }
         output.push('\n');
     }
@@ -550,134 +747,108 @@ fn render_worktree_rows(
     output
 }
 
-#[derive(Clone, Copy)]
-struct WorktreeColumnWidths {
-    marker: usize,
-    target: usize,
-    status: usize,
-    modified: usize,
-    path: usize,
-}
-
-struct WorktreeColumnInput {
-    target_width: usize,
-    status_width: usize,
-    modified_width: usize,
-    path_width: usize,
-    show_path: bool,
-    terminal_width: Option<usize>,
-}
-
-fn worktree_column_widths(input: WorktreeColumnInput) -> WorktreeColumnWidths {
-    let marker_width = 1;
-    let mut widths = WorktreeColumnWidths {
-        marker: marker_width,
-        target: input.target_width,
-        status: input.status_width,
-        modified: input.modified_width,
-        path: if input.show_path { input.path_width } else { 0 },
-    };
-
-    let Some(terminal_width) = input.terminal_width else {
-        return widths;
-    };
-
-    let visible_columns = 3 + usize::from(input.show_path);
-    let fixed_width = marker_width + visible_columns + input.status_width + input.modified_width;
-    let available_width = terminal_width.saturating_sub(fixed_width);
-
-    if input.show_path {
-        let target_cap = (terminal_width / 3).max(12);
-        let target_width = input.target_width.min(target_cap).max(6);
-        let remaining = available_width.saturating_sub(target_width);
-        if remaining >= 16 {
-            widths.target = target_width;
-            widths.path = remaining;
-        } else {
-            widths.target = target_width.min(available_width.saturating_sub(16)).max(6);
-            widths.path = available_width.saturating_sub(widths.target);
-        }
-    } else {
-        widths.target = input.target_width.min(available_width).max(6);
-        widths.path = 0;
-    }
-
-    widths
-}
-
-fn render_compact_worktree_rows(
-    rows: &[WorktreeListRow],
-    target_values: &[&str],
-    status_values: &[&str],
-    modified_values: &[String],
-    terminal_width: usize,
-    color: bool,
+fn list_cell_value(
+    row: &WorktreeListRow,
+    column: hz_command::ListColumn,
     glyphs: ListGlyphs,
 ) -> String {
-    let marker_width = 1;
-    let status_width = status_values
-        .iter()
-        .map(|status| display_width(status))
-        .chain([2])
-        .max()
-        .expect("width candidates should not be empty");
-    let base_width = marker_width + 2 + status_width;
-    let minimum_target_width = 6;
-    let modified_separator_width = 1;
-    let show_modified = terminal_width
-        >= base_width + minimum_target_width + modified_separator_width + 8
-        && terminal_width >= 36;
-    let modified_width = if show_modified {
-        let available_modified_width = terminal_width
-            .saturating_sub(base_width + minimum_target_width + modified_separator_width);
-        modified_values
-            .iter()
-            .map(|modified| display_width(modified))
-            .chain([8])
-            .max()
-            .expect("width candidates should not be empty")
-            .min(available_modified_width)
-    } else {
-        0
-    };
-    let fixed_width = base_width + usize::from(show_modified) * (modified_width + 1);
-    let target_width = terminal_width.saturating_sub(fixed_width);
-    let mut output = String::new();
+    match column {
+        hz_command::ListColumn::Marker => worktree_marker(row, glyphs).to_owned(),
+        hz_command::ListColumn::Target => row.target.clone(),
+        hz_command::ListColumn::Branch => row.branch.clone().unwrap_or_else(|| "-".to_owned()),
+        hz_command::ListColumn::Handle => row.handle.clone().unwrap_or_else(|| "-".to_owned()),
+        hz_command::ListColumn::Status => worktree_status_label(row.status, glyphs).to_owned(),
+        hz_command::ListColumn::Base => row.base.clone().unwrap_or_else(|| "-".to_owned()),
+        hz_command::ListColumn::Modified => format_modified_at(row.modified_at_unix),
+        hz_command::ListColumn::Path => display_path(&row.path),
+    }
+}
 
-    for (index, row) in rows.iter().enumerate() {
-        let marker = styled(
-            &plain_cell(worktree_marker(row, glyphs), marker_width),
-            worktree_marker_color(row),
-            color,
-        );
-        let target = styled_truncated_cell(
-            target_values[index],
-            target_width,
-            StyleColor::Magenta,
-            color,
-            glyphs,
-        );
-        let status = styled_cell(
-            status_values[index],
-            status_width,
-            worktree_status_color(row.status),
-            color,
-        );
-        output.push_str(&format!("{marker} {target} {status}"));
-        if show_modified {
-            let modified = styled_truncated_cell(
-                &modified_values[index],
-                modified_width,
-                StyleColor::White,
-                color,
-                glyphs,
-            );
-            output.push_str(&format!(" {modified}"));
-        }
-        output.push('\n');
+fn list_column_header(column: hz_command::ListColumn) -> &'static str {
+    match column {
+        hz_command::ListColumn::Marker => "",
+        hz_command::ListColumn::Target => "target",
+        hz_command::ListColumn::Branch => "branch",
+        hz_command::ListColumn::Handle => "handle",
+        hz_command::ListColumn::Status => "st",
+        hz_command::ListColumn::Base => "base",
+        hz_command::ListColumn::Modified => "modified",
+        hz_command::ListColumn::Path => "path",
+    }
+}
+
+fn list_column_min_width(column: hz_command::ListColumn) -> usize {
+    match column {
+        hz_command::ListColumn::Marker => 1,
+        hz_command::ListColumn::Status => 2,
+        hz_command::ListColumn::Base => 4,
+        hz_command::ListColumn::Modified => 1,
+        hz_command::ListColumn::Path => 4,
+        hz_command::ListColumn::Target
+        | hz_command::ListColumn::Branch
+        | hz_command::ListColumn::Handle => 6,
+    }
+}
+
+fn shrink_list_columns(
+    columns: &[hz_command::ListColumn],
+    widths: &mut [usize],
+    terminal_width: Option<usize>,
+) {
+    let Some(terminal_width) = terminal_width else {
+        return;
+    };
+    if columns.is_empty() {
+        return;
     }
 
-    output
+    while list_row_width(widths) > terminal_width {
+        let Some(index) = widths
+            .iter()
+            .enumerate()
+            .filter(|(index, width)| **width > list_column_min_width(columns[*index]))
+            .max_by_key(|(_, width)| **width)
+            .map(|(index, _)| index)
+        else {
+            break;
+        };
+        widths[index] -= 1;
+    }
+}
+
+fn list_row_width(widths: &[usize]) -> usize {
+    widths.iter().sum::<usize>() + widths.len().saturating_sub(1)
+}
+
+fn styled_list_cell(
+    value: &str,
+    width: usize,
+    column: hz_command::ListColumn,
+    row: &WorktreeListRow,
+    color: bool,
+    glyphs: ListGlyphs,
+    colors: ListColors,
+) -> String {
+    let value = truncate_middle(value, width, glyphs);
+    match column {
+        hz_command::ListColumn::Marker => styled(
+            &plain_cell(&value, width),
+            worktree_marker_color(row, colors),
+            color,
+        ),
+        hz_command::ListColumn::Status => styled_cell(
+            &value,
+            width,
+            worktree_status_color(row.status, colors),
+            color,
+        ),
+        hz_command::ListColumn::Target => styled_cell(&value, width, colors.target, color),
+        hz_command::ListColumn::Branch => styled_cell(&value, width, colors.branch, color),
+        hz_command::ListColumn::Handle => styled_cell(&value, width, colors.handle, color),
+        hz_command::ListColumn::Base => styled_cell(&value, width, colors.base, color),
+        hz_command::ListColumn::Modified => styled_cell(&value, width, colors.modified, color),
+        hz_command::ListColumn::Path => styled_cell(&value, width, colors.path, color),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -733,11 +904,11 @@ fn worktree_marker(row: &WorktreeListRow, glyphs: ListGlyphs) -> &'static str {
     }
 }
 
-fn worktree_marker_color(row: &WorktreeListRow) -> StyleColor {
+fn worktree_marker_color(row: &WorktreeListRow, colors: ListColors) -> StyleColor {
     if row.current {
-        StyleColor::Green
+        colors.current
     } else {
-        StyleColor::Cyan
+        colors.local
     }
 }
 
@@ -784,11 +955,11 @@ fn worktree_status_label(status: hz_command::WorktreeStatus, glyphs: ListGlyphs)
     }
 }
 
-fn worktree_status_color(status: hz_command::WorktreeStatus) -> StyleColor {
+fn worktree_status_color(status: hz_command::WorktreeStatus, colors: ListColors) -> StyleColor {
     match status {
-        hz_command::WorktreeStatus::Clean => StyleColor::Green,
-        hz_command::WorktreeStatus::Dirty => StyleColor::Yellow,
-        hz_command::WorktreeStatus::Unknown => StyleColor::Red,
+        hz_command::WorktreeStatus::Clean => colors.clean,
+        hz_command::WorktreeStatus::Dirty => colors.dirty,
+        hz_command::WorktreeStatus::Unknown => colors.unknown,
     }
 }
 
@@ -1078,17 +1249,11 @@ fn display_width(value: &str) -> usize {
     UnicodeWidthStr::width(value)
 }
 
-fn max_display_width<T: AsRef<str>>(values: &[T]) -> usize {
-    values
-        .iter()
-        .map(|value| display_width(value.as_ref()))
-        .max()
-        .unwrap_or(0)
-}
-
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum StyleColor {
+    Black,
     Green,
+    Blue,
     Cyan,
     Magenta,
     Red,
@@ -1098,21 +1263,6 @@ enum StyleColor {
 
 fn styled_cell(value: &str, width: usize, color: StyleColor, enabled: bool) -> String {
     styled(&plain_cell(value, width), color, enabled)
-}
-
-fn styled_truncated_cell(
-    value: &str,
-    width: usize,
-    color: StyleColor,
-    enabled: bool,
-    glyphs: ListGlyphs,
-) -> String {
-    styled_cell(
-        &truncate_middle(value, width, glyphs),
-        width,
-        color,
-        enabled,
-    )
 }
 
 fn plain_cell(value: &str, width: usize) -> String {
@@ -1178,7 +1328,9 @@ fn styled(value: &str, color: StyleColor, enabled: bool) -> String {
     }
 
     let code = match color {
+        StyleColor::Black => "30",
         StyleColor::Green => "32",
+        StyleColor::Blue => "34",
         StyleColor::Cyan => "36",
         StyleColor::Magenta => "35",
         StyleColor::Red => "31",
@@ -1411,7 +1563,7 @@ fn push_completion_candidate(candidates: &mut Vec<String>, candidate: Option<Str
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{collections::HashMap, path::PathBuf};
 
     use super::*;
 
@@ -1576,6 +1728,41 @@ mod tests {
     }
 
     #[test]
+    fn list_output_uses_configured_headers_and_columns() {
+        let output = render_worktree_rows_with_options(
+            &[WorktreeListRow {
+                target: "feature/ui".to_owned(),
+                branch: Some("feature/ui".to_owned()),
+                handle: Some("f7a7".to_owned()),
+                base: Some("dev".to_owned()),
+                status: hz_command::WorktreeStatus::Clean,
+                modified_at_unix: 0,
+                path: PathBuf::from("/worktrees/entry"),
+                local: false,
+                current: false,
+            }],
+            false,
+            list_glyphs(false),
+            None,
+            WorktreeListOptions {
+                headers: hz_command::ListHeaders::Always,
+                columns: vec![
+                    hz_command::ListColumn::Branch,
+                    hz_command::ListColumn::Base,
+                    hz_command::ListColumn::Status,
+                ],
+                ..WorktreeListOptions::default()
+            },
+        );
+
+        assert!(output.starts_with("branch"));
+        assert!(output.contains("base"));
+        assert!(output.contains("feature/ui"));
+        assert!(output.contains("dev"));
+        assert!(!output.contains("path"));
+    }
+
+    #[test]
     fn list_output_can_render_terminal_color() {
         let output = render_worktree_list_with_style(
             &[hz_command::WorktreeEntry {
@@ -1597,6 +1784,47 @@ mod tests {
         assert!(output.contains("\x1b[35mfeature/ui"));
         assert!(output.contains("\x1b[37m/worktrees/entry"));
         assert!(!output.contains("\x1b[34m"));
+    }
+
+    #[test]
+    fn list_output_can_render_custom_color_scheme() {
+        let mut schemes = HashMap::new();
+        schemes.insert(
+            "blueprint".to_owned(),
+            hz_command::ColorSchemeConfig {
+                target: Some("blue".to_owned()),
+                clean: Some("cyan".to_owned()),
+                ..hz_command::ColorSchemeConfig::default()
+            },
+        );
+        let options = WorktreeListOptions {
+            colors: list_colors(Some(&hz_command::ColorConfig {
+                mode: None,
+                scheme: Some("blueprint".to_owned()),
+                schemes,
+            })),
+            ..WorktreeListOptions::default()
+        };
+        let output = render_worktree_rows_with_options(
+            &[WorktreeListRow {
+                target: "feature/ui".to_owned(),
+                branch: Some("feature/ui".to_owned()),
+                handle: Some("f7a7".to_owned()),
+                base: None,
+                status: hz_command::WorktreeStatus::Clean,
+                modified_at_unix: 0,
+                path: PathBuf::from("/worktrees/entry"),
+                local: false,
+                current: false,
+            }],
+            true,
+            list_glyphs(false),
+            None,
+            options,
+        );
+
+        assert!(output.contains("\x1b[34mfeature/ui"));
+        assert!(output.contains("\x1b[36mok"));
     }
 
     #[test]
@@ -1755,6 +1983,9 @@ mod tests {
         let output = render_worktree_rows(
             &[WorktreeListRow {
                 target: "feat(worktree)/very-long-branch-name".to_owned(),
+                branch: Some("feat(worktree)/very-long-branch-name".to_owned()),
+                handle: Some("handle".to_owned()),
+                base: None,
                 status: hz_command::WorktreeStatus::Dirty,
                 modified_at_unix: 0,
                 path: PathBuf::from("/very/long/worktree/path"),
@@ -1771,23 +2002,30 @@ mod tests {
     }
 
     #[test]
-    fn compact_rows_truncate_modified_column_to_terminal_width() {
-        let modified_values = vec!["modified-timestamp-that-is-too-wide".to_owned()];
-        let output = render_compact_worktree_rows(
+    fn compact_rows_truncate_configured_columns_to_terminal_width() {
+        let output = render_worktree_rows_with_options(
             &[WorktreeListRow {
                 target: "feat(worktree)/very-long-branch-name".to_owned(),
+                branch: Some("feat(worktree)/very-long-branch-name".to_owned()),
+                handle: Some("handle".to_owned()),
+                base: None,
                 status: hz_command::WorktreeStatus::Dirty,
                 modified_at_unix: 0,
                 path: PathBuf::from("/very/long/worktree/path"),
                 local: false,
                 current: false,
             }],
-            &["feat(worktree)/very-long-branch-name"],
-            &["!"],
-            &modified_values,
-            36,
             false,
             list_glyphs(true),
+            Some(36),
+            WorktreeListOptions {
+                compact_columns: vec![
+                    hz_command::ListColumn::Marker,
+                    hz_command::ListColumn::Target,
+                    hz_command::ListColumn::Path,
+                ],
+                ..WorktreeListOptions::default()
+            },
         );
 
         assert!(output.contains("…"));

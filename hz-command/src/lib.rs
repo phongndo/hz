@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env, fs,
     io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
@@ -15,13 +16,14 @@ pub use hz_worktree::{
     WorktreeSource, WorktreeStatus,
 };
 
+const HZ_DIR: &str = ".hz";
 const CONFIG_FILE: &str = "hz.toml";
-const LIFECYCLE_DIR: &str = ".hz";
+const ENVIRONMENT_DIR: &str = "environment";
 const SETUP_SCRIPT: &str = "setup";
 const CLEANUP_SCRIPT: &str = "cleanup";
 
 pub fn create_worktree(input: CreateWorktree) -> HzResult<CreatedWorktree> {
-    hz_worktree::create(with_configured_detached_limit(input)?)
+    hz_worktree::create(create_worktree_with_config_defaults(input)?)
 }
 
 pub fn create_worktree_with_lifecycle(
@@ -92,9 +94,9 @@ pub struct RepoInit {
 }
 
 pub fn init_repo(input: InitRepo) -> HzResult<RepoInit> {
-    let repo = hz_git::repository_root(input.repo.as_deref())?;
-    let config_path = repo.join(CONFIG_FILE);
-    let lifecycle_path = repo.join(LIFECYCLE_DIR);
+    let repo = config_repo(input.repo.as_deref())?;
+    let config_path = config_path(&repo);
+    let lifecycle_path = repo.join(HZ_DIR).join(ENVIRONMENT_DIR);
     let setup_path = lifecycle_path.join(SETUP_SCRIPT);
     let cleanup_path = lifecycle_path.join(CLEANUP_SCRIPT);
 
@@ -160,6 +162,40 @@ pub fn run_lifecycle_for_entry(
 
 pub fn diff(input: DiffOptions) -> HzResult<String> {
     hz_diff::render(input)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadRepoConfig {
+    pub repo: Option<PathBuf>,
+}
+
+pub fn load_repo_config(input: LoadRepoConfig) -> HzResult<HzConfig> {
+    let repo = config_repo(input.repo.as_deref())?;
+    HzConfig::load(&repo)
+}
+
+fn create_worktree_with_config_defaults(mut input: CreateWorktree) -> HzResult<CreateWorktree> {
+    let needs_detached_limit =
+        input.max_detached_worktrees.is_none() && creates_detached_worktree(&input);
+    if input.base.is_none() || needs_detached_limit {
+        let repo = config_repo(input.repo.as_deref())?;
+        let config = HzConfig::load(&repo)?;
+        if input.base.is_none()
+            && let Some(base) = config.default_base()
+        {
+            input.base = Some(base.to_owned());
+        }
+        if needs_detached_limit {
+            input.max_detached_worktrees = Some(config.max_detached_worktrees());
+        }
+    }
+
+    Ok(input)
+}
+
+fn config_repo(repo: Option<&Path>) -> HzResult<PathBuf> {
+    let current = hz_git::repository_root(repo)?;
+    hz_git::main_worktree(&current)
 }
 
 fn run_lifecycle_for_path(
@@ -261,26 +297,96 @@ fn branch_or_handle(branch: Option<&str>, handle: &str) -> String {
     branch.unwrap_or(handle).to_owned()
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct HzConfig {
-    lifecycle: Option<LifecycleConfig>,
-    worktree: Option<WorktreeConfig>,
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct HzConfig {
+    pub lifecycle: Option<LifecycleConfig>,
+    pub worktree: Option<WorktreeConfig>,
+    pub list: Option<ListConfig>,
+    pub color: Option<ColorConfig>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct LifecycleConfig {
-    setup: Option<Vec<String>>,
-    cleanup: Option<Vec<String>>,
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LifecycleConfig {
+    pub setup: Option<Vec<String>>,
+    pub cleanup: Option<Vec<String>>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct WorktreeConfig {
-    max_detached: Option<usize>,
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WorktreeConfig {
+    pub default_base: Option<String>,
+    pub max_detached: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ListConfig {
+    pub headers: Option<ListHeaders>,
+    pub columns: Option<Vec<ListColumn>>,
+    pub compact_columns: Option<Vec<ListColumn>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListHeaders {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListColumn {
+    Marker,
+    Target,
+    Branch,
+    Handle,
+    Status,
+    Base,
+    Modified,
+    Path,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ColorConfig {
+    pub mode: Option<ColorMode>,
+    pub scheme: Option<String>,
+    #[serde(default)]
+    pub schemes: HashMap<String, ColorSchemeConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorMode {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ColorSchemeConfig {
+    pub header: Option<String>,
+    pub target: Option<String>,
+    pub branch: Option<String>,
+    pub handle: Option<String>,
+    pub base: Option<String>,
+    pub modified: Option<String>,
+    pub path: Option<String>,
+    pub clean: Option<String>,
+    pub dirty: Option<String>,
+    pub unknown: Option<String>,
+    pub current: Option<String>,
+    pub local: Option<String>,
 }
 
 impl HzConfig {
+    pub fn default_base(&self) -> Option<&str> {
+        self.worktree
+            .as_ref()
+            .and_then(|worktree| worktree.default_base.as_deref())
+            .filter(|base| !base.is_empty())
+    }
+
     fn load(worktree: &Path) -> HzResult<Self> {
-        let path = worktree.join(CONFIG_FILE);
+        let path = config_path(worktree);
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -307,13 +413,6 @@ impl HzConfig {
     }
 }
 
-fn with_configured_detached_limit(mut input: CreateWorktree) -> HzResult<CreateWorktree> {
-    if input.max_detached_worktrees.is_none() && creates_detached_worktree(&input) {
-        input.max_detached_worktrees = Some(configured_detached_limit(input.repo.as_deref())?);
-    }
-    Ok(input)
-}
-
 fn with_configured_handoff_detached_limit(mut input: HandoffWorktree) -> HzResult<HandoffWorktree> {
     if input.max_detached_worktrees.is_none()
         && input.mode == HandoffMode::Patch
@@ -330,9 +429,12 @@ fn creates_detached_worktree(input: &CreateWorktree) -> bool {
 }
 
 fn configured_detached_limit(repo: Option<&Path>) -> HzResult<usize> {
-    let current = hz_git::repository_root(repo)?;
-    let repo = hz_git::main_worktree(&current)?;
+    let repo = config_repo(repo)?;
     Ok(HzConfig::load(&repo)?.max_detached_worktrees())
+}
+
+fn config_path(repo: &Path) -> PathBuf {
+    repo.join(HZ_DIR).join(CONFIG_FILE)
 }
 
 impl LifecycleKind {
@@ -388,7 +490,7 @@ fn make_executable(_path: &Path) -> HzResult<()> {
 }
 
 fn default_config() -> &'static str {
-    "[worktree]\nmax_detached = 15\n\n[lifecycle]\nsetup = [\".hz/setup\"]\ncleanup = [\".hz/cleanup\"]\n"
+    "[worktree]\nmax_detached = 15\n# default_base = \"dev\"\n\n[list]\nheaders = \"auto\"\ncolumns = [\"marker\", \"target\", \"status\", \"modified\", \"path\"]\n\n[color]\nmode = \"auto\"\nscheme = \"terminal\"\n\n[lifecycle]\nsetup = [\".hz/environment/setup\"]\ncleanup = [\".hz/environment/cleanup\"]\n"
 }
 
 fn default_setup_script() -> &'static str {
@@ -554,20 +656,82 @@ mod tests {
     }
 
     #[test]
+    fn init_repo_uses_main_worktree_for_linked_worktree() {
+        let test_dir = test_repo("hz-repo-init-linked-test");
+        commit_initial(&test_dir);
+        let linked_dir = test_dir.with_file_name(format!(
+            "{}-linked",
+            test_dir.file_name().unwrap().to_string_lossy()
+        ));
+        let linked_arg = linked_dir.to_str().unwrap();
+        git(
+            &["worktree", "add", "-q", "--detach", linked_arg, "HEAD"],
+            &test_dir,
+        );
+
+        let init = init_repo(InitRepo {
+            repo: Some(linked_dir.clone()),
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::canonicalize(&init.repo).unwrap(),
+            fs::canonicalize(&test_dir).unwrap()
+        );
+        assert_eq!(
+            fs::canonicalize(init.config_path.parent().unwrap()).unwrap(),
+            fs::canonicalize(test_dir.join(".hz")).unwrap()
+        );
+        assert!(init.config_created);
+        assert!(!linked_dir.join(".hz").join("hz.toml").exists());
+
+        git(&["worktree", "remove", "-f", linked_arg], &test_dir);
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn init_repo_creates_hz_config_when_root_hz_toml_exists() {
+        let test_dir = test_repo("hz-repo-init-root-config-test");
+        fs::write(
+            test_dir.join("hz.toml"),
+            "[worktree]\ndefault_base = \"dev\"\n",
+        )
+        .unwrap();
+
+        let init = init_repo(InitRepo {
+            repo: Some(test_dir.clone()),
+        })
+        .unwrap();
+
+        assert!(init.config_created);
+        assert!(init.config_path.exists());
+        assert!(init.setup_created);
+        assert!(init.cleanup_created);
+
+        let config = load_repo_config(LoadRepoConfig {
+            repo: Some(test_dir.clone()),
+        })
+        .unwrap();
+        assert_eq!(config.default_base(), None);
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
     fn lifecycle_setup_runs_configured_script_in_worktree() {
         let test_dir = test_repo("hz-lifecycle-test");
-        fs::create_dir_all(test_dir.join(".hz")).unwrap();
+        fs::create_dir_all(test_dir.join(".hz").join("environment")).unwrap();
         fs::write(
-            test_dir.join(CONFIG_FILE),
-            "[lifecycle]\nsetup = [\".hz/setup\"]\n",
+            test_dir.join(".hz").join(CONFIG_FILE),
+            "[lifecycle]\nsetup = [\".hz/environment/setup\"]\n",
         )
         .unwrap();
         fs::write(
-            test_dir.join(".hz").join("setup"),
+            test_dir.join(".hz").join("environment").join("setup"),
             "#!/usr/bin/env sh\nset -eu\nprintf '%s' \"$HZ_TARGET:$HZ_LIFECYCLE\" > lifecycle.out\n",
         )
         .unwrap();
-        make_executable(&test_dir.join(".hz").join("setup")).unwrap();
+        make_executable(&test_dir.join(".hz").join("environment").join("setup")).unwrap();
 
         let run = run_lifecycle(RunLifecycle {
             target: None,
@@ -582,6 +746,95 @@ mod tests {
             fs::read_to_string(test_dir.join("lifecycle.out")).unwrap(),
             "local:setup"
         );
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn repo_config_loads_hz_directory_config() {
+        let test_dir = test_repo("hz-config-test");
+        fs::create_dir_all(test_dir.join(".hz")).unwrap();
+        fs::write(
+            test_dir.join(".hz").join("hz.toml"),
+            "[worktree]\ndefault_base = \"dev\"\n",
+        )
+        .unwrap();
+
+        let config = load_repo_config(LoadRepoConfig {
+            repo: Some(test_dir.clone()),
+        })
+        .unwrap();
+
+        assert_eq!(config.default_base(), Some("dev"));
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn repo_config_ignores_root_hz_toml() {
+        let test_dir = test_repo("hz-config-root-test");
+        fs::write(
+            test_dir.join("hz.toml"),
+            "[worktree]\ndefault_base = \"dev\"\n",
+        )
+        .unwrap();
+
+        let config = load_repo_config(LoadRepoConfig {
+            repo: Some(test_dir.clone()),
+        })
+        .unwrap();
+
+        assert_eq!(config.default_base(), None);
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn create_worktree_defaults_base_from_repo_config() {
+        let test_dir = test_repo("hz-create-default-base-test");
+        fs::create_dir_all(test_dir.join(".hz")).unwrap();
+        fs::write(
+            test_dir.join(".hz").join("hz.toml"),
+            "[worktree]\ndefault_base = \"dev\"\n",
+        )
+        .unwrap();
+
+        let input = create_worktree_with_config_defaults(CreateWorktree {
+            name: Some("feature/ui".to_owned()),
+            repo: Some(test_dir.clone()),
+            path: None,
+            base: None,
+            branch: None,
+            max_detached_worktrees: None,
+        })
+        .unwrap();
+
+        assert_eq!(input.base.as_deref(), Some("dev"));
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn create_worktree_keeps_explicit_base_over_repo_config() {
+        let test_dir = test_repo("hz-create-explicit-base-test");
+        fs::create_dir_all(test_dir.join(".hz")).unwrap();
+        fs::write(
+            test_dir.join(".hz").join("hz.toml"),
+            "[worktree]\ndefault_base = \"dev\"\n",
+        )
+        .unwrap();
+
+        let input = create_worktree_with_config_defaults(CreateWorktree {
+            name: Some("feature/ui".to_owned()),
+            repo: Some(test_dir.clone()),
+            path: None,
+            base: Some("main".to_owned()),
+            branch: None,
+            max_detached_worktrees: None,
+        })
+        .unwrap();
+
+        assert_eq!(input.base.as_deref(), Some("main"));
 
         fs::remove_dir_all(test_dir).unwrap();
     }
@@ -754,5 +1007,26 @@ mod tests {
             .unwrap();
         assert!(status.success());
         test_dir
+    }
+
+    fn commit_initial(repo: &Path) {
+        git(&["config", "user.email", "test@example.com"], repo);
+        git(&["config", "user.name", "Test"], repo);
+        fs::write(repo.join("file.txt"), "base\n").unwrap();
+        git(&["add", "file.txt"], repo);
+        git(&["commit", "-q", "-m", "init"], repo);
+    }
+
+    fn git(args: &[&str], cwd: &Path) {
+        let output = ProcessCommand::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

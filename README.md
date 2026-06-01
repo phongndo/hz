@@ -56,9 +56,22 @@ use ASCII fallbacks such as `@` and `~`.
 Detached scratch worktrees are capped at 15 by default. Creating another
 detached worktree auto-removes the oldest clean managed detached worktrees until
 the cap is satisfied. Branch-backed, unmanaged, dirty, unknown, and current
-worktrees are not auto-removed. Set `[worktree].max_detached` in `hz.toml`, or
-pass `--max-detached <count>` to `hz new` or `hz handoff --new`; `0` disables
-auto-pruning.
+worktrees are not auto-removed. Set `[worktree].max_detached` in `.hz/hz.toml`,
+or pass `--max-detached <count>` to `hz new` or `hz handoff --new`; `0`
+disables auto-pruning.
+
+Repo config can set the default base branch for new worktrees:
+
+```toml
+# .hz/hz.toml
+[worktree]
+max_detached = 15
+default_base = "dev"
+```
+
+With that config, `hz new feature/ui` behaves like
+`hz new feature/ui --base dev`. Passing `--base main` still wins for deliberate
+main-based work.
 
 `hz cd` prints a path for scripts. To make `hz new` and `hz cd` change the
 current shell directory, run `hz install <shell>` once to update your shell rc
@@ -103,33 +116,55 @@ of applying a patch. Branch handoff is clean-only on both sides.
 `hz init` initializes repo-local lifecycle config:
 
 ```text
-hz.toml
-.hz/setup
-.hz/cleanup
+.hz/hz.toml
+.hz/environment/setup
+.hz/environment/cleanup
 ```
 
-`hz.toml` declares the commands `hz` should run:
+`.hz/hz.toml` declares the commands `hz` should run:
 
 ```toml
 [worktree]
 max_detached = 15
 
 [lifecycle]
-setup = [".hz/setup"]
-cleanup = [".hz/cleanup"]
+setup = [".hz/environment/setup"]
+cleanup = [".hz/environment/cleanup"]
 ```
 
-`.hz/setup` and `.hz/cleanup` are executable script files. Edit them with the
-repo setup and cleanup commands an agent worktree should run. `hz new` runs the
-configured setup command after creating a worktree, and `hz rm` runs the
-configured cleanup command before removing one. Use `--no-setup` or
-`--no-cleanup` to bypass a hook for one command. Use `hz setup [target]` or
-`hz cleanup [target]` to run a hook manually. Hook stdout is forwarded to stderr
-so `--json` and `--path-only` output stays machine-readable.
+`.hz/environment/setup` and `.hz/environment/cleanup` are executable script
+files. Edit them to contain the repo setup and cleanup commands an agent
+worktree should run. `hz new` runs the configured setup command after creating a
+worktree, and `hz rm` runs the configured cleanup command before removing one.
+Use `--no-setup` or `--no-cleanup` to bypass a hook for one command. Use
+`hz setup [target]` or `hz cleanup [target]` to run a hook manually. Hook stdout
+is forwarded to stderr so `--json` and `--path-only` output stays
+machine-readable.
 
-Lifecycle config is read from the target worktree. Commit `hz.toml` and any
+Lifecycle config is read from the target worktree. Commit `.hz/hz.toml` and any
 referenced scripts before relying on `hz new` to run setup in newly created
 worktrees.
+
+`hz ls` display is configurable from `.hz/hz.toml`:
+
+```toml
+[list]
+headers = "auto" # auto | always | never
+columns = ["marker", "target", "status", "modified", "path"]
+compact_columns = ["marker", "target", "status"]
+
+[color]
+mode = "auto" # auto | always | never
+scheme = "terminal"
+```
+
+Columns can include `marker`, `target`, `branch`, `handle`, `status`, `base`,
+`modified`, and `path`. Color defaults to terminal-native ANSI colors so the
+user's terminal color scheme decides the actual palette. Custom `hz ls` color
+schemes can opt into different ANSI color names while still letting the terminal
+theme provide the actual colors.
+
+See [docs/config.md](docs/config.md) for the full config reference.
 
 For compatibility, `hz init <shell>` still installs shell integration, but
 `hz install <shell>` is the documented command for shell setup.
