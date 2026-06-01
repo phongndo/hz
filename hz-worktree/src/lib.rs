@@ -196,6 +196,7 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
         detached_worktree_prune_candidates(
             &registry,
             &repo,
+            input.repo.as_deref(),
             input
                 .max_detached_worktrees
                 .unwrap_or(DEFAULT_MAX_DETACHED_WORKTREES),
@@ -1050,9 +1051,10 @@ fn remove_registered_entry_from_registry(
 fn detached_worktree_prune_candidates(
     registry: &Registry,
     repo: &Path,
+    current_hint: Option<&Path>,
     max_detached_worktrees: usize,
 ) -> HzResult<Vec<WorktreeEntry>> {
-    let current = hz_git::repository_root(None).ok();
+    let current = hz_git::repository_root(current_hint).ok();
     let git_worktrees = hz_git::list_worktrees(repo)?;
 
     select_detached_worktree_prune_candidates(
