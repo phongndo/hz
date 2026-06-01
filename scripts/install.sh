@@ -15,7 +15,7 @@ need() {
 
 allow_unverified() {
   case "${HZ_ALLOW_UNVERIFIED:-}" in
-    1 | true | TRUE | yes | YES)
+    1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss])
       return 0
       ;;
     *)

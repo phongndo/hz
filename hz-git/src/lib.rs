@@ -352,12 +352,7 @@ fn untracked_paths(repo: &Path) -> HzResult<Vec<PathBuf>> {
         return Err(git_error("failed to list untracked files", &output));
     }
 
-    Ok(output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-        .map(|path| PathBuf::from(String::from_utf8_lossy(path).into_owned()))
-        .collect())
+    Ok(parse_untracked_paths(&output.stdout))
 }
 
 fn git_path(repo: &Path, path: &str) -> HzResult<PathBuf> {
@@ -397,17 +392,33 @@ fn create_temp_index(index_path: &Path) -> HzResult<PathBuf> {
             Err(error) => return Err(error.into()),
         };
 
-        if index_path.exists() {
-            let mut index_file = fs::File::open(index_path)?;
-            std::io::copy(&mut index_file, &mut temp_file)?;
-        }
-        temp_file.sync_all()?;
+        initialize_temp_index(index_path, &temp_path, &mut temp_file)?;
         return Ok(temp_path);
     }
 
     Err(HzError::Usage(
         "failed to create a unique temporary git index".to_owned(),
     ))
+}
+
+fn initialize_temp_index(
+    index_path: &Path,
+    temp_path: &Path,
+    temp_file: &mut fs::File,
+) -> HzResult<()> {
+    let copy_result = (|| -> HzResult<()> {
+        if index_path.exists() {
+            let mut index_file = fs::File::open(index_path)?;
+            std::io::copy(&mut index_file, temp_file)?;
+        }
+        temp_file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = copy_result {
+        let _ = fs::remove_file(temp_path);
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn temp_index_path(attempt: u32) -> HzResult<PathBuf> {
@@ -420,6 +431,14 @@ fn temp_index_path(attempt: u32) -> HzResult<PathBuf> {
             .as_nanos(),
         attempt
     )))
+}
+
+fn parse_untracked_paths(output: &[u8]) -> Vec<PathBuf> {
+    output
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(path_from_git_bytes)
+        .collect()
 }
 
 fn status_paths_modified_at(repo: &Path, status: &[u8]) -> u64 {
@@ -559,6 +578,55 @@ mod tests {
             status_paths(b" M line\nbreak.txt\0"),
             vec![PathBuf::from("line\nbreak.txt")]
         );
+    }
+
+    #[test]
+    fn untracked_paths_read_nul_records() {
+        assert_eq!(
+            parse_untracked_paths(b"line\nbreak.txt\0nested/file.txt\0"),
+            vec![
+                PathBuf::from("line\nbreak.txt"),
+                PathBuf::from("nested/file.txt")
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_paths_preserve_non_utf8_paths() {
+        use std::os::unix::ffi::OsStringExt;
+
+        assert_eq!(
+            parse_untracked_paths(b"invalid-\xff.txt\0"),
+            vec![PathBuf::from(OsString::from_vec(
+                b"invalid-\xff.txt".to_vec()
+            ))]
+        );
+    }
+
+    #[test]
+    fn temp_index_is_removed_when_initialization_fails() {
+        let test_dir = env::temp_dir().join(format!(
+            "hz-git-temp-index-cleanup-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let index_path = test_dir.join("index-directory");
+        let temp_path = test_dir.join("temp-index");
+        fs::create_dir_all(&index_path).expect("index directory should be created");
+        let mut temp_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .expect("temp index should be created");
+
+        let result = initialize_temp_index(&index_path, &temp_path, &mut temp_file);
+
+        assert!(result.is_err());
+        assert!(!temp_path.exists());
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
     }
 
     #[test]
