@@ -921,7 +921,9 @@ mod tests {
         assert!(script.contains("--json|--path-only|--help|-h|-j"));
         assert!(script.contains("builtin cd \"$hz_target_path\" || return"));
         assert!(script.contains("command hz __complete worktree-targets"));
-        assert!(script.contains("compdef _hz_completion hz"));
+        assert!(script.contains("compdef _hz_completion hz _hz"));
+        assert!(script.contains("compdef _hzcd_completion hzcd _hzcd"));
+        assert!(script.contains("compdef _hzlocal_completion hzlocal _hzlocal"));
         assert!(script.contains("compadd -- -h --help -V --version"));
         assert!(script.contains("if [[ \"$PREFIX\" == -* ]]; then"));
         assert!(script.contains("_hz_complete_command_options \"$cmd\""));

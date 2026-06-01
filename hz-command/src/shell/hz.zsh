@@ -327,9 +327,9 @@ _hz_register_completion() {
   fi
 
   if (( $+functions[compdef] )); then
-    compdef _hz_completion hz
-    compdef _hzcd_completion hzcd
-    compdef _hzlocal_completion hzlocal
+    compdef _hz_completion hz _hz
+    compdef _hzcd_completion hzcd _hzcd
+    compdef _hzlocal_completion hzlocal _hzlocal
   fi
 }
 

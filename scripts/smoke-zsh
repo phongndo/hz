@@ -44,4 +44,9 @@ zsh -fc '
   [[ "${aliases[hzcd]:-}" == "noglob _hzcd" ]]
   [[ "${aliases[hzlocal]:-}" == "noglob _hzlocal" ]]
   [[ "${_comps[hz]:-}" == "_hz_completion" ]]
+  [[ "${_comps[_hz]:-}" == "_hz_completion" ]]
+  [[ "${_comps[hzcd]:-}" == "_hzcd_completion" ]]
+  [[ "${_comps[_hzcd]:-}" == "_hzcd_completion" ]]
+  [[ "${_comps[hzlocal]:-}" == "_hzlocal_completion" ]]
+  [[ "${_comps[_hzlocal]:-}" == "_hzlocal_completion" ]]
 '
