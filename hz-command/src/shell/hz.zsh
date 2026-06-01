@@ -313,7 +313,7 @@ _hzlocal_completion() {
     return
   fi
 
-  _hz_complete_command_positionals cd
+  return 0
 }
 
 _hz_register_completion() {
