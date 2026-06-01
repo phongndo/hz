@@ -36,6 +36,12 @@ zsh -fc '
   [[ "$PWD" == "$HZ_TARGET" ]]
   [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" path "fix(broker)/help")" ]]
 
+  eval "hzlocal fix(broker)/help"
+  [[ "$PWD" == "$HZ_TARGET" ]]
+  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" path local "fix(broker)/help")" ]]
+
   [[ "${aliases[hz]:-}" == "noglob _hz" ]]
+  [[ "${aliases[hzcd]:-}" == "noglob _hzcd" ]]
+  [[ "${aliases[hzlocal]:-}" == "noglob _hzlocal" ]]
   [[ "${_comps[hz]:-}" == "_hz_completion" ]]
 '
