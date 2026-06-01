@@ -15,6 +15,7 @@ need() {
 
 need curl
 need tar
+need install
 
 case "$(uname -s)" in
   Darwin)
@@ -72,14 +73,17 @@ trap cleanup EXIT INT TERM
 
 cd "$tmp_dir"
 curl -fL "$base_url/$asset" -o "$asset"
-curl -fL "$base_url/$asset.sha256" -o "$asset.sha256"
-
-if command -v shasum >/dev/null 2>&1; then
-  shasum -a 256 -c "$asset.sha256"
-elif command -v sha256sum >/dev/null 2>&1; then
-  sha256sum -c "$asset.sha256"
+checksum="$asset.sha256"
+if curl -fL "$base_url/$checksum" -o "$checksum"; then
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -c "$checksum"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c "$checksum"
+  else
+    echo "hz install: warning: shasum or sha256sum not found; skipping checksum verification" >&2
+  fi
 else
-  echo "hz install: warning: shasum or sha256sum not found; skipping checksum verification" >&2
+  echo "hz install: warning: checksum file not available; skipping checksum verification" >&2
 fi
 
 tar -xzf "$asset"

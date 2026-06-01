@@ -1,6 +1,8 @@
 use std::{
     collections::HashSet,
-    env, fs,
+    env,
+    ffi::{OsStr, OsString},
+    fs,
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitCode, Stdio},
@@ -38,6 +40,7 @@ examples:
   hz handoff feature/ui";
 
 const INSTALL_SCRIPT: &str = include_str!("../../scripts/install.sh");
+const RELEASE_REPO: &str = "phongndo/hz";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -1595,23 +1598,22 @@ fn shell_script(args: ShellArgs) -> HzResult<()> {
 }
 
 fn update(args: UpdateArgs) -> HzResult<()> {
+    let argv0 = env::args_os().next().ok_or_else(|| {
+        hz_core::HzError::Usage("could not determine current executable".to_owned())
+    })?;
+    let binary = update_binary_name(&argv0)?;
     let install_dir = match args.install_dir {
-        Some(path) => path,
-        None => env::current_exe()?
-            .parent()
-            .ok_or_else(|| {
-                hz_core::HzError::Usage(
-                    "could not determine current executable directory".to_owned(),
-                )
-            })?
-            .to_path_buf(),
+        Some(path) => absolute_path(path)?,
+        None => default_update_install_dir(&argv0)?,
     };
     let version = args.version.unwrap_or_else(|| "latest".to_owned());
 
     let mut child = ProcessCommand::new("sh")
         .arg("-s")
+        .env("HZ_REPO", RELEASE_REPO)
         .env("HZ_INSTALL_DIR", install_dir)
         .env("HZ_VERSION", version)
+        .env("HZ_BINARY", binary)
         .stdin(Stdio::piped())
         .spawn()?;
 
@@ -1633,6 +1635,57 @@ fn update(args: UpdateArgs) -> HzResult<()> {
     }
 
     Ok(())
+}
+
+fn update_binary_name(argv0: &OsStr) -> HzResult<OsString> {
+    Path::new(argv0)
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .map(OsString::from)
+        .ok_or_else(|| {
+            hz_core::HzError::Usage("could not determine current executable name".to_owned())
+        })
+}
+
+fn default_update_install_dir(argv0: &OsStr) -> HzResult<PathBuf> {
+    let argv0_path = Path::new(argv0);
+    if argv0_path.components().count() > 1 {
+        return invocation_parent_dir(argv0_path);
+    }
+
+    let binary = update_binary_name(argv0)?;
+    if let Some(path) = env::var_os("PATH") {
+        for dir in env::split_paths(&path) {
+            if dir.join(Path::new(&binary)).is_file() {
+                return absolute_path(dir);
+            }
+        }
+    }
+
+    current_exe_parent_dir()
+}
+
+fn invocation_parent_dir(path: &Path) -> HzResult<PathBuf> {
+    let parent = path.parent().ok_or_else(|| {
+        hz_core::HzError::Usage("could not determine current executable directory".to_owned())
+    })?;
+    absolute_path(parent.to_path_buf())
+}
+
+fn current_exe_parent_dir() -> HzResult<PathBuf> {
+    let executable = env::current_exe()?;
+    let parent = executable.parent().ok_or_else(|| {
+        hz_core::HzError::Usage("could not determine current executable directory".to_owned())
+    })?;
+    absolute_path(parent.to_path_buf())
+}
+
+fn absolute_path(path: PathBuf) -> HzResult<PathBuf> {
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(env::current_dir()?.join(path))
+    }
 }
 
 fn run_lifecycle(args: LifecycleArgs, kind: hz_command::LifecycleKind) -> HzResult<()> {
@@ -2582,6 +2635,29 @@ mod tests {
             }
             command => panic!("expected update command, got {command:?}"),
         }
+    }
+
+    #[test]
+    fn update_target_uses_invoked_binary_name_and_directory() {
+        let cwd = env::current_dir().unwrap();
+
+        assert_eq!(
+            update_binary_name(OsStr::new("./target/debug/hz-dev")).unwrap(),
+            OsString::from("hz-dev")
+        );
+        assert!(
+            default_update_install_dir(OsStr::new("./target/debug/hz-dev"))
+                .unwrap()
+                .ends_with(Path::new("target/debug"))
+        );
+        assert_eq!(
+            default_update_install_dir(OsStr::new("/usr/local/bin/hz-beta")).unwrap(),
+            PathBuf::from("/usr/local/bin")
+        );
+        assert_eq!(
+            absolute_path(PathBuf::from("bin")).unwrap(),
+            cwd.join("bin")
+        );
     }
 
     #[test]
