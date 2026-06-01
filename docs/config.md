@@ -27,8 +27,13 @@ CLI flag > .hz/hz.toml > built-in default
 
 ```toml
 [worktree]
+max_detached = 15
 default_base = "dev"
 ```
+
+`max_detached` caps managed detached scratch worktrees for the repo. Creating
+another detached worktree auto-removes the oldest clean managed detached
+worktrees until the cap is satisfied. Set it to `0` to disable auto-pruning.
 
 `default_base` is the branch or revision used when `hz new` is called without
 `--base`.

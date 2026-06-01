@@ -92,7 +92,7 @@ _hz_complete_command_args() {
 
   case "$cmd" in
     new)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -p --path -B --base -b --branch -j --json -d --debug --no-setup -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -p --path -B --base -b --branch --max-detached -j --json -d --debug --no-setup -h --help" "$current"
       ;;
     path|cd)
       if [[ "$current" == -* ]]; then
@@ -113,7 +113,7 @@ _hz_complete_command_args() {
       ;;
     handoff)
       if [[ "$current" == -* ]]; then
-        _hz_reply "-b --branch -n --new -r --repo -j --json -h --help" "$current"
+        _hz_reply "-b --branch -n --new --max-detached -r --repo -j --json -h --help" "$current"
       else
         _hz_dynamic_reply worktree-targets "$current"
       fi

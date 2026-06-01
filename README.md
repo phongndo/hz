@@ -53,11 +53,20 @@ the local worktree and marks the current worktree. Interactive terminals use
 Unicode markers such as `●` and `⌂`; non-terminal output and `HZ_ASCII=1 hz ls`
 use ASCII fallbacks such as `@` and `~`.
 
+Detached scratch worktrees are capped at 15 by default. Creating another
+detached worktree auto-removes the oldest clean managed detached worktrees until
+the cap is satisfied. Branch-backed, unmanaged, dirty, unknown, and current
+worktrees are not auto-removed. If there are not enough removable worktrees,
+`hz new` and `hz handoff --new` refuse to create another detached worktree. Set
+`[worktree].max_detached` in `.hz/hz.toml`, or pass `--max-detached <count>` to
+`hz new` or `hz handoff --new`; `0` disables auto-pruning.
+
 Repo config can set the default base branch for new worktrees:
 
 ```toml
 # .hz/hz.toml
 [worktree]
+max_detached = 15
 default_base = "dev"
 ```
 
@@ -116,6 +125,9 @@ of applying a patch. Branch handoff is clean-only on both sides.
 `.hz/hz.toml` declares the commands `hz` should run:
 
 ```toml
+[worktree]
+max_detached = 15
+
 [lifecycle]
 setup = [".hz/environment/setup"]
 cleanup = [".hz/environment/cleanup"]
