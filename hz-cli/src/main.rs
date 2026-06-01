@@ -92,7 +92,14 @@ enum Command {
     Cleanup(LifecycleArgs),
     #[command(about = "Print shell integration script")]
     Shell(ShellArgs),
-    #[command(about = "Update hz from GitHub releases")]
+    #[command(
+        about = "Update this hz binary from GitHub releases",
+        after_help = "\
+examples:
+  hz update
+  hz update --target-version 0.1.2
+  hz update --install-dir ~/.local/bin"
+    )]
     Update(UpdateArgs),
     #[command(about = "Render a Git diff")]
     Diff(DiffArgs),
@@ -213,8 +220,10 @@ struct LifecycleArgs {
 
 #[derive(Debug, Args)]
 struct UpdateArgs {
+    /// Release version to install, without or with the leading v.
     #[arg(long = "target-version", value_name = "VERSION")]
     version: Option<String>,
+    /// Directory to update. Defaults to the directory containing the invoked hz.
     #[arg(long, value_name = "DIR")]
     install_dir: Option<PathBuf>,
 }
@@ -1621,6 +1630,7 @@ fn update(args: UpdateArgs) -> HzResult<()> {
         .env("HZ_INSTALL_DIR", install_dir)
         .env("HZ_VERSION", version)
         .env("HZ_BINARY", binary)
+        .env("HZ_INSTALL_ACTION", "update")
         .stdin(Stdio::piped())
         .spawn()?;
 
