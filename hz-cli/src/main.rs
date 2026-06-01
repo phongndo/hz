@@ -119,6 +119,8 @@ struct NewWorktreeArgs {
     base: Option<String>,
     #[arg(short = 'b', long)]
     branch: Option<String>,
+    #[arg(long)]
+    max_detached: Option<usize>,
     #[arg(short = 'j', long)]
     json: bool,
     #[arg(short = 'd', long)]
@@ -170,6 +172,8 @@ struct HandoffWorktreeArgs {
     branch: bool,
     #[arg(short = 'n', long = "new")]
     create: bool,
+    #[arg(long)]
+    max_detached: Option<usize>,
     #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
     #[arg(short = 'j', long)]
@@ -291,6 +295,7 @@ fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
             path: args.path,
             base: args.base,
             branch: args.branch,
+            max_detached_worktrees: args.max_detached,
         },
         run_setup,
     )?;
@@ -1286,6 +1291,7 @@ fn handoff_worktree(args: HandoffWorktreeArgs) -> HzResult<()> {
         },
         repo: args.repo,
         create: args.create,
+        max_detached_worktrees: args.max_detached,
     })?;
 
     if args.json {
@@ -1960,11 +1966,20 @@ mod tests {
             command => panic!("expected handoff command, got {command:?}"),
         }
 
-        let cli = Cli::try_parse_from(["hz", "handoff", "--new", "feature/ui"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "hz",
+            "handoff",
+            "--new",
+            "--max-detached",
+            "3",
+            "feature/ui",
+        ])
+        .unwrap();
         match cli.command {
             Some(Command::Handoff(args)) => {
                 assert_eq!(args.target.as_deref(), Some("feature/ui"));
                 assert!(args.create);
+                assert_eq!(args.max_detached, Some(3));
             }
             command => panic!("expected handoff command, got {command:?}"),
         }
@@ -1989,6 +2004,8 @@ mod tests {
             "main",
             "-b",
             "feature/ui",
+            "--max-detached",
+            "5",
             "-j",
             "-d",
             "--no-setup",
@@ -2003,6 +2020,7 @@ mod tests {
                 assert_eq!(args.path, Some(PathBuf::from("../wt")));
                 assert_eq!(args.base.as_deref(), Some("main"));
                 assert_eq!(args.branch.as_deref(), Some("feature/ui"));
+                assert_eq!(args.max_detached, Some(5));
                 assert!(args.json);
                 assert!(args.debug);
                 assert!(args.no_setup);

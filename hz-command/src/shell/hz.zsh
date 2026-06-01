@@ -135,6 +135,7 @@ _hz_complete_command_args() {
         '(-p --path)'{-p,--path}'[worktree path]:path:_files -/' \
         '(-B --base)'{-B,--base}'[base branch]:branch' \
         '(-b --branch)'{-b,--branch}'[worktree branch]:branch' \
+        '--max-detached[maximum detached worktrees to keep; 0 disables pruning]:count' \
         '(-j --json)'{-j,--json}'[print JSON]' \
         '(-d --debug)'{-d,--debug}'[print debug output]' \
         '--no-setup[skip configured setup]' \
@@ -167,6 +168,7 @@ _hz_complete_command_args() {
       _arguments \
         '(-b --branch)'{-b,--branch}'[move branch ownership]' \
         '(-n --new)'{-n,--new}'[create a destination worktree]' \
+        '--max-detached[maximum detached worktrees to keep; 0 disables pruning]:count' \
         '(-r --repo)'{-r,--repo}'[repository path]:repo:_files -/' \
         '(-j --json)'{-j,--json}'[print JSON]' \
         '(-h --help)'{-h,--help}'[print help]' \

@@ -21,14 +21,14 @@ const SETUP_SCRIPT: &str = "setup";
 const CLEANUP_SCRIPT: &str = "cleanup";
 
 pub fn create_worktree(input: CreateWorktree) -> HzResult<CreatedWorktree> {
-    hz_worktree::create(input)
+    hz_worktree::create(with_configured_detached_limit(input)?)
 }
 
 pub fn create_worktree_with_lifecycle(
     input: CreateWorktree,
     run_setup: bool,
 ) -> HzResult<CreatedWorktree> {
-    let created = hz_worktree::create(input)?;
+    let created = create_worktree(input)?;
     if run_setup {
         let target = created_worktree_target(&created);
         run_lifecycle_for_path(&created.repo, &created.path, &target, LifecycleKind::Setup)?;
@@ -41,7 +41,7 @@ pub fn path_worktree(input: PathWorktree) -> HzResult<hz_core::paths::WorktreeTa
 }
 
 pub fn handoff_worktree(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {
-    hz_worktree::handoff(input)
+    hz_worktree::handoff(with_configured_handoff_detached_limit(input)?)
 }
 
 pub fn list_worktrees(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
@@ -264,12 +264,18 @@ fn branch_or_handle(branch: Option<&str>, handle: &str) -> String {
 #[derive(Debug, Default, Deserialize)]
 struct HzConfig {
     lifecycle: Option<LifecycleConfig>,
+    worktree: Option<WorktreeConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct LifecycleConfig {
     setup: Option<Vec<String>>,
     cleanup: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct WorktreeConfig {
+    max_detached: Option<usize>,
 }
 
 impl HzConfig {
@@ -292,6 +298,41 @@ impl HzConfig {
         }
         .filter(|command| !command.is_empty())
     }
+
+    fn max_detached_worktrees(&self) -> usize {
+        self.worktree
+            .as_ref()
+            .and_then(|worktree| worktree.max_detached)
+            .unwrap_or(hz_worktree::DEFAULT_MAX_DETACHED_WORKTREES)
+    }
+}
+
+fn with_configured_detached_limit(mut input: CreateWorktree) -> HzResult<CreateWorktree> {
+    if input.max_detached_worktrees.is_none() && creates_detached_worktree(&input) {
+        input.max_detached_worktrees = Some(configured_detached_limit(input.repo.as_deref())?);
+    }
+    Ok(input)
+}
+
+fn with_configured_handoff_detached_limit(mut input: HandoffWorktree) -> HzResult<HandoffWorktree> {
+    if input.max_detached_worktrees.is_none()
+        && input.mode == HandoffMode::Patch
+        && input.create
+        && input.target.is_none()
+    {
+        input.max_detached_worktrees = Some(configured_detached_limit(input.repo.as_deref())?);
+    }
+    Ok(input)
+}
+
+fn creates_detached_worktree(input: &CreateWorktree) -> bool {
+    input.name.is_none() && input.branch.is_none()
+}
+
+fn configured_detached_limit(repo: Option<&Path>) -> HzResult<usize> {
+    let current = hz_git::repository_root(repo)?;
+    let repo = hz_git::main_worktree(&current)?;
+    Ok(HzConfig::load(&repo)?.max_detached_worktrees())
 }
 
 impl LifecycleKind {
@@ -347,7 +388,7 @@ fn make_executable(_path: &Path) -> HzResult<()> {
 }
 
 fn default_config() -> &'static str {
-    "[lifecycle]\nsetup = [\".hz/setup\"]\ncleanup = [\".hz/cleanup\"]\n"
+    "[worktree]\nmax_detached = 15\n\n[lifecycle]\nsetup = [\".hz/setup\"]\ncleanup = [\".hz/cleanup\"]\n"
 }
 
 fn default_setup_script() -> &'static str {
@@ -620,6 +661,10 @@ mod tests {
         assert!(script.contains("'install:install shell integration'"));
         assert!(script.contains("--no-setup[skip configured setup]"));
         assert!(script.contains("--no-cleanup[skip configured cleanup]"));
+        assert!(
+            script
+                .contains("--max-detached[maximum detached worktrees to keep; 0 disables pruning]")
+        );
     }
 
     #[test]
@@ -633,6 +678,7 @@ mod tests {
         assert!(script.contains("init install setup cleanup shell"));
         assert!(script.contains("-l no-setup"));
         assert!(script.contains("-l no-cleanup"));
+        assert!(script.contains("-l max-detached"));
     }
 
     #[test]
@@ -645,6 +691,7 @@ mod tests {
         assert!(script.contains("init install setup cleanup shell"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
+        assert!(script.contains("--max-detached"));
     }
 
     #[test]

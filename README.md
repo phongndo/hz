@@ -53,6 +53,13 @@ the local worktree and marks the current worktree. Interactive terminals use
 Unicode markers such as `●` and `⌂`; non-terminal output and `HZ_ASCII=1 hz ls`
 use ASCII fallbacks such as `@` and `~`.
 
+Detached scratch worktrees are capped at 15 by default. Creating another
+detached worktree auto-removes the oldest clean managed detached worktrees until
+the cap is satisfied. Branch-backed, unmanaged, dirty, unknown, and current
+worktrees are not auto-removed. Set `[worktree].max_detached` in `hz.toml`, or
+pass `--max-detached <count>` to `hz new` or `hz handoff --new`; `0` disables
+auto-pruning.
+
 `hz cd` prints a path for scripts. To make `hz new` and `hz cd` change the
 current shell directory, run `hz install <shell>` once to update your shell rc
 file:
@@ -104,6 +111,9 @@ hz.toml
 `hz.toml` declares the commands `hz` should run:
 
 ```toml
+[worktree]
+max_detached = 15
+
 [lifecycle]
 setup = [".hz/setup"]
 cleanup = [".hz/cleanup"]
