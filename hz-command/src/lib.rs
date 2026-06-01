@@ -50,6 +50,10 @@ pub fn list_worktrees(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
     hz_worktree::list(input)
 }
 
+pub fn list_worktree_targets(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
+    hz_worktree::list_targets(input)
+}
+
 pub fn local_worktree(input: LocalWorktree) -> HzResult<LocalWorktreeInfo> {
     hz_worktree::local(input)
 }
@@ -900,6 +904,11 @@ mod tests {
     #[test]
     fn zsh_integration_wraps_new_and_cd() {
         let script = shell_integration(Shell::Zsh);
+        let hzlocal_completion = script
+            .split("_hzlocal_completion() {")
+            .nth(1)
+            .and_then(|completion| completion.split("\n}").next())
+            .expect("hzlocal completion function should exist");
 
         assert!(script.contains("command hz \"$@\" --path-only"));
         assert!(script.contains("handoff)"));
@@ -921,6 +930,8 @@ mod tests {
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
+        assert!(hzlocal_completion.contains("_hz_complete_command_options cd"));
+        assert!(!hzlocal_completion.contains("_hz_complete_command_positionals cd"));
     }
 
     #[test]

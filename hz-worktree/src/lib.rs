@@ -871,12 +871,18 @@ fn linked_worktree_exists(repo: &Path, path: &Path) -> HzResult<bool> {
 }
 
 pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
+    let mut entries = list_targets(input)?;
+    refresh_worktree_state(&mut entries);
+
+    Ok(entries)
+}
+
+pub fn list_targets(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
     let registry = Registry::load()?;
     let repo = resolve_repo(input.repo.as_deref(), &registry)?;
     let mut entries = discover_entries(&registry, &repo)?;
-    refresh_worktree_state(&mut entries);
-
     sort_worktree_entries(&mut entries);
+
     Ok(entries)
 }
 

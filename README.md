@@ -1,8 +1,9 @@
 # hz
 
 `hz` is planned as a headless-first CLI for coordinating parallel agent work
-across Git worktrees. The repository currently contains scaffolding only:
-command shapes, crate boundaries, and placeholder domain types.
+across Git worktrees. It currently ships the core worktree, handoff, lifecycle,
+shell integration, install, and update flows for the headless CLI while leaving
+room for a future TUI/runtime layer.
 
 ## Crates
 
@@ -33,8 +34,9 @@ curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh
 ```
 
 The installer downloads the matching GitHub release archive for macOS or Linux,
-verifies its SHA-256 file when `shasum` or `sha256sum` is available, and installs
-`hz` to `~/.local/bin` by default.
+verifies its SHA-256 file with `shasum` or `sha256sum`, and installs `hz` to
+`~/.local/bin` by default. Set `HZ_ALLOW_UNVERIFIED=1` only when you explicitly
+want to install without checksum verification.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_VERSION=0.1.1 sh

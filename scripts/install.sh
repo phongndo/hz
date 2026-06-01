@@ -13,6 +13,17 @@ need() {
   fi
 }
 
+allow_unverified() {
+  case "${HZ_ALLOW_UNVERIFIED:-}" in
+    1 | true | TRUE | yes | YES)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 need curl
 need tar
 need install
@@ -79,11 +90,17 @@ if curl -fL "$base_url/$checksum" -o "$checksum"; then
     shasum -a 256 -c "$checksum"
   elif command -v sha256sum >/dev/null 2>&1; then
     sha256sum -c "$checksum"
-  else
+  elif allow_unverified; then
     echo "hz install: warning: shasum or sha256sum not found; skipping checksum verification" >&2
+  else
+    echo "hz install: shasum or sha256sum not found; set HZ_ALLOW_UNVERIFIED=1 to skip checksum verification" >&2
+    exit 1
   fi
-else
+elif allow_unverified; then
   echo "hz install: warning: checksum file not available; skipping checksum verification" >&2
+else
+  echo "hz install: checksum file not available; set HZ_ALLOW_UNVERIFIED=1 to skip checksum verification" >&2
+  exit 1
 fi
 
 tar -xzf "$asset"

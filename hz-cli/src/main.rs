@@ -1396,7 +1396,9 @@ fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
 
     if !args.no_cleanup {
         for candidate in &removable {
-            hz_command::run_lifecycle_for_entry(candidate, hz_command::LifecycleKind::Cleanup)?;
+            if should_run_cleanup_for_removal(candidate) {
+                hz_command::run_lifecycle_for_entry(candidate, hz_command::LifecycleKind::Cleanup)?;
+            }
         }
     }
 
@@ -1533,6 +1535,10 @@ fn confirm_unmanaged_removal(worktree: &hz_command::WorktreeEntry) -> HzResult<b
     Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
 }
 
+fn should_run_cleanup_for_removal(worktree: &hz_command::WorktreeEntry) -> bool {
+    worktree.source == hz_command::WorktreeSource::Managed
+}
+
 fn worktree_branch_or_handle(worktree: &hz_command::WorktreeEntry) -> &str {
     worktree.branch.as_deref().unwrap_or(&worktree.handle)
 }
@@ -1607,10 +1613,11 @@ fn update(args: UpdateArgs) -> HzResult<()> {
         None => default_update_install_dir(&argv0)?,
     };
     let version = args.version.unwrap_or_else(|| "latest".to_owned());
+    let repo = update_repo(env::var_os("HZ_REPO"));
 
     let mut child = ProcessCommand::new("sh")
         .arg("-s")
-        .env("HZ_REPO", RELEASE_REPO)
+        .env("HZ_REPO", repo)
         .env("HZ_INSTALL_DIR", install_dir)
         .env("HZ_VERSION", version)
         .env("HZ_BINARY", binary)
@@ -1635,6 +1642,11 @@ fn update(args: UpdateArgs) -> HzResult<()> {
     }
 
     Ok(())
+}
+
+fn update_repo(repo: Option<OsString>) -> OsString {
+    repo.filter(|repo| !repo.as_os_str().is_empty())
+        .unwrap_or_else(|| OsString::from(RELEASE_REPO))
 }
 
 fn update_binary_name(argv0: &OsStr) -> HzResult<OsString> {
@@ -1731,7 +1743,7 @@ fn worktree_completion_candidates(
     repo: Option<PathBuf>,
     include_local: bool,
 ) -> HzResult<Vec<String>> {
-    let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees { repo })?;
+    let worktrees = hz_command::list_worktree_targets(hz_command::ListWorktrees { repo })?;
     let mut candidates = Vec::new();
 
     if include_local {
@@ -2661,6 +2673,19 @@ mod tests {
     }
 
     #[test]
+    fn update_repo_respects_env_override() {
+        assert_eq!(update_repo(None), OsString::from(RELEASE_REPO));
+        assert_eq!(
+            update_repo(Some(OsString::from("example/hz-fork"))),
+            OsString::from("example/hz-fork")
+        );
+        assert_eq!(
+            update_repo(Some(OsString::new())),
+            OsString::from(RELEASE_REPO)
+        );
+    }
+
+    #[test]
     fn completion_candidates_are_deduplicated() {
         let mut candidates = vec!["local".to_owned()];
 
@@ -2717,6 +2742,16 @@ mod tests {
         let worktree = test_entry(hz_command::WorktreeSource::Managed);
 
         assert!(!should_confirm_unmanaged_removal(&args, &worktree).unwrap());
+    }
+
+    #[test]
+    fn cleanup_runs_for_managed_removals_only() {
+        assert!(should_run_cleanup_for_removal(&test_entry(
+            hz_command::WorktreeSource::Managed
+        )));
+        assert!(!should_run_cleanup_for_removal(&test_entry(
+            hz_command::WorktreeSource::Git
+        )));
     }
 
     #[test]

@@ -1,8 +1,10 @@
 use std::{
-    env, fs,
-    io::Write,
+    env,
+    ffi::OsString,
+    fs,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{self, Command},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -112,16 +114,14 @@ pub fn list_worktrees(repo: &Path) -> HzResult<Vec<GitWorktree>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["worktree", "list", "--porcelain"])
+        .args(["worktree", "list", "--porcelain", "-z"])
         .output()?;
 
     if !output.status.success() {
         return Err(git_error("failed to list git worktrees", &output));
     }
 
-    Ok(parse_worktree_list(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    Ok(parse_worktree_list(&output.stdout))
 }
 
 pub fn main_worktree(repo: &Path) -> HzResult<PathBuf> {
@@ -136,15 +136,14 @@ pub fn worktree_state(path: &Path) -> HzResult<GitWorktreeState> {
     let output = Command::new("git")
         .arg("-C")
         .arg(path)
-        .args(["status", "--porcelain", "--untracked-files=normal"])
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
         .output()?;
 
     if !output.status.success() {
         return Err(git_error("failed to read git worktree status", &output));
     }
 
-    let status = String::from_utf8_lossy(&output.stdout);
-    if status.trim().is_empty() {
+    if output.stdout.is_empty() {
         return Ok(GitWorktreeState {
             dirty: false,
             modified_at_unix: 0,
@@ -153,7 +152,7 @@ pub fn worktree_state(path: &Path) -> HzResult<GitWorktreeState> {
 
     Ok(GitWorktreeState {
         dirty: true,
-        modified_at_unix: status_paths_modified_at(path, &status),
+        modified_at_unix: status_paths_modified_at(path, &output.stdout),
     })
 }
 
@@ -227,12 +226,7 @@ pub fn diff_patch(repo: &Path) -> HzResult<Vec<u8>> {
     }
 
     let index_path = git_path(repo, "index")?;
-    let temp_index = temp_index_path()?;
-    if index_path.exists() {
-        fs::copy(&index_path, &temp_index)?;
-    } else {
-        fs::File::create(&temp_index)?.sync_all()?;
-    }
+    let temp_index = create_temp_index(&index_path)?;
 
     let result = (|| {
         let mut add = Command::new("git");
@@ -390,60 +384,102 @@ fn git_path(repo: &Path, path: &str) -> HzResult<PathBuf> {
     }
 }
 
-fn temp_index_path() -> HzResult<PathBuf> {
+fn create_temp_index(index_path: &Path) -> HzResult<PathBuf> {
+    for attempt in 0..16 {
+        let temp_path = temp_index_path(attempt)?;
+        let mut temp_file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        };
+
+        if index_path.exists() {
+            let mut index_file = fs::File::open(index_path)?;
+            std::io::copy(&mut index_file, &mut temp_file)?;
+        }
+        temp_file.sync_all()?;
+        return Ok(temp_path);
+    }
+
+    Err(HzError::Usage(
+        "failed to create a unique temporary git index".to_owned(),
+    ))
+}
+
+fn temp_index_path(attempt: u32) -> HzResult<PathBuf> {
     Ok(env::temp_dir().join(format!(
-        "hz-git-index-{}.tmp",
+        "hz-git-index-{}-{}-{}.tmp",
+        process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| HzError::Usage(format!("system time before unix epoch: {error}")))?
-            .as_nanos()
+            .as_nanos(),
+        attempt
     )))
 }
 
-fn status_paths_modified_at(repo: &Path, status: &str) -> u64 {
-    status
-        .lines()
-        .filter_map(status_path)
+fn status_paths_modified_at(repo: &Path, status: &[u8]) -> u64 {
+    status_paths(status)
+        .into_iter()
         .filter_map(|path| path_modified_at(&repo.join(path)))
         .max()
         .unwrap_or_else(|| path_modified_at(repo).unwrap_or(0))
 }
 
-fn status_path(line: &str) -> Option<&str> {
-    let path = line.get(3..)?;
-    path.rsplit_once(" -> ")
-        .map_or(Some(path), |(_, renamed)| Some(renamed))
+fn status_paths(status: &[u8]) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut fields = status
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+
+    while let Some(field) = fields.next() {
+        if field.len() < 4 || field[2] != b' ' {
+            continue;
+        }
+
+        let status = &field[..2];
+        paths.push(path_from_git_bytes(&field[3..]));
+
+        if status.iter().any(|byte| matches!(byte, b'R' | b'C')) {
+            let _ = fields.next();
+        }
+    }
+
+    paths
+}
+
+#[cfg(unix)]
+fn path_from_git_bytes(bytes: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+
+    PathBuf::from(OsString::from_vec(bytes.to_vec()))
+}
+
+#[cfg(not(unix))]
+fn path_from_git_bytes(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
 fn path_modified_at(path: &Path) -> Option<u64> {
     let metadata = fs::symlink_metadata(path).ok()?;
-    let modified_at = metadata
+    metadata
         .modified()
         .ok()
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs())?;
-
-    if !metadata.is_dir() {
-        return Some(modified_at);
-    }
-
-    let child_modified_at = fs::read_dir(path)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| path_modified_at(&entry.path()))
-        .max()
-        .unwrap_or(0);
-
-    Some(modified_at.max(child_modified_at))
+        .map(|duration| duration.as_secs())
 }
 
-fn parse_worktree_list(output: &str) -> Vec<GitWorktree> {
+fn parse_worktree_list(output: &[u8]) -> Vec<GitWorktree> {
     let mut worktrees = Vec::new();
     let mut path = None;
     let mut branch = None;
 
-    for line in output.lines() {
-        if line.is_empty() {
+    for field in output.split(|byte| *byte == 0) {
+        if field.is_empty() {
             if let Some(path) = path.take() {
                 worktrees.push(GitWorktree { path, branch });
                 branch = None;
@@ -451,10 +487,10 @@ fn parse_worktree_list(output: &str) -> Vec<GitWorktree> {
             continue;
         }
 
-        if let Some(value) = line.strip_prefix("worktree ") {
-            path = Some(PathBuf::from(value));
-        } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
-            branch = Some(value.to_owned());
+        if let Some(value) = field.strip_prefix(b"worktree ") {
+            path = Some(path_from_git_bytes(value));
+        } else if let Some(value) = field.strip_prefix(b"branch refs/heads/") {
+            branch = Some(String::from_utf8_lossy(value).into_owned());
         }
     }
 
@@ -480,24 +516,13 @@ mod tests {
     use super::*;
     use std::{
         env,
-        fs::File,
         process::Command,
-        thread,
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     #[test]
     fn parses_porcelain_worktree_list() {
-        let output = "\
-worktree /repo
-HEAD abc
-branch refs/heads/main
-
-worktree /repo-feature
-HEAD def
-branch refs/heads/feature
-
-";
+        let output = b"worktree /repo\0HEAD abc\0branch refs/heads/main\0\0worktree /repo-feature\0HEAD def\0branch refs/heads/feature\0\0";
 
         let worktrees = parse_worktree_list(output);
 
@@ -517,44 +542,48 @@ branch refs/heads/feature
     }
 
     #[test]
-    fn status_path_reads_final_path_for_renames() {
-        assert_eq!(status_path(" M src/lib.rs"), Some("src/lib.rs"));
+    fn status_paths_read_nul_porcelain_records() {
         assert_eq!(
-            status_path("R  old-name.rs -> new-name.rs"),
-            Some("new-name.rs")
+            status_paths(b" M src/lib.rs\0?? nested/file.txt\0R  new-name.rs\0old-name.rs\0"),
+            vec![
+                PathBuf::from("src/lib.rs"),
+                PathBuf::from("nested/file.txt"),
+                PathBuf::from("new-name.rs")
+            ]
         );
     }
 
     #[test]
-    fn directory_modified_at_uses_newest_descendant() {
+    fn status_paths_preserve_newlines_in_paths() {
+        assert_eq!(
+            status_paths(b" M line\nbreak.txt\0"),
+            vec![PathBuf::from("line\nbreak.txt")]
+        );
+    }
+
+    #[test]
+    fn worktree_state_reads_concrete_untracked_files() {
         let test_dir = env::temp_dir().join(format!(
-            "hz-git-mtime-test-{}",
+            "hz-git-status-untracked-test-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("system time should be after unix epoch")
                 .as_nanos()
         ));
-        let nested_dir = test_dir.join("nested");
-        let nested_file = nested_dir.join("file.txt");
+        let repo = test_dir.join("repo");
+        let nested_file = repo.join("nested").join("file.txt");
+        fs::create_dir_all(nested_file.parent().unwrap())
+            .expect("test directory should be created");
 
-        fs::create_dir_all(&nested_dir).expect("test directory should be created");
-        File::create(&nested_file).expect("nested file should be created");
-        let shallow_directory_modified_at =
-            path_modified_at(&nested_dir).expect("directory mtime should be read");
-        thread::sleep(Duration::from_secs(1));
-        fs::write(&nested_file, "updated").expect("nested file should be updated");
+        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
+        fs::write(&nested_file, "untracked\n").expect("untracked file should be written");
 
-        let file_modified_at = path_modified_at(&nested_file).expect("file mtime should be read");
-        let directory_modified_at =
-            path_modified_at(&nested_dir).expect("directory tree mtime should be read");
+        let state = worktree_state(&repo).expect("worktree state should be read");
 
-        assert!(
-            directory_modified_at >= file_modified_at,
-            "directory tree mtime should include nested files"
-        );
-        assert!(
-            directory_modified_at > shallow_directory_modified_at,
-            "directory tree mtime should reflect edits to existing nested files"
+        assert!(state.dirty);
+        assert_eq!(
+            state.modified_at_unix,
+            path_modified_at(&nested_file).expect("file mtime should be read")
         );
 
         fs::remove_dir_all(test_dir).expect("test directory should be removed");
