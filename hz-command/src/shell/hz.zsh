@@ -88,8 +88,8 @@ _hz_complete_main() {
     'cd:change to a worktree'
     'list:list worktrees'
     'ls:list worktrees'
-    'remove:remove a worktree'
-    'rm:remove a worktree'
+    'remove:remove one or more worktrees'
+    'rm:remove one or more worktrees'
     'handoff:apply changes between linked worktrees'
     'init:initialize hz repo config'
     'install:install shell integration'
@@ -113,8 +113,8 @@ _hz_complete_worktree_subcommand() {
     'cd:change to a worktree'
     'list:list worktrees'
     'ls:list worktrees'
-    'remove:remove a worktree'
-    'rm:remove a worktree'
+    'remove:remove one or more worktrees'
+    'rm:remove one or more worktrees'
     'handoff:apply changes between linked worktrees'
   )
 
@@ -161,7 +161,7 @@ _hz_complete_command_args() {
         '(-d --debug)'{-d,--debug}'[print debug output]' \
         '--no-cleanup[skip configured cleanup]' \
         '(-h --help)'{-h,--help}'[print help]' \
-        '1:worktree target:_hz_removable_worktrees'
+        '*:worktree target:_hz_removable_worktrees'
       ;;
     handoff)
       _arguments \

@@ -72,7 +72,7 @@ enum Command {
     Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
-    #[command(alias = "rm", about = "Remove a worktree")]
+    #[command(alias = "rm", about = "Remove one or more worktrees")]
     Remove(RemoveWorktreeArgs),
     #[command(about = "Apply changes between local and a linked worktree")]
     Handoff(HandoffWorktreeArgs),
@@ -102,7 +102,7 @@ enum WorktreeCommand {
     Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
-    #[command(alias = "rm", about = "Remove a worktree")]
+    #[command(alias = "rm", about = "Remove one or more worktrees")]
     Remove(RemoveWorktreeArgs),
     #[command(about = "Apply changes between local and a linked worktree")]
     Handoff(HandoffWorktreeArgs),
@@ -150,7 +150,8 @@ struct ListWorktreeArgs {
 
 #[derive(Debug, Args)]
 struct RemoveWorktreeArgs {
-    target: String,
+    #[arg(value_name = "TARGET", required = true, num_args = 1..)]
+    targets: Vec<String>,
     #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
     #[arg(short = 'j', long)]
@@ -1339,31 +1340,43 @@ fn styled(value: &str, color: StyleColor, enabled: bool) -> String {
 fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
     let debug = args.debug;
     let force = args.force;
-    let candidate = hz_command::find_worktree(hz_command::FindWorktree {
-        target: args.target.clone(),
-        repo: args.repo.clone(),
-    })?;
+    let mut removed = Vec::new();
 
-    if should_confirm_unmanaged_removal(&args, &candidate)?
-        && !confirm_unmanaged_removal(&candidate)?
-    {
-        eprintln!("not removed");
-        return Ok(());
+    for target in &args.targets {
+        let candidate = hz_command::find_worktree(hz_command::FindWorktree {
+            target: target.clone(),
+            repo: args.repo.clone(),
+        })?;
+
+        if should_confirm_unmanaged_removal(&args, &candidate)?
+            && !confirm_unmanaged_removal(&candidate)?
+        {
+            eprintln!("not removed");
+            continue;
+        }
+
+        if !args.no_cleanup {
+            hz_command::run_lifecycle_for_entry(&candidate, hz_command::LifecycleKind::Cleanup)?;
+        }
+
+        removed.push(hz_command::remove_found_worktree_with_force(
+            candidate, force,
+        )?);
     }
-
-    if !args.no_cleanup {
-        hz_command::run_lifecycle_for_entry(&candidate, hz_command::LifecycleKind::Cleanup)?;
-    }
-
-    let removed = hz_command::remove_found_worktree_with_force(candidate, force)?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&removed)?);
+        if removed.len() == 1 {
+            println!("{}", serde_json::to_string_pretty(&removed[0])?);
+        } else {
+            println!("{}", serde_json::to_string_pretty(&removed)?);
+        }
     } else if debug {
-        print!(
-            "{}",
-            render_removed_worktree(&removed, io::stdout().is_terminal())
-        );
+        for entry in &removed {
+            print!(
+                "{}",
+                render_removed_worktree(entry, io::stdout().is_terminal())
+            );
+        }
     }
 
     Ok(())
@@ -2161,12 +2174,27 @@ mod tests {
 
         match cli.command {
             Some(Command::Remove(args)) => {
-                assert_eq!(args.target, "target");
+                assert_eq!(args.targets, vec!["target".to_owned()]);
                 assert_eq!(args.repo, Some(PathBuf::from("/repo")));
                 assert!(args.json);
                 assert!(args.debug);
                 assert!(args.force);
                 assert!(args.no_cleanup);
+            }
+            command => panic!("expected remove command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_accepts_multiple_targets() {
+        let cli = Cli::try_parse_from(["hz", "rm", "cartesian-alpha", "archimedean-beta"]).unwrap();
+
+        match cli.command {
+            Some(Command::Remove(args)) => {
+                assert_eq!(
+                    args.targets,
+                    vec!["cartesian-alpha".to_owned(), "archimedean-beta".to_owned()]
+                );
             }
             command => panic!("expected remove command, got {command:?}"),
         }
@@ -2417,7 +2445,7 @@ mod tests {
 
     fn remove_args(json: bool, force: bool) -> RemoveWorktreeArgs {
         RemoveWorktreeArgs {
-            target: "target".to_owned(),
+            targets: vec!["target".to_owned()],
             repo: None,
             json,
             force,

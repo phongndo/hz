@@ -875,7 +875,7 @@ mod tests {
         assert!(script.contains("compinit -C"));
         assert!(script.contains("shift words"));
         assert!(script.contains("shift 2 words"));
-        assert!(script.contains("'rm:remove a worktree'"));
+        assert!(script.contains("'rm:remove one or more worktrees'"));
         assert!(script.contains("'install:install shell integration'"));
         assert!(script.contains("--no-setup[skip configured setup]"));
         assert!(script.contains("--no-cleanup[skip configured cleanup]"));
