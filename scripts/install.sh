@@ -87,8 +87,14 @@ else
 fi
 
 tar -xzf "$asset"
+install_source="$package/hz"
+if [ ! -d "$package" ] || [ ! -x "$install_source" ]; then
+  echo "hz install: extracted archive does not contain executable $install_source" >&2
+  exit 1
+fi
+
 mkdir -p "$install_dir"
-install -m 755 "$package/hz" "$install_dir/$binary"
+install -m 755 "$install_source" "$install_dir/$binary"
 
 echo "installed $binary $tag to $install_dir/$binary"
 echo "run: $binary --version"
