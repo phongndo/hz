@@ -872,13 +872,17 @@ mod tests {
         assert!(script.contains("command hz __complete worktree-targets"));
         assert!(script.contains("compdef _hz_completion hz"));
         assert!(script.contains("compadd -- -h --help -V --version"));
+        assert!(script.contains("if [[ \"$PREFIX\" == -* ]]; then"));
+        assert!(script.contains("_hz_complete_command_options \"$cmd\""));
+        assert!(script.contains("_hz_complete_command_positionals \"$cmd\""));
+        assert!(script.contains("_hz_complete_option_value \"$cmd\""));
         assert!(script.contains("compinit -C"));
         assert!(script.contains("shift words"));
         assert!(script.contains("shift 2 words"));
         assert!(script.contains("'rm:remove one or more worktrees'"));
         assert!(script.contains("'install:install shell integration'"));
-        assert!(script.contains("--no-setup[skip configured setup]"));
-        assert!(script.contains("--no-cleanup[skip configured cleanup]"));
+        assert!(script.contains("--no-setup"));
+        assert!(script.contains("--no-cleanup"));
     }
 
     #[test]
