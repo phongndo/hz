@@ -315,7 +315,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hz-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "crossterm 0.29.0",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "hz-command"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hz-core",
  "hz-diff",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "hz-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "hz-diff"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hz-core",
  "hz-git",
@@ -356,14 +356,14 @@ dependencies = [
 
 [[package]]
 name = "hz-git"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hz-core",
 ]
 
 [[package]]
 name = "hz-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossterm 0.29.0",
  "hz-core",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "hz-worktree"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hz-core",
  "hz-git",
