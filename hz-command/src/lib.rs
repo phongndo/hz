@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env, fs,
     io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
@@ -15,20 +16,22 @@ pub use hz_worktree::{
     WorktreeSource, WorktreeStatus,
 };
 
+const HZ_DIR: &str = ".hz";
 const CONFIG_FILE: &str = "hz.toml";
-const LIFECYCLE_DIR: &str = ".hz";
+const LEGACY_CONFIG_FILE: &str = "hz.toml";
+const ENVIRONMENT_DIR: &str = "environment";
 const SETUP_SCRIPT: &str = "setup";
 const CLEANUP_SCRIPT: &str = "cleanup";
 
 pub fn create_worktree(input: CreateWorktree) -> HzResult<CreatedWorktree> {
-    hz_worktree::create(input)
+    hz_worktree::create(create_worktree_with_config_defaults(input)?)
 }
 
 pub fn create_worktree_with_lifecycle(
     input: CreateWorktree,
     run_setup: bool,
 ) -> HzResult<CreatedWorktree> {
-    let created = hz_worktree::create(input)?;
+    let created = hz_worktree::create(create_worktree_with_config_defaults(input)?)?;
     if run_setup {
         let target = created_worktree_target(&created);
         run_lifecycle_for_path(&created.repo, &created.path, &target, LifecycleKind::Setup)?;
@@ -93,8 +96,8 @@ pub struct RepoInit {
 
 pub fn init_repo(input: InitRepo) -> HzResult<RepoInit> {
     let repo = hz_git::repository_root(input.repo.as_deref())?;
-    let config_path = repo.join(CONFIG_FILE);
-    let lifecycle_path = repo.join(LIFECYCLE_DIR);
+    let config_path = config_path(&repo);
+    let lifecycle_path = repo.join(HZ_DIR).join(ENVIRONMENT_DIR);
     let setup_path = lifecycle_path.join(SETUP_SCRIPT);
     let cleanup_path = lifecycle_path.join(CLEANUP_SCRIPT);
 
@@ -160,6 +163,33 @@ pub fn run_lifecycle_for_entry(
 
 pub fn diff(input: DiffOptions) -> HzResult<String> {
     hz_diff::render(input)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadRepoConfig {
+    pub repo: Option<PathBuf>,
+}
+
+pub fn load_repo_config(input: LoadRepoConfig) -> HzResult<HzConfig> {
+    let repo = config_repo(input.repo.as_deref())?;
+    HzConfig::load(&repo)
+}
+
+fn create_worktree_with_config_defaults(mut input: CreateWorktree) -> HzResult<CreateWorktree> {
+    if input.base.is_none() {
+        let repo = config_repo(input.repo.as_deref())?;
+        let config = HzConfig::load(&repo)?;
+        if let Some(base) = config.default_base() {
+            input.base = Some(base.to_owned());
+        }
+    }
+
+    Ok(input)
+}
+
+fn config_repo(repo: Option<&Path>) -> HzResult<PathBuf> {
+    let current = hz_git::repository_root(repo)?;
+    hz_git::main_worktree(&current)
 }
 
 fn run_lifecycle_for_path(
@@ -261,23 +291,105 @@ fn branch_or_handle(branch: Option<&str>, handle: &str) -> String {
     branch.unwrap_or(handle).to_owned()
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct HzConfig {
-    lifecycle: Option<LifecycleConfig>,
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct HzConfig {
+    pub lifecycle: Option<LifecycleConfig>,
+    pub worktree: Option<WorktreeConfig>,
+    pub list: Option<ListConfig>,
+    pub color: Option<ColorConfig>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct LifecycleConfig {
-    setup: Option<Vec<String>>,
-    cleanup: Option<Vec<String>>,
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LifecycleConfig {
+    pub setup: Option<Vec<String>>,
+    pub cleanup: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WorktreeConfig {
+    pub default_base: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ListConfig {
+    pub headers: Option<ListHeaders>,
+    pub columns: Option<Vec<ListColumn>>,
+    pub compact_columns: Option<Vec<ListColumn>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListHeaders {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListColumn {
+    Marker,
+    Target,
+    Branch,
+    Handle,
+    Status,
+    Base,
+    Modified,
+    Path,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ColorConfig {
+    pub mode: Option<ColorMode>,
+    pub scheme: Option<String>,
+    #[serde(default)]
+    pub schemes: HashMap<String, ColorSchemeConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorMode {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ColorSchemeConfig {
+    pub header: Option<String>,
+    pub target: Option<String>,
+    pub branch: Option<String>,
+    pub handle: Option<String>,
+    pub base: Option<String>,
+    pub modified: Option<String>,
+    pub path: Option<String>,
+    pub clean: Option<String>,
+    pub dirty: Option<String>,
+    pub unknown: Option<String>,
+    pub current: Option<String>,
+    pub local: Option<String>,
+}
+
+impl HzConfig {
+    pub fn default_base(&self) -> Option<&str> {
+        self.worktree
+            .as_ref()
+            .and_then(|worktree| worktree.default_base.as_deref())
+            .filter(|base| !base.is_empty())
+    }
 }
 
 impl HzConfig {
     fn load(worktree: &Path) -> HzResult<Self> {
-        let path = worktree.join(CONFIG_FILE);
-        if !path.exists() {
+        let path = config_path(worktree);
+        let legacy_path = legacy_config_path(worktree);
+        let path = if path.exists() {
+            path
+        } else if legacy_path.exists() {
+            legacy_path
+        } else {
             return Ok(Self::default());
-        }
+        };
 
         let contents = fs::read_to_string(&path)?;
         toml::from_str(&contents)
@@ -292,6 +404,14 @@ impl HzConfig {
         }
         .filter(|command| !command.is_empty())
     }
+}
+
+fn config_path(repo: &Path) -> PathBuf {
+    repo.join(HZ_DIR).join(CONFIG_FILE)
+}
+
+fn legacy_config_path(repo: &Path) -> PathBuf {
+    repo.join(LEGACY_CONFIG_FILE)
 }
 
 impl LifecycleKind {
@@ -347,7 +467,7 @@ fn make_executable(_path: &Path) -> HzResult<()> {
 }
 
 fn default_config() -> &'static str {
-    "[lifecycle]\nsetup = [\".hz/setup\"]\ncleanup = [\".hz/cleanup\"]\n"
+    "[worktree]\n# default_base = \"dev\"\n\n[list]\nheaders = \"auto\"\ncolumns = [\"marker\", \"target\", \"status\", \"modified\", \"path\"]\n\n[color]\nmode = \"auto\"\nscheme = \"terminal\"\n\n[lifecycle]\nsetup = [\".hz/environment/setup\"]\ncleanup = [\".hz/environment/cleanup\"]\n"
 }
 
 fn default_setup_script() -> &'static str {
@@ -515,18 +635,18 @@ mod tests {
     #[test]
     fn lifecycle_setup_runs_configured_script_in_worktree() {
         let test_dir = test_repo("hz-lifecycle-test");
-        fs::create_dir_all(test_dir.join(".hz")).unwrap();
+        fs::create_dir_all(test_dir.join(".hz").join("environment")).unwrap();
         fs::write(
-            test_dir.join(CONFIG_FILE),
-            "[lifecycle]\nsetup = [\".hz/setup\"]\n",
+            test_dir.join(".hz").join(CONFIG_FILE),
+            "[lifecycle]\nsetup = [\".hz/environment/setup\"]\n",
         )
         .unwrap();
         fs::write(
-            test_dir.join(".hz").join("setup"),
+            test_dir.join(".hz").join("environment").join("setup"),
             "#!/usr/bin/env sh\nset -eu\nprintf '%s' \"$HZ_TARGET:$HZ_LIFECYCLE\" > lifecycle.out\n",
         )
         .unwrap();
-        make_executable(&test_dir.join(".hz").join("setup")).unwrap();
+        make_executable(&test_dir.join(".hz").join("environment").join("setup")).unwrap();
 
         let run = run_lifecycle(RunLifecycle {
             target: None,
@@ -541,6 +661,98 @@ mod tests {
             fs::read_to_string(test_dir.join("lifecycle.out")).unwrap(),
             "local:setup"
         );
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn repo_config_loads_hz_directory_config_before_legacy_root_config() {
+        let test_dir = test_repo("hz-config-precedence-test");
+        fs::create_dir_all(test_dir.join(".hz")).unwrap();
+        fs::write(
+            test_dir.join("hz.toml"),
+            "[worktree]\ndefault_base = \"main\"\n",
+        )
+        .unwrap();
+        fs::write(
+            test_dir.join(".hz").join("hz.toml"),
+            "[worktree]\ndefault_base = \"dev\"\n",
+        )
+        .unwrap();
+
+        let config = load_repo_config(LoadRepoConfig {
+            repo: Some(test_dir.clone()),
+        })
+        .unwrap();
+
+        assert_eq!(config.default_base(), Some("dev"));
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn repo_config_falls_back_to_legacy_root_config() {
+        let test_dir = test_repo("hz-config-legacy-test");
+        fs::write(
+            test_dir.join("hz.toml"),
+            "[worktree]\ndefault_base = \"dev\"\n",
+        )
+        .unwrap();
+
+        let config = load_repo_config(LoadRepoConfig {
+            repo: Some(test_dir.clone()),
+        })
+        .unwrap();
+
+        assert_eq!(config.default_base(), Some("dev"));
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn create_worktree_defaults_base_from_repo_config() {
+        let test_dir = test_repo("hz-create-default-base-test");
+        fs::create_dir_all(test_dir.join(".hz")).unwrap();
+        fs::write(
+            test_dir.join(".hz").join("hz.toml"),
+            "[worktree]\ndefault_base = \"dev\"\n",
+        )
+        .unwrap();
+
+        let input = create_worktree_with_config_defaults(CreateWorktree {
+            name: Some("feature/ui".to_owned()),
+            repo: Some(test_dir.clone()),
+            path: None,
+            base: None,
+            branch: None,
+        })
+        .unwrap();
+
+        assert_eq!(input.base.as_deref(), Some("dev"));
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn create_worktree_keeps_explicit_base_over_repo_config() {
+        let test_dir = test_repo("hz-create-explicit-base-test");
+        fs::create_dir_all(test_dir.join(".hz")).unwrap();
+        fs::write(
+            test_dir.join(".hz").join("hz.toml"),
+            "[worktree]\ndefault_base = \"dev\"\n",
+        )
+        .unwrap();
+
+        let input = create_worktree_with_config_defaults(CreateWorktree {
+            name: Some("feature/ui".to_owned()),
+            repo: Some(test_dir.clone()),
+            path: None,
+            base: Some("main".to_owned()),
+            branch: None,
+        })
+        .unwrap();
+
+        assert_eq!(input.base.as_deref(), Some("main"));
 
         fs::remove_dir_all(test_dir).unwrap();
     }
