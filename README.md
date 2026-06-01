@@ -24,6 +24,51 @@ the existing command surface to depend on plugin machinery.
 Some command handlers still intentionally return `not implemented yet` until
 their real behavior is added.
 
+## Installation
+
+Install the latest release with the shell installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh
+```
+
+The installer downloads the matching GitHub release archive for macOS or Linux,
+verifies its SHA-256 file when `shasum` or `sha256sum` is available, and installs
+`hz` to `~/.local/bin` by default.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_VERSION=0.1.1 sh
+curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_INSTALL_DIR=/usr/local/bin sh
+```
+
+Update an installer-managed binary in place:
+
+```sh
+hz update
+hz update --target-version 0.1.1
+```
+
+With mise, use the GitHub backend until `hz` has a mise registry shorthand:
+
+```sh
+mise use -g github:phongndo/hz@latest
+hz --version
+```
+
+With Cargo, install the package `hz-cli`; it provides the `hz` binary:
+
+```sh
+cargo install --locked --git https://github.com/phongndo/hz --tag v0.1.1 hz-cli
+```
+
+After installing the binary, install shell integration for auto-cd and
+completions:
+
+```sh
+hz install zsh
+source ~/.zshrc
+```
+
 ## Worktrees
 
 `hz new` creates a detached scratch Git worktree with a human-facing handle and

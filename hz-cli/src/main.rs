@@ -1,9 +1,11 @@
 use std::{
     collections::HashSet,
-    env, fs,
+    env,
+    ffi::{OsStr, OsString},
+    fs,
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode},
+    process::{Command as ProcessCommand, ExitCode, Stdio},
 };
 
 use clap::{
@@ -36,6 +38,9 @@ examples:
   hz cleanup feature/ui
   hz cd feature/ui
   hz handoff feature/ui";
+
+const INSTALL_SCRIPT: &str = include_str!("../../scripts/install.sh");
+const RELEASE_REPO: &str = "phongndo/hz";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -87,6 +92,8 @@ enum Command {
     Cleanup(LifecycleArgs),
     #[command(about = "Print shell integration script")]
     Shell(ShellArgs),
+    #[command(about = "Update hz from GitHub releases")]
+    Update(UpdateArgs),
     #[command(about = "Render a Git diff")]
     Diff(DiffArgs),
     #[command(about = "Open the hz terminal UI")]
@@ -204,6 +211,14 @@ struct LifecycleArgs {
     repo: Option<PathBuf>,
 }
 
+#[derive(Debug, Args)]
+struct UpdateArgs {
+    #[arg(long = "target-version", value_name = "VERSION")]
+    version: Option<String>,
+    #[arg(long, value_name = "DIR")]
+    install_dir: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ShellArg {
     Zsh,
@@ -273,6 +288,7 @@ fn run() -> HzResult<()> {
         Some(Command::Setup(args)) => run_lifecycle(args, hz_command::LifecycleKind::Setup),
         Some(Command::Cleanup(args)) => run_lifecycle(args, hz_command::LifecycleKind::Cleanup),
         Some(Command::Shell(args)) => shell_script(args),
+        Some(Command::Update(args)) => update(args),
         Some(Command::Diff(args)) => {
             let output = hz_command::diff(hz_command::DiffOptions {
                 repo: args.repo,
@@ -1581,6 +1597,97 @@ fn shell_script(args: ShellArgs) -> HzResult<()> {
     Ok(())
 }
 
+fn update(args: UpdateArgs) -> HzResult<()> {
+    let argv0 = env::args_os().next().ok_or_else(|| {
+        hz_core::HzError::Usage("could not determine current executable".to_owned())
+    })?;
+    let binary = update_binary_name(&argv0)?;
+    let install_dir = match args.install_dir {
+        Some(path) => absolute_path(path)?,
+        None => default_update_install_dir(&argv0)?,
+    };
+    let version = args.version.unwrap_or_else(|| "latest".to_owned());
+
+    let mut child = ProcessCommand::new("sh")
+        .arg("-s")
+        .env("HZ_REPO", RELEASE_REPO)
+        .env("HZ_INSTALL_DIR", install_dir)
+        .env("HZ_VERSION", version)
+        .env("HZ_BINARY", binary)
+        .stdin(Stdio::piped())
+        .spawn()?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| hz_core::HzError::Usage("could not open installer stdin".to_owned()))?;
+    stdin.write_all(INSTALL_SCRIPT.as_bytes())?;
+    drop(stdin);
+
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(hz_core::HzError::Usage(format!(
+            "update failed with status {}",
+            status
+                .code()
+                .map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+        )));
+    }
+
+    Ok(())
+}
+
+fn update_binary_name(argv0: &OsStr) -> HzResult<OsString> {
+    Path::new(argv0)
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .map(OsString::from)
+        .ok_or_else(|| {
+            hz_core::HzError::Usage("could not determine current executable name".to_owned())
+        })
+}
+
+fn default_update_install_dir(argv0: &OsStr) -> HzResult<PathBuf> {
+    let argv0_path = Path::new(argv0);
+    if argv0_path.components().count() > 1 {
+        return invocation_parent_dir(argv0_path);
+    }
+
+    let binary = update_binary_name(argv0)?;
+    if let Some(path) = env::var_os("PATH") {
+        for dir in env::split_paths(&path) {
+            if dir.join(Path::new(&binary)).is_file() {
+                return absolute_path(dir);
+            }
+        }
+    }
+
+    current_exe_parent_dir()
+}
+
+fn invocation_parent_dir(path: &Path) -> HzResult<PathBuf> {
+    let parent = path.parent().ok_or_else(|| {
+        hz_core::HzError::Usage("could not determine current executable directory".to_owned())
+    })?;
+    absolute_path(parent.to_path_buf())
+}
+
+fn current_exe_parent_dir() -> HzResult<PathBuf> {
+    let executable = env::current_exe()?;
+    let parent = executable.parent().ok_or_else(|| {
+        hz_core::HzError::Usage("could not determine current executable directory".to_owned())
+    })?;
+    absolute_path(parent.to_path_buf())
+}
+
+fn absolute_path(path: PathBuf) -> HzResult<PathBuf> {
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(env::current_dir()?.join(path))
+    }
+}
+
 fn run_lifecycle(args: LifecycleArgs, kind: hz_command::LifecycleKind) -> HzResult<()> {
     let run = hz_command::run_lifecycle(hz_command::RunLifecycle {
         target: args.target,
@@ -2511,6 +2618,46 @@ mod tests {
             Some(Command::Cleanup(args)) => assert_eq!(args.target, None),
             command => panic!("expected cleanup command, got {command:?}"),
         }
+
+        let cli = Cli::try_parse_from([
+            "hz",
+            "update",
+            "--target-version",
+            "0.1.1",
+            "--install-dir",
+            "/tmp/hz-bin",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Update(args)) => {
+                assert_eq!(args.version.as_deref(), Some("0.1.1"));
+                assert_eq!(args.install_dir, Some(PathBuf::from("/tmp/hz-bin")));
+            }
+            command => panic!("expected update command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn update_target_uses_invoked_binary_name_and_directory() {
+        let cwd = env::current_dir().unwrap();
+
+        assert_eq!(
+            update_binary_name(OsStr::new("./target/debug/hz-dev")).unwrap(),
+            OsString::from("hz-dev")
+        );
+        assert!(
+            default_update_install_dir(OsStr::new("./target/debug/hz-dev"))
+                .unwrap()
+                .ends_with(Path::new("target/debug"))
+        );
+        assert_eq!(
+            default_update_install_dir(OsStr::new("/usr/local/bin/hz-beta")).unwrap(),
+            PathBuf::from("/usr/local/bin")
+        );
+        assert_eq!(
+            absolute_path(PathBuf::from("bin")).unwrap(),
+            cwd.join("bin")
+        );
     }
 
     #[test]
