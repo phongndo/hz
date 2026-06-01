@@ -188,15 +188,17 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
         fs::create_dir_all(parent)?;
     }
 
-    if branch.is_none() {
-        prune_detached_worktrees_before_create(
-            &mut registry,
+    let prune_candidates = if branch.is_none() {
+        detached_worktree_prune_candidates(
+            &registry,
             &repo,
             input
                 .max_detached_worktrees
                 .unwrap_or(DEFAULT_MAX_DETACHED_WORKTREES),
-        )?;
-    }
+        )?
+    } else {
+        Vec::new()
+    };
 
     hz_git::add_worktree(&repo, &path, branch.as_deref(), input.base.as_deref())?;
     let path = fs::canonicalize(&path)?;
@@ -215,6 +217,7 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     };
     registry.entries.push(entry);
     registry.save()?;
+    prune_detached_worktrees(&mut registry, prune_candidates)?;
 
     Ok(CreatedWorktree {
         id,
@@ -1020,17 +1023,36 @@ fn remove_registered_entry_from_registry(
     Ok(entry)
 }
 
-fn prune_detached_worktrees_before_create(
-    registry: &mut Registry,
+fn detached_worktree_prune_candidates(
+    registry: &Registry,
     repo: &Path,
     max_detached_worktrees: usize,
-) -> HzResult<()> {
-    if max_detached_worktrees == 0 {
-        return Ok(());
-    }
-
+) -> HzResult<Vec<WorktreeEntry>> {
     let current = hz_git::repository_root(None).ok();
     let git_worktrees = hz_git::list_worktrees(repo)?;
+
+    select_detached_worktree_prune_candidates(
+        registry,
+        repo,
+        max_detached_worktrees,
+        current.as_deref(),
+        &git_worktrees,
+        clean_worktree,
+    )
+}
+
+fn select_detached_worktree_prune_candidates(
+    registry: &Registry,
+    repo: &Path,
+    max_detached_worktrees: usize,
+    current: Option<&Path>,
+    git_worktrees: &[hz_git::GitWorktree],
+    is_clean: impl Fn(&Path) -> bool,
+) -> HzResult<Vec<WorktreeEntry>> {
+    if max_detached_worktrees == 0 {
+        return Ok(Vec::new());
+    }
+
     let mut detached: Vec<_> = registry
         .entries
         .iter()
@@ -1049,7 +1071,7 @@ fn prune_detached_worktrees_before_create(
         .saturating_add(1)
         .saturating_sub(max_detached_worktrees);
     if prune_count == 0 {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     detached.sort_by(|left, right| {
@@ -1060,12 +1082,8 @@ fn prune_detached_worktrees_before_create(
 
     let candidates: Vec<_> = detached
         .into_iter()
-        .filter(|entry| {
-            current
-                .as_deref()
-                .is_none_or(|current| !same_path(&entry.path, current))
-        })
-        .filter(|entry| clean_worktree(&entry.path))
+        .filter(|entry| current.is_none_or(|current| !same_path(&entry.path, current)))
+        .filter(|entry| is_clean(&entry.path))
         .take(prune_count)
         .collect();
 
@@ -1075,10 +1093,19 @@ fn prune_detached_worktrees_before_create(
         )));
     }
 
+    Ok(candidates)
+}
+
+fn prune_detached_worktrees(
+    registry: &mut Registry,
+    candidates: Vec<WorktreeEntry>,
+) -> HzResult<()> {
     for entry in candidates {
         remove_registered_entry_from_registry(registry, &entry, false)?;
+        registry.save()?;
     }
-    registry.save()
+
+    Ok(())
 }
 
 fn clean_worktree(path: &Path) -> bool {
@@ -1612,6 +1639,104 @@ mod tests {
     }
 
     #[test]
+    fn detached_prune_candidates_select_oldest_clean_managed_detached_worktree() {
+        let repo = PathBuf::from("/repo/hz");
+        let old = detached_test_entry(&repo, "old", 1);
+        let new = detached_test_entry(&repo, "new", 2);
+        let branch_backed = WorktreeEntry {
+            branch: Some("feature/ui".to_owned()),
+            ..detached_test_entry(&repo, "branch", 0)
+        };
+        let unmanaged = WorktreeEntry {
+            source: WorktreeSource::Git,
+            ..detached_test_entry(&repo, "unmanaged", 0)
+        };
+        let stale = detached_test_entry(&repo, "stale", 0);
+        let registry = Registry {
+            entries: vec![new.clone(), branch_backed, unmanaged, stale, old.clone()],
+            handoffs: Vec::new(),
+            patch_handoffs: Vec::new(),
+        };
+        let git_worktrees = vec![
+            git_detached(&new),
+            git_detached(&old),
+            hz_git::GitWorktree {
+                path: PathBuf::from("/worktrees/branch"),
+                branch: Some("feature/ui".to_owned()),
+            },
+        ];
+
+        let candidates = select_detached_worktree_prune_candidates(
+            &registry,
+            &repo,
+            2,
+            None,
+            &git_worktrees,
+            |_| true,
+        )
+        .unwrap();
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|entry| entry.handle.as_str())
+                .collect::<Vec<_>>(),
+            vec!["old"]
+        );
+    }
+
+    #[test]
+    fn detached_prune_candidates_error_when_current_or_dirty_entries_block_limit() {
+        let repo = PathBuf::from("/repo/hz");
+        let current = detached_test_entry(&repo, "current", 1);
+        let dirty = detached_test_entry(&repo, "dirty", 2);
+        let registry = Registry {
+            entries: vec![current.clone(), dirty.clone()],
+            handoffs: Vec::new(),
+            patch_handoffs: Vec::new(),
+        };
+        let git_worktrees = vec![git_detached(&current), git_detached(&dirty)];
+
+        let error = select_detached_worktree_prune_candidates(
+            &registry,
+            &repo,
+            2,
+            Some(&current.path),
+            &git_worktrees,
+            |path| !same_path(path, &dirty.path),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "detached worktree limit 2 would be exceeded; not enough clean detached worktrees can be auto-removed"
+        );
+    }
+
+    #[test]
+    fn detached_prune_candidates_allow_zero_to_disable_auto_pruning() {
+        let repo = PathBuf::from("/repo/hz");
+        let entry = detached_test_entry(&repo, "old", 1);
+        let registry = Registry {
+            entries: vec![entry.clone()],
+            handoffs: Vec::new(),
+            patch_handoffs: Vec::new(),
+        };
+
+        let candidates = select_detached_worktree_prune_candidates(
+            &registry,
+            &repo,
+            0,
+            None,
+            &[git_detached(&entry)],
+            |_| false,
+        )
+        .unwrap();
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
     fn generated_unique_handle_searches_past_old_probe_window() {
         let repo = PathBuf::from("/repo");
         let seed = 0;
@@ -2097,6 +2222,28 @@ mod tests {
             created_at_unix: 0,
             modified_at_unix: 0,
             status: WorktreeStatus::Unknown,
+        }
+    }
+
+    fn detached_test_entry(repo: &Path, handle: &str, created_at_unix: u64) -> WorktreeEntry {
+        WorktreeEntry {
+            id: handle.to_owned(),
+            handle: handle.to_owned(),
+            repo: repo.to_path_buf(),
+            path: PathBuf::from("/worktrees").join(handle),
+            branch: None,
+            base: None,
+            source: WorktreeSource::Managed,
+            created_at_unix,
+            modified_at_unix: 0,
+            status: WorktreeStatus::Unknown,
+        }
+    }
+
+    fn git_detached(entry: &WorktreeEntry) -> hz_git::GitWorktree {
+        hz_git::GitWorktree {
+            path: entry.path.clone(),
+            branch: None,
         }
     }
 }

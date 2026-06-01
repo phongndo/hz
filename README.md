@@ -56,9 +56,10 @@ use ASCII fallbacks such as `@` and `~`.
 Detached scratch worktrees are capped at 15 by default. Creating another
 detached worktree auto-removes the oldest clean managed detached worktrees until
 the cap is satisfied. Branch-backed, unmanaged, dirty, unknown, and current
-worktrees are not auto-removed. Set `[worktree].max_detached` in `.hz/hz.toml`,
-or pass `--max-detached <count>` to `hz new` or `hz handoff --new`; `0`
-disables auto-pruning.
+worktrees are not auto-removed. If there are not enough removable worktrees,
+`hz new` and `hz handoff --new` refuse to create another detached worktree. Set
+`[worktree].max_detached` in `.hz/hz.toml`, or pass `--max-detached <count>` to
+`hz new` or `hz handoff --new`; `0` disables auto-pruning.
 
 Repo config can set the default base branch for new worktrees:
 
