@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Read package version
+        id: package
+        shell: bash
+        run: |
+          version="$(
+            cargo metadata --locked --format-version 1 --no-deps \
+              | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "hz-cli"))'
+          )"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$tag_version" != "${{ steps.package.outputs.version }}" ]; then
+            echo "tag version $tag_version does not match hz-cli version ${{ steps.package.outputs.version }}" >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: cargo test --workspace --all-targets --all-features --locked --target ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release -p hz-cli --locked --target ${{ matrix.target }}
+
+      - name: Package release asset
+        shell: bash
+        run: |
+          version="${{ steps.package.outputs.version }}"
+          package="hz-v${version}-${{ matrix.target }}"
+          binary="target/${{ matrix.target }}/release/hz"
+          asset="dist/${package}.tar.gz"
+
+          test -x "$binary"
+          mkdir -p "dist/$package"
+          install -m 755 "$binary" "dist/$package/hz"
+          cp README.md LICENSE "dist/$package/"
+          tar -czf "$asset" -C dist "$package"
+
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "$asset" > "$asset.sha256"
+          else
+            sha256sum "$asset" > "$asset.sha256"
+          fi
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: hz-${{ matrix.target }}
+          path: dist/*
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cat > release-notes.md <<EOF
+          Release $GITHUB_REF_NAME.
+
+          Install with mise:
+
+          \`\`\`sh
+          mise use -g github:phongndo/hz@$version
+          \`\`\`
+          EOF
+
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --title "hz $version" \
+            --notes-file release-notes.md
