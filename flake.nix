@@ -32,10 +32,53 @@
             packages = with pkgs; [
               cargo
               clippy
+              coreutils
+              curl
+              git
+              gnutar
+              just
               rust-analyzer
               rustc
               rustfmt
+              zsh
             ];
+            shellHook = ''
+              hz_dev_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+              hz_dev_bin="$hz_dev_root/target/dev-bin"
+              hz_dev_zdotdir="$hz_dev_root/target/dev-zdotdir"
+
+              export HZ_DEV_ROOT="$hz_dev_root"
+              export HZ_DEV_BIN="$hz_dev_bin"
+              export HZ_DEV_ZDOTDIR="$hz_dev_zdotdir"
+
+              mkdir -p "$HZ_DEV_BIN" "$HZ_DEV_ZDOTDIR"
+              cat > "$HZ_DEV_BIN/hz" <<'HZ_DEV_SHIM'
+#!/usr/bin/env sh
+set -eu
+
+repo="''${HZ_DEV_ROOT:?HZ_DEV_ROOT is not set}"
+binary="$repo/target/debug/hz"
+
+if [ ! -x "$binary" ]; then
+  echo "hz dev shim: building hz-cli..." >&2
+  (cd "$repo" && cargo build -p hz-cli --locked >&2)
+fi
+
+exec "$binary" "$@"
+HZ_DEV_SHIM
+              chmod +x "$HZ_DEV_BIN/hz"
+              export PATH="$HZ_DEV_BIN:$PATH"
+
+              cat > "$HZ_DEV_ZDOTDIR/.zshrc" <<'HZ_DEV_ZSHRC'
+export PATH="$HZ_DEV_BIN:$PATH"
+eval "$(hz shell zsh)"
+HZ_DEV_ZSHRC
+
+              if [ -z "''${HZ_DEV_INTERACTIVE_SHELL:-}" ] && [ -t 0 ] && [ -t 1 ] && command -v zsh >/dev/null 2>&1; then
+                export HZ_DEV_INTERACTIVE_SHELL=1
+                exec env ZDOTDIR="$HZ_DEV_ZDOTDIR" zsh -i
+              fi
+            '';
           };
         }
       );
