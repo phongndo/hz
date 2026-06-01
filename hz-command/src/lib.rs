@@ -30,7 +30,7 @@ pub fn create_worktree_with_lifecycle(
     input: CreateWorktree,
     run_setup: bool,
 ) -> HzResult<CreatedWorktree> {
-    let created = hz_worktree::create(create_worktree_with_config_defaults(input)?)?;
+    let created = create_worktree(input)?;
     if run_setup {
         let target = created_worktree_target(&created);
         run_lifecycle_for_path(&created.repo, &created.path, &target, LifecycleKind::Setup)?;
@@ -43,7 +43,7 @@ pub fn path_worktree(input: PathWorktree) -> HzResult<hz_core::paths::WorktreeTa
 }
 
 pub fn handoff_worktree(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {
-    hz_worktree::handoff(input)
+    hz_worktree::handoff(with_configured_handoff_detached_limit(input)?)
 }
 
 pub fn list_worktrees(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
@@ -175,11 +175,18 @@ pub fn load_repo_config(input: LoadRepoConfig) -> HzResult<HzConfig> {
 }
 
 fn create_worktree_with_config_defaults(mut input: CreateWorktree) -> HzResult<CreateWorktree> {
-    if input.base.is_none() {
+    let needs_detached_limit =
+        input.max_detached_worktrees.is_none() && creates_detached_worktree(&input);
+    if input.base.is_none() || needs_detached_limit {
         let repo = config_repo(input.repo.as_deref())?;
         let config = HzConfig::load(&repo)?;
-        if let Some(base) = config.default_base() {
+        if input.base.is_none()
+            && let Some(base) = config.default_base()
+        {
             input.base = Some(base.to_owned());
+        }
+        if needs_detached_limit {
+            input.max_detached_worktrees = Some(config.max_detached_worktrees());
         }
     }
 
@@ -307,6 +314,7 @@ pub struct LifecycleConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct WorktreeConfig {
     pub default_base: Option<String>,
+    pub max_detached: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -376,9 +384,7 @@ impl HzConfig {
             .and_then(|worktree| worktree.default_base.as_deref())
             .filter(|base| !base.is_empty())
     }
-}
 
-impl HzConfig {
     fn load(worktree: &Path) -> HzResult<Self> {
         let path = config_path(worktree);
         if !path.exists() {
@@ -398,6 +404,33 @@ impl HzConfig {
         }
         .filter(|command| !command.is_empty())
     }
+
+    fn max_detached_worktrees(&self) -> usize {
+        self.worktree
+            .as_ref()
+            .and_then(|worktree| worktree.max_detached)
+            .unwrap_or(hz_worktree::DEFAULT_MAX_DETACHED_WORKTREES)
+    }
+}
+
+fn with_configured_handoff_detached_limit(mut input: HandoffWorktree) -> HzResult<HandoffWorktree> {
+    if input.max_detached_worktrees.is_none()
+        && input.mode == HandoffMode::Patch
+        && input.create
+        && input.target.is_none()
+    {
+        input.max_detached_worktrees = Some(configured_detached_limit(input.repo.as_deref())?);
+    }
+    Ok(input)
+}
+
+fn creates_detached_worktree(input: &CreateWorktree) -> bool {
+    input.name.is_none() && input.branch.is_none()
+}
+
+fn configured_detached_limit(repo: Option<&Path>) -> HzResult<usize> {
+    let repo = config_repo(repo)?;
+    Ok(HzConfig::load(&repo)?.max_detached_worktrees())
 }
 
 fn config_path(repo: &Path) -> PathBuf {
@@ -457,7 +490,7 @@ fn make_executable(_path: &Path) -> HzResult<()> {
 }
 
 fn default_config() -> &'static str {
-    "[worktree]\n# default_base = \"dev\"\n\n[list]\nheaders = \"auto\"\ncolumns = [\"marker\", \"target\", \"status\", \"modified\", \"path\"]\n\n[color]\nmode = \"auto\"\nscheme = \"terminal\"\n\n[lifecycle]\nsetup = [\".hz/environment/setup\"]\ncleanup = [\".hz/environment/cleanup\"]\n"
+    "[worktree]\nmax_detached = 15\n# default_base = \"dev\"\n\n[list]\nheaders = \"auto\"\ncolumns = [\"marker\", \"target\", \"status\", \"modified\", \"path\"]\n\n[color]\nmode = \"auto\"\nscheme = \"terminal\"\n\n[lifecycle]\nsetup = [\".hz/environment/setup\"]\ncleanup = [\".hz/environment/cleanup\"]\n"
 }
 
 fn default_setup_script() -> &'static str {
@@ -772,6 +805,7 @@ mod tests {
             path: None,
             base: None,
             branch: None,
+            max_detached_worktrees: None,
         })
         .unwrap();
 
@@ -796,6 +830,7 @@ mod tests {
             path: None,
             base: Some("main".to_owned()),
             branch: None,
+            max_detached_worktrees: None,
         })
         .unwrap();
 
@@ -832,6 +867,7 @@ mod tests {
             branch: Some("feature/login".to_owned()),
             base: None,
             source: WorktreeSource::Managed,
+            warnings: Vec::new(),
         };
         let found = WorktreeEntry {
             id: "id".to_owned(),
@@ -883,6 +919,7 @@ mod tests {
         assert!(script.contains("'install:install shell integration'"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
+        assert!(script.contains("--max-detached"));
     }
 
     #[test]
@@ -896,6 +933,7 @@ mod tests {
         assert!(script.contains("init install setup cleanup shell"));
         assert!(script.contains("-l no-setup"));
         assert!(script.contains("-l no-cleanup"));
+        assert!(script.contains("-l max-detached"));
     }
 
     #[test]
@@ -908,6 +946,7 @@ mod tests {
         assert!(script.contains("init install setup cleanup shell"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
+        assert!(script.contains("--max-detached"));
     }
 
     #[test]

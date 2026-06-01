@@ -120,6 +120,8 @@ struct NewWorktreeArgs {
     base: Option<String>,
     #[arg(short = 'b', long)]
     branch: Option<String>,
+    #[arg(long)]
+    max_detached: Option<usize>,
     #[arg(short = 'j', long)]
     json: bool,
     #[arg(short = 'd', long)]
@@ -172,6 +174,8 @@ struct HandoffWorktreeArgs {
     branch: bool,
     #[arg(short = 'n', long = "new")]
     create: bool,
+    #[arg(long)]
+    max_detached: Option<usize>,
     #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
     #[arg(short = 'j', long)]
@@ -293,6 +297,7 @@ fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
             path: args.path,
             base: args.base,
             branch: args.branch,
+            max_detached_worktrees: args.max_detached,
         },
         run_setup,
     )?;
@@ -301,11 +306,14 @@ fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
         println!("{}", serde_json::to_string_pretty(&created)?);
     } else if args.path_only {
         println!("{}", created.path.display());
+        print_warnings(&created.warnings, io::stderr().is_terminal());
     } else if debug {
         print!(
             "{}",
             render_created_worktree(&created, io::stdout().is_terminal())
         );
+    } else {
+        print_warnings(&created.warnings, io::stderr().is_terminal());
     }
 
     Ok(())
@@ -1043,8 +1051,20 @@ fn render_created_worktree(created: &hz_command::CreatedWorktree, color: bool) -
     if let Some(base) = &created.base {
         output.push_str(&render_field("base", base, StyleColor::White, color));
     }
+    for warning in &created.warnings {
+        output.push_str(&render_field("warning", warning, StyleColor::Yellow, color));
+    }
 
     output
+}
+
+fn print_warnings(warnings: &[String], color: bool) {
+    for warning in warnings {
+        eprintln!(
+            "{} {warning}",
+            styled("warning:", StyleColor::Yellow, color)
+        );
+    }
 }
 
 fn render_removed_worktree(worktree: &hz_command::WorktreeEntry, color: bool) -> String {
@@ -1101,6 +1121,9 @@ fn render_handoff(handoff: &hz_command::WorktreeHandoff, color: bool) -> String 
         name_width,
         color,
     ));
+    for warning in &handoff.warnings {
+        output.push_str(&render_field("warning", warning, StyleColor::Yellow, color));
+    }
 
     output
 }
@@ -1508,12 +1531,14 @@ fn handoff_worktree(args: HandoffWorktreeArgs) -> HzResult<()> {
         },
         repo: args.repo,
         create: args.create,
+        max_detached_worktrees: args.max_detached,
     })?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&handoff)?);
     } else if args.path_only {
         println!("{}", handoff.to.path.display());
+        print_warnings(&handoff.warnings, io::stderr().is_terminal());
     } else {
         print!("{}", render_handoff(&handoff, io::stdout().is_terminal()));
     }
@@ -2118,6 +2143,7 @@ mod tests {
                 branch: Some("feature/ui".to_owned()),
                 base: Some("main".to_owned()),
                 source: hz_command::WorktreeSource::Managed,
+                warnings: Vec::new(),
             },
             false,
         );
@@ -2140,6 +2166,7 @@ mod tests {
                 branch: None,
                 base: None,
                 source: hz_command::WorktreeSource::Managed,
+                warnings: Vec::new(),
             },
             false,
         );
@@ -2147,6 +2174,31 @@ mod tests {
         assert!(output.starts_with("+ created  generated-handle"));
         assert!(output.contains("branch  detached"));
         assert!(output.contains("path    /worktrees/entry"));
+    }
+
+    #[test]
+    fn created_output_renders_prune_warnings() {
+        let output = render_created_worktree(
+            &hz_command::CreatedWorktree {
+                id: "entry-id".to_owned(),
+                name: "generated-handle".to_owned(),
+                handle: "generated-handle".to_owned(),
+                repo: PathBuf::from("/repo"),
+                path: PathBuf::from("/worktrees/entry"),
+                branch: None,
+                base: None,
+                source: hz_command::WorktreeSource::Managed,
+                warnings: vec![
+                    "created worktree, but failed to prune detached worktrees: permission denied"
+                        .to_owned(),
+                ],
+            },
+            false,
+        );
+
+        assert!(output.contains(
+            "warning  created worktree, but failed to prune detached worktrees: permission denied"
+        ));
     }
 
     #[test]
@@ -2187,6 +2239,7 @@ mod tests {
                     path: PathBuf::from("/worktrees/entry"),
                 },
                 changed: true,
+                warnings: Vec::new(),
             },
             false,
         );
@@ -2196,6 +2249,35 @@ mod tests {
         assert!(output.contains("branch  feature/ui"));
         assert!(output.contains("< from  local"));
         assert!(output.contains("> to    feature/ui"));
+    }
+
+    #[test]
+    fn handoff_output_renders_prune_warnings() {
+        let output = render_handoff(
+            &hz_command::WorktreeHandoff {
+                repo: PathBuf::from("/repo"),
+                mode: hz_command::HandoffMode::Patch,
+                branch: Some("feature/ui".to_owned()),
+                from: hz_core::paths::WorktreeTarget {
+                    name: "local".to_owned(),
+                    path: PathBuf::from("/repo"),
+                },
+                to: hz_core::paths::WorktreeTarget {
+                    name: "generated-handle".to_owned(),
+                    path: PathBuf::from("/worktrees/entry"),
+                },
+                changed: true,
+                warnings: vec![
+                    "created worktree, but failed to prune detached worktrees: permission denied"
+                        .to_owned(),
+                ],
+            },
+            false,
+        );
+
+        assert!(output.contains(
+            "warning  created worktree, but failed to prune detached worktrees: permission denied"
+        ));
     }
 
     #[test]
@@ -2283,11 +2365,20 @@ mod tests {
             command => panic!("expected handoff command, got {command:?}"),
         }
 
-        let cli = Cli::try_parse_from(["hz", "handoff", "--new", "feature/ui"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "hz",
+            "handoff",
+            "--new",
+            "--max-detached",
+            "3",
+            "feature/ui",
+        ])
+        .unwrap();
         match cli.command {
             Some(Command::Handoff(args)) => {
                 assert_eq!(args.target.as_deref(), Some("feature/ui"));
                 assert!(args.create);
+                assert_eq!(args.max_detached, Some(3));
             }
             command => panic!("expected handoff command, got {command:?}"),
         }
@@ -2312,6 +2403,8 @@ mod tests {
             "main",
             "-b",
             "feature/ui",
+            "--max-detached",
+            "5",
             "-j",
             "-d",
             "--no-setup",
@@ -2326,6 +2419,7 @@ mod tests {
                 assert_eq!(args.path, Some(PathBuf::from("../wt")));
                 assert_eq!(args.base.as_deref(), Some("main"));
                 assert_eq!(args.branch.as_deref(), Some("feature/ui"));
+                assert_eq!(args.max_detached, Some(5));
                 assert!(args.json);
                 assert!(args.debug);
                 assert!(args.no_setup);

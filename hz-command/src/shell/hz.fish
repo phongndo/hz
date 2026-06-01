@@ -98,6 +98,7 @@ complete -c hz -n "__fish_seen_subcommand_from new path cd list ls remove rm han
 complete -c hz -n "__fish_seen_subcommand_from new" -s p -l path -r -F
 complete -c hz -n "__fish_seen_subcommand_from new" -s B -l base -r
 complete -c hz -n "__fish_seen_subcommand_from new" -s b -l branch -r
+complete -c hz -n "__fish_seen_subcommand_from new handoff" -l max-detached -r
 complete -c hz -n "__fish_seen_subcommand_from new" -l no-setup
 complete -c hz -n "__fish_seen_subcommand_from new path cd list ls remove rm handoff" -s j -l json
 complete -c hz -n "__fish_seen_subcommand_from new remove rm" -s d -l debug
