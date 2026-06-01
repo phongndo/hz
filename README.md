@@ -43,6 +43,16 @@ curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh
 curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_INSTALL_DIR=/usr/local/bin sh
 ```
 
+Verify the installed binary:
+
+```sh
+which -a hz
+hz --version
+```
+
+The default curl install path is `~/.local/bin/hz`; if you set
+`HZ_INSTALL_DIR`, the first `hz` on `PATH` should come from that directory.
+
 Update an installer-managed binary in place:
 
 ```sh
@@ -231,20 +241,49 @@ Or enter the Nix development shell:
 nix develop
 ```
 
-Run the local development binary without typing `target/debug/hz`:
+Inside interactive `nix develop`, the shell enters zsh with a repo-local
+`ZDOTDIR` under `target/dev-zdotdir`, so user shell aliases, functions, and PATH
+rewrites do not override the dev environment. `hz` resolves through the
+repo-local `target/dev-bin/hz` shim before any user-installed binary on `PATH`.
+The shim builds `hz-cli` on first use when `target/debug/hz` is missing, then
+runs the local development binary. It does not fall back to `~/.local/bin/hz` or
+another installed `hz`. The dev zsh rc file also loads `hz shell zsh`, so auto-cd
+and completion behavior use the local binary by default.
+
+Verify the active binary:
+
+```sh
+type -a hz
+whence -p hz
+hz --version
+```
+
+Run the local checks:
 
 ```sh
 just setup
-hz install zsh
 just check
 just build
+just smoke
 just hz --help
-hz new test-branch
+hz --help
 ```
 
 `just hz ...` is useful for commands that print output, but it cannot change the
-current shell directory. Use `hz install zsh` once, then call `hz new` or
-`hz cd` directly for auto-cd behavior.
+current shell directory. Use plain `hz new` or `hz cd` inside interactive
+`nix develop` to exercise auto-cd behavior from the development binary without
+editing your shell rc file.
+
+Use `hz install zsh` only when you want to update your real shell rc file for an
+installed `hz` binary. `just smoke-zsh` verifies the zsh integration in an
+isolated shell, including branch names such as `fix(scope)/name` that zsh would
+otherwise treat as globs. `just smoke-curl-install` downloads the published
+installer with curl, installs into a temporary directory, and runs the installed
+binary.
+
+Bash cannot run unquoted branch names containing parentheses, such as
+`fix(scope)/name`, because bash parses `(` as syntax before `hz` can receive the
+argument. Quote those names in bash or use the zsh integration.
 
 ```sh
 cargo check --workspace --all-targets --all-features --locked

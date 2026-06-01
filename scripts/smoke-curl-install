@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+set -eu
+
+version="${1:-latest}"
+install_dir="$(mktemp -d)"
+installer="$install_dir/install.sh"
+
+cleanup() {
+  rm -rf "$install_dir"
+}
+trap cleanup EXIT INT TERM
+
+curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh -o "$installer"
+HZ_INSTALL_DIR="$install_dir" HZ_VERSION="$version" sh "$installer"
+test -x "$install_dir/hz"
+"$install_dir/hz" --version

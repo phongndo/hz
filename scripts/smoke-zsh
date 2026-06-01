@@ -1,0 +1,41 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+
+repo_dir="${0:A:h:h}"
+cd "$repo_dir"
+
+cargo build -p hz-cli --locked
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+mkdir -p "$tmp_dir/bin" "$tmp_dir/target"
+cat > "$tmp_dir/bin/hz" <<'SH'
+#!/usr/bin/env sh
+set -eu
+printf '%s\n' "$@" > "$HZ_ARGS"
+printf '%s\n' "$HZ_TARGET"
+SH
+chmod +x "$tmp_dir/bin/hz"
+
+"$repo_dir/target/debug/hz" shell zsh > "$tmp_dir/hz.zsh"
+
+HZ_ARGS="$tmp_dir/args" \
+HZ_TARGET="$tmp_dir/target" \
+PATH="$tmp_dir/bin:$PATH" \
+HZ_INTEGRATION="$tmp_dir/hz.zsh" \
+zsh -fc '
+  setopt nomatch
+  source "$HZ_INTEGRATION"
+
+  eval "hz new fix(broker)/help"
+  [[ "$PWD" == "$HZ_TARGET" ]]
+  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" new "fix(broker)/help" --path-only)" ]]
+
+  eval "hzcd fix(broker)/help"
+  [[ "$PWD" == "$HZ_TARGET" ]]
+  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" path "fix(broker)/help")" ]]
+
+  [[ "${aliases[hz]:-}" == "noglob _hz" ]]
+  [[ "${_comps[hz]:-}" == "_hz_completion" ]]
+'

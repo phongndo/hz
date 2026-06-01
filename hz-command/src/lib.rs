@@ -911,6 +911,12 @@ mod tests {
             .expect("hzlocal completion function should exist");
 
         assert!(script.contains("command hz \"$@\" --path-only"));
+        assert!(script.contains("alias hz='noglob _hz'"));
+        assert!(script.contains("_hz() {"));
+        assert!(script.contains("alias hzcd='noglob _hzcd'"));
+        assert!(script.contains("_hzcd() {"));
+        assert!(script.contains("alias hzlocal='noglob _hzlocal'"));
+        assert!(script.contains("_hzlocal() {"));
         assert!(script.contains("handoff)"));
         assert!(script.contains("--json|--path-only|--help|-h|-j"));
         assert!(script.contains("builtin cd \"$hz_target_path\" || return"));
