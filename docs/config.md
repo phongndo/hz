@@ -109,7 +109,7 @@ never   never emit ANSI color
 ```
 
 The default uses terminal-native ANSI colors. That means `hz` follows the
-user's terminal colorscheme instead of forcing a custom palette.
+user's terminal color scheme instead of forcing a custom palette.
 
 Custom schemes are opt-in and use ANSI color names:
 

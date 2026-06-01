@@ -122,8 +122,8 @@ cleanup = [".hz/environment/cleanup"]
 ```
 
 `.hz/environment/setup` and `.hz/environment/cleanup` are executable script
-files. Edit them with the repo setup and cleanup commands an agent worktree
-should run. `hz new` runs the configured setup command after creating a
+files. Edit them to contain the repo setup and cleanup commands an agent
+worktree should run. `hz new` runs the configured setup command after creating a
 worktree, and `hz rm` runs the configured cleanup command before removing one.
 Use `--no-setup` or `--no-cleanup` to bypass a hook for one command. Use
 `hz setup [target]` or `hz cleanup [target]` to run a hook manually. Hook stdout
@@ -150,7 +150,7 @@ scheme = "terminal"
 
 Columns can include `marker`, `target`, `branch`, `handle`, `status`, `base`,
 `modified`, and `path`. Color defaults to terminal-native ANSI colors so the
-user's terminal colorscheme decides the actual palette. Custom `hz ls` color
+user's terminal color scheme decides the actual palette. Custom `hz ls` color
 schemes can opt into different ANSI color names while still letting the terminal
 theme provide the actual colors.
 

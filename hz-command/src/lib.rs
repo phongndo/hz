@@ -95,13 +95,13 @@ pub struct RepoInit {
 }
 
 pub fn init_repo(input: InitRepo) -> HzResult<RepoInit> {
-    let repo = hz_git::repository_root(input.repo.as_deref())?;
+    let repo = config_repo(input.repo.as_deref())?;
     let config_path = config_path(&repo);
     let lifecycle_path = repo.join(HZ_DIR).join(ENVIRONMENT_DIR);
     let setup_path = lifecycle_path.join(SETUP_SCRIPT);
     let cleanup_path = lifecycle_path.join(CLEANUP_SCRIPT);
 
-    let config_created = write_new_file(&config_path, default_config())?;
+    let config_created = write_new_config(&repo, &config_path)?;
     let setup_created = write_new_script(&setup_path, default_setup_script())?;
     let cleanup_created = write_new_script(&cleanup_path, default_cleanup_script())?;
 
@@ -443,6 +443,14 @@ fn write_new_file(path: &Path, contents: &str) -> HzResult<bool> {
     }
 }
 
+fn write_new_config(repo: &Path, path: &Path) -> HzResult<bool> {
+    if !path.exists() && legacy_config_path(repo).exists() {
+        return Ok(false);
+    }
+
+    write_new_file(path, default_config())
+}
+
 fn write_new_script(path: &Path, contents: &str) -> HzResult<bool> {
     let created = write_new_file(path, contents)?;
     if created {
@@ -628,6 +636,68 @@ mod tests {
         assert!(!second.config_created);
         assert!(!second.setup_created);
         assert!(!second.cleanup_created);
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn init_repo_uses_main_worktree_for_linked_worktree() {
+        let test_dir = test_repo("hz-repo-init-linked-test");
+        commit_initial(&test_dir);
+        let linked_dir = test_dir.with_file_name(format!(
+            "{}-linked",
+            test_dir.file_name().unwrap().to_string_lossy()
+        ));
+        let linked_arg = linked_dir.to_str().unwrap();
+        git(
+            &["worktree", "add", "-q", "--detach", linked_arg, "HEAD"],
+            &test_dir,
+        );
+
+        let init = init_repo(InitRepo {
+            repo: Some(linked_dir.clone()),
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::canonicalize(&init.repo).unwrap(),
+            fs::canonicalize(&test_dir).unwrap()
+        );
+        assert_eq!(
+            fs::canonicalize(init.config_path.parent().unwrap()).unwrap(),
+            fs::canonicalize(test_dir.join(".hz")).unwrap()
+        );
+        assert!(init.config_created);
+        assert!(!linked_dir.join(".hz").join("hz.toml").exists());
+
+        git(&["worktree", "remove", "-f", linked_arg], &test_dir);
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn init_repo_does_not_shadow_legacy_root_config() {
+        let test_dir = test_repo("hz-repo-init-legacy-test");
+        fs::write(
+            test_dir.join("hz.toml"),
+            "[worktree]\ndefault_base = \"dev\"\n",
+        )
+        .unwrap();
+
+        let init = init_repo(InitRepo {
+            repo: Some(test_dir.clone()),
+        })
+        .unwrap();
+
+        assert!(!init.config_created);
+        assert!(!init.config_path.exists());
+        assert!(init.setup_created);
+        assert!(init.cleanup_created);
+
+        let config = load_repo_config(LoadRepoConfig {
+            repo: Some(test_dir.clone()),
+        })
+        .unwrap();
+        assert_eq!(config.default_base(), Some("dev"));
 
         fs::remove_dir_all(test_dir).unwrap();
     }
@@ -919,5 +989,26 @@ mod tests {
             .unwrap();
         assert!(status.success());
         test_dir
+    }
+
+    fn commit_initial(repo: &Path) {
+        git(&["config", "user.email", "test@example.com"], repo);
+        git(&["config", "user.name", "Test"], repo);
+        fs::write(repo.join("file.txt"), "base\n").unwrap();
+        git(&["add", "file.txt"], repo);
+        git(&["commit", "-q", "-m", "init"], repo);
+    }
+
+    fn git(args: &[&str], cwd: &Path) {
+        let output = ProcessCommand::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
