@@ -132,8 +132,7 @@ machine-readable.
 
 Lifecycle config is read from the target worktree. Commit `.hz/hz.toml` and any
 referenced scripts before relying on `hz new` to run setup in newly created
-worktrees. For compatibility, hz still reads a legacy root `hz.toml` when
-`.hz/hz.toml` is absent, but new repos should use `.hz/hz.toml`.
+worktrees.
 
 `hz ls` display is configurable from `.hz/hz.toml`:
 

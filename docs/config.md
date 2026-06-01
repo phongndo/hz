@@ -18,11 +18,10 @@ Run `hz init` to create the repo config and environment scripts.
 For implemented keys, explicit CLI flags win over repo config:
 
 ```text
-CLI flag > .hz/hz.toml > legacy root hz.toml > built-in default
+CLI flag > .hz/hz.toml > built-in default
 ```
 
-`hz` still reads a legacy root `hz.toml` when `.hz/hz.toml` does not exist.
-New repos should use `.hz/hz.toml`.
+`hz` reads repo config only from `.hz/hz.toml`.
 
 ## Worktree
 

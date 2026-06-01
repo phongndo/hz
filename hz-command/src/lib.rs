@@ -18,7 +18,6 @@ pub use hz_worktree::{
 
 const HZ_DIR: &str = ".hz";
 const CONFIG_FILE: &str = "hz.toml";
-const LEGACY_CONFIG_FILE: &str = "hz.toml";
 const ENVIRONMENT_DIR: &str = "environment";
 const SETUP_SCRIPT: &str = "setup";
 const CLEANUP_SCRIPT: &str = "cleanup";
@@ -101,7 +100,7 @@ pub fn init_repo(input: InitRepo) -> HzResult<RepoInit> {
     let setup_path = lifecycle_path.join(SETUP_SCRIPT);
     let cleanup_path = lifecycle_path.join(CLEANUP_SCRIPT);
 
-    let config_created = write_new_config(&repo, &config_path)?;
+    let config_created = write_new_file(&config_path, default_config())?;
     let setup_created = write_new_script(&setup_path, default_setup_script())?;
     let cleanup_created = write_new_script(&cleanup_path, default_cleanup_script())?;
 
@@ -382,14 +381,9 @@ impl HzConfig {
 impl HzConfig {
     fn load(worktree: &Path) -> HzResult<Self> {
         let path = config_path(worktree);
-        let legacy_path = legacy_config_path(worktree);
-        let path = if path.exists() {
-            path
-        } else if legacy_path.exists() {
-            legacy_path
-        } else {
+        if !path.exists() {
             return Ok(Self::default());
-        };
+        }
 
         let contents = fs::read_to_string(&path)?;
         toml::from_str(&contents)
@@ -408,10 +402,6 @@ impl HzConfig {
 
 fn config_path(repo: &Path) -> PathBuf {
     repo.join(HZ_DIR).join(CONFIG_FILE)
-}
-
-fn legacy_config_path(repo: &Path) -> PathBuf {
-    repo.join(LEGACY_CONFIG_FILE)
 }
 
 impl LifecycleKind {
@@ -441,14 +431,6 @@ fn write_new_file(path: &Path, contents: &str) -> HzResult<bool> {
         Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
         Err(error) => Err(error.into()),
     }
-}
-
-fn write_new_config(repo: &Path, path: &Path) -> HzResult<bool> {
-    if !path.exists() && legacy_config_path(repo).exists() {
-        return Ok(false);
-    }
-
-    write_new_file(path, default_config())
 }
 
 fn write_new_script(path: &Path, contents: &str) -> HzResult<bool> {
@@ -675,8 +657,8 @@ mod tests {
     }
 
     #[test]
-    fn init_repo_does_not_shadow_legacy_root_config() {
-        let test_dir = test_repo("hz-repo-init-legacy-test");
+    fn init_repo_creates_hz_config_when_root_hz_toml_exists() {
+        let test_dir = test_repo("hz-repo-init-root-config-test");
         fs::write(
             test_dir.join("hz.toml"),
             "[worktree]\ndefault_base = \"dev\"\n",
@@ -688,8 +670,8 @@ mod tests {
         })
         .unwrap();
 
-        assert!(!init.config_created);
-        assert!(!init.config_path.exists());
+        assert!(init.config_created);
+        assert!(init.config_path.exists());
         assert!(init.setup_created);
         assert!(init.cleanup_created);
 
@@ -697,7 +679,7 @@ mod tests {
             repo: Some(test_dir.clone()),
         })
         .unwrap();
-        assert_eq!(config.default_base(), Some("dev"));
+        assert_eq!(config.default_base(), None);
 
         fs::remove_dir_all(test_dir).unwrap();
     }
@@ -736,14 +718,9 @@ mod tests {
     }
 
     #[test]
-    fn repo_config_loads_hz_directory_config_before_legacy_root_config() {
-        let test_dir = test_repo("hz-config-precedence-test");
+    fn repo_config_loads_hz_directory_config() {
+        let test_dir = test_repo("hz-config-test");
         fs::create_dir_all(test_dir.join(".hz")).unwrap();
-        fs::write(
-            test_dir.join("hz.toml"),
-            "[worktree]\ndefault_base = \"main\"\n",
-        )
-        .unwrap();
         fs::write(
             test_dir.join(".hz").join("hz.toml"),
             "[worktree]\ndefault_base = \"dev\"\n",
@@ -761,8 +738,8 @@ mod tests {
     }
 
     #[test]
-    fn repo_config_falls_back_to_legacy_root_config() {
-        let test_dir = test_repo("hz-config-legacy-test");
+    fn repo_config_ignores_root_hz_toml() {
+        let test_dir = test_repo("hz-config-root-test");
         fs::write(
             test_dir.join("hz.toml"),
             "[worktree]\ndefault_base = \"dev\"\n",
@@ -774,7 +751,7 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(config.default_base(), Some("dev"));
+        assert_eq!(config.default_base(), None);
 
         fs::remove_dir_all(test_dir).unwrap();
     }
