@@ -210,7 +210,7 @@ _hz_complete_command_positionals() {
       ;;
     remove|rm)
       _arguments \
-        '*:worktree target:_hz_removable_worktrees'
+        '*:worktree targets:_hz_removable_worktrees'
       ;;
     handoff|setup|cleanup)
       _arguments \
