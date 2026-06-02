@@ -1,30 +1,63 @@
 # hz
 
-`hz` is planned as a headless-first CLI for coordinating parallel agent work
-across Git worktrees. It currently ships the core worktree, handoff, lifecycle,
-shell integration, install, and update flows for the headless CLI while leaving
-room for a future TUI/runtime layer.
+[![Quality](https://github.com/phongndo/hz/actions/workflows/quality.yml/badge.svg)](https://github.com/phongndo/hz/actions/workflows/quality.yml)
+[![Release](https://github.com/phongndo/hz/actions/workflows/release.yml/badge.svg)](https://github.com/phongndo/hz/actions/workflows/release.yml)
 
-## Crates
+`hz` is a terminal-native command center for parallel AI agent workflows. It
+keeps each task or agent in its own Git worktree, makes it fast to move between
+workspaces, hands off diffs safely, runs repo-local lifecycle hooks, and gives
+you a keyboard-first diff review loop without leaving the terminal.
 
-```text
-hz-cli       command parsing and CLI argument shape
-hz-bench     local benchmark fixture generation
-hz-command   command facade shared by CLI and future TUI/runtime callers
-hz-core      shared errors and common models
-hz-git       low-level git integration boundary
-hz-worktree  worktree domain boundary: new, path, handoff
-hz-diff      diff domain boundary
-hz-tui       ratatui/crossterm UI boundary
+The long-term vision is an all-in-one, provider-agnostic workflow for
+AI-assisted development: create isolated workspaces, run one or many agents,
+track their output, review changes, merge or hand off the useful work, and clean
+up safely from the terminal.
+
+## Status
+
+`hz` is pre-1.0. The current release is usable for local Git worktree, handoff,
+lifecycle, shell integration, install/update, and diff review workflows. Built-
+in agent execution, provider adapters, and the broader dashboard/runtime are on
+the roadmap, not shipped yet. Prefer `--json` for scripts, and expect command
+shapes to keep tightening before 1.0.
+
+See [docs/roadmap.md](docs/roadmap.md) for the product direction.
+
+## What hz does today
+
+- Creates isolated Git worktrees for parallel human or AI-agent tasks.
+- Installs shell integration so `hz new`, `hz cd`, and `hz handoff` can change
+  your current directory.
+- Applies uncommitted changes between linked worktrees without forcing a commit.
+- Moves branch ownership between worktrees when both sides are clean.
+- Runs repo-local setup and cleanup hooks for reproducible agent workspaces.
+- Reviews worktree or patch diffs in a terminal UI, with plain output for pipes.
+- Lists, finds, prunes, and removes managed and unmanaged worktrees.
+- Installs and updates release binaries from GitHub releases.
+
+## Quickstart
+
+```sh
+# one-time repo setup
+hz init
+hz install zsh      # or bash/fish; restart or source your shell rc file
+
+# create an isolated workspace for a task/agent and cd into it
+hz new fix-login
+
+# run your terminal AI agent or manual workflow here
+# ...edit files...
+
+# hand the diff back to the linked local worktree and return there
+hz handoff
+
+# review and clean up
+hz diff
+hz rm -f fix-login    # force is needed if the source worktree still has handed-off changes
 ```
 
-The command crate is the main extension seam for now. CLI and TUI code should
-call `hz-command` instead of duplicating workflow logic. If agent providers or a
-runtime become necessary later, they can sit beside these crates without forcing
-the existing command surface to depend on plugin machinery.
-
-Some command handlers still intentionally return `not implemented yet` until
-their real behavior is added.
+Without shell integration, use `hz path <target>` to print a worktree path and
+`cd "$(hz path <target>)"` from your shell.
 
 ## Installation
 
@@ -82,11 +115,13 @@ hz install zsh
 source ~/.zshrc
 ```
 
-## Worktrees
+## Core workflows
 
-`hz new` creates a detached scratch Git worktree with a human-facing handle and
-a UUID directory under `~/.hz/worktrees/<repo>/` by default. Pass a name or
-`--branch` to create a branch-backed worktree:
+### Worktrees
+
+`hz new` creates a scratch Git worktree with a human-facing handle and a UUID
+directory under `~/.hz/worktrees/<repo>/` by default. Pass a name or `--branch`
+to create a branch-backed worktree:
 
 ```sh
 hz new fix-login
@@ -94,7 +129,6 @@ hz new
 hz ls
 hz path fix-login
 hz cd fix-login
-hz handoff
 hz setup fix-login
 hz cleanup fix-login
 hz cd
@@ -102,14 +136,11 @@ hz rm fix-login
 ```
 
 `hz new` without a name generates a four-character lowercase alphanumeric handle
-and leaves the worktree on a detached HEAD. Managed worktrees are registered in
-`~/.config/hz/registry.json` or
-`$XDG_CONFIG_HOME/hz/registry.json`. `hz ls`, `hz cd`, and `hz rm` also detect
-unmanaged Git worktrees created by other tools. Removing an unmanaged worktree
-asks for confirmation because the path is not managed by hz. `hz ls` includes
-the local worktree and marks the current worktree. Interactive terminals use
-Unicode markers such as `●` and `⌂`; non-terminal output and `HZ_ASCII=1 hz ls`
-use ASCII fallbacks such as `@` and `~`.
+and leaves the worktree on a detached `HEAD`. Managed worktrees are registered
+in `~/.config/hz/registry.json` or `$XDG_CONFIG_HOME/hz/registry.json`.
+`hz ls`, `hz cd`, and `hz rm` also detect unmanaged Git worktrees created by
+other tools. Removing an unmanaged worktree asks for confirmation because the
+path is not managed by `hz`.
 
 Detached scratch worktrees are capped at 15 by default. Creating another
 detached worktree auto-removes the oldest clean managed detached worktrees until
@@ -132,6 +163,8 @@ With that config, `hz new feature/ui` behaves like
 `hz new feature/ui --base dev`. Passing `--base main` still wins for deliberate
 main-based work.
 
+### Shell integration
+
 `hz cd` prints a path for scripts. To make `hz new` and `hz cd` change the
 current shell directory, run `hz install <shell>` once to update your shell rc
 file:
@@ -153,24 +186,26 @@ Completions include command aliases such as `hz cd`, `hz ls`, and `hz rm`,
 nested `hz worktree ...` commands, command flags, shell names for
 `hz init`/`hz shell`, and live worktree targets for commands that accept them.
 
+### Handoff
+
 `hz handoff` applies the current worktree's uncommitted diff to its linked
 counterpart by default. From a linked worktree it applies the patch to `local`.
 From `local`, pass a worktree handle such as `hz handoff fix-login` to apply the
 local patch there. After a patch handoff, running `hz handoff` from `local`
 defaults back to the last linked worktree. The destination must be clean unless
 its current diff still matches the last patch handed off between that pair; in
-that case hz safely replaces it with the source diff. Source changes are left in
-place. With shell integration loaded, successful handoffs change into the
+that case `hz` safely replaces it with the source diff. Source changes are left
+in place. With shell integration loaded, successful handoffs change into the
 destination worktree unless `--json`, `--path-only`, or help is passed.
 
 Use `hz handoff --new` to create a new detached destination worktree and apply
 the current patch there. Use `hz handoff --new fix-login` to create a
 branch-backed destination worktree named `fix-login`.
 
-Use `hz handoff <worktree> --branch` to move branch ownership instead
-of applying a patch. Branch handoff is clean-only on both sides.
+Use `hz handoff <worktree> --branch` to move branch ownership instead of
+applying a patch. Branch handoff is clean-only on both sides.
 
-## Diff review
+### Diff review
 
 `hz diff` opens a read-only terminal diff viewer when stdout is an interactive
 terminal. It falls back to plain patch output for pipes, and `--stat` prints a
@@ -195,7 +230,7 @@ and unified mode on narrower terminals, and switches as the terminal is resized.
 Use `s` to toggle split/unified, `j/k` to scroll, `n/p` for files, `]/[` for
 hunks, `r` to reload, and `q` to quit.
 
-## Repo lifecycle
+### Repo lifecycle
 
 `hz init` initializes repo-local lifecycle config:
 
@@ -229,6 +264,8 @@ Lifecycle config is read from the target worktree. Commit `.hz/hz.toml` and any
 referenced scripts before relying on `hz new` to run setup in newly created
 worktrees.
 
+### Config and display
+
 `hz ls` display is configurable from `.hz/hz.toml`:
 
 ```toml
@@ -253,6 +290,24 @@ See [docs/config.md](docs/config.md) for the full config reference.
 For compatibility, `hz init <shell>` still installs shell integration, but
 `hz install <shell>` is the documented command for shell setup.
 
+## Architecture
+
+```text
+hz-cli       command parsing, terminal output, install/update, and CLI UX
+hz-command   command facade shared by CLI and future TUI/runtime callers
+hz-core      shared errors and common models
+hz-git       low-level Git integration boundary
+hz-worktree  worktree domain boundary: new, path, list, handoff, remove
+hz-diff      diff loading and rendering boundary
+hz-tui       ratatui/crossterm diff review UI boundary
+hz-bench     local benchmark fixture generation
+```
+
+The command crate is the main extension seam. CLI, TUI, and future runtime code
+should call `hz-command` instead of duplicating workflow logic. Provider or
+agent-runtime integrations can sit beside these crates without forcing the
+existing command surface to depend on plugin machinery.
+
 ## Development
 
 Install the repo Rust toolchain:
@@ -267,77 +322,25 @@ Or enter the Nix development shell:
 nix develop
 ```
 
-Inside interactive `nix develop`, the shell enters zsh with a repo-local
-`ZDOTDIR` under `target/dev-zdotdir`, so user shell aliases, functions, and PATH
-rewrites do not override the dev environment. `hz` resolves through the
-repo-local `target/dev-bin/hz` shim before any user-installed binary on `PATH`.
-The shim builds `hz-cli` on first use when `target/debug/hz` is missing, then
-runs the local development binary. It does not fall back to `~/.local/bin/hz` or
-another installed `hz`. The dev zsh rc file also loads `hz shell zsh`, so auto-cd
-and completion behavior use the local binary by default.
-
-Verify the active binary:
-
-```sh
-type -a hz
-whence -p hz
-hz --version
-```
-
-Run the local checks:
+Run local checks:
 
 ```sh
 just setup
 just check
 just build
 just smoke
-just hz --help
-hz --help
 ```
 
-`just hz ...` is useful for commands that print output, but it cannot change the
-current shell directory. Use plain `hz new` or `hz cd` inside interactive
-`nix develop` to exercise auto-cd behavior from the development binary without
-editing your shell rc file.
+For contribution guidelines, dev-shell details, and CI expectations, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-Use `hz install zsh` only when you want to update your real shell rc file for an
-installed `hz` binary. `just smoke-zsh` verifies the zsh integration in an
-isolated shell, including branch names such as `fix(scope)/name` that zsh would
-otherwise treat as globs. `just smoke-curl-install` downloads the published
-installer with curl, installs into a temporary directory, and runs the installed
-binary.
-
-Bash cannot run unquoted branch names containing parentheses, such as
-`fix(scope)/name`, because bash parses `(` as syntax before `hz` can receive the
-argument. Quote those names in bash or use the zsh integration.
-
-```sh
-cargo check --workspace --all-targets --all-features --locked
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-targets --all-features --locked
-cargo build --workspace --all-targets --all-features --locked
-rust-analyzer diagnostics .
-```
-
-## CI
+## CI and releases
 
 `.github/workflows/quality.yml` runs rust-analyzer diagnostics, formatter,
 Clippy, workspace tests, and a full workspace build.
+`.github/workflows/release.yml` builds release archives with SHA-256 checksum
+files for supported macOS and Linux targets when a `v*.*.*` tag is pushed.
 
-`.github/workflows/pr-template.yml` requires pull requests to keep the template
-sections, including Motivation, and mark at least one verification command plus
-the CodeRabbit and Greptile review checklist items. `.coderabbit.yaml` and
-`.greptile/` configure repository-specific AI review behavior when those GitHub
-apps are installed.
+## License
 
-The same quality gate is also available through Nix:
-
-```sh
-nix develop -c cargo check --workspace --all-targets --all-features --locked
-nix develop -c cargo fmt --all --check
-nix develop -c cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-nix develop -c cargo test --workspace --all-targets --all-features --locked
-nix develop -c cargo build --workspace --all-targets --all-features --locked
-nix develop -c rust-analyzer diagnostics .
-```
+MIT. See [LICENSE](LICENSE).

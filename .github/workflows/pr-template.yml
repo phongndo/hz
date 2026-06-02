@@ -9,10 +9,14 @@ on:
       - reopened
       - ready_for_review
 
+permissions:
+  pull-requests: read
+
 jobs:
   template:
     name: Required PR fields
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Check PR body
         env:
