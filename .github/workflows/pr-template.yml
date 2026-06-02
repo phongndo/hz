@@ -20,9 +20,15 @@ jobs:
     steps:
       - name: Check PR body
         env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -eu
+
+          if [ "${PR_AUTHOR:-}" = "dependabot[bot]" ]; then
+            printf 'Skipping PR template check for Dependabot PR author.\n'
+            exit 0
+          fi
 
           missing=0
           body="${PR_BODY:-}"

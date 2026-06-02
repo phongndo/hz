@@ -17,6 +17,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  actionlint:
+    name: GitHub Actions workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Lint workflows
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+
   rust-analyzer:
     name: Rust analyzer diagnostics
     runs-on: ubuntu-latest
