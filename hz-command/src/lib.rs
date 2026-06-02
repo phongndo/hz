@@ -9,7 +9,7 @@ use std::{
 use hz_core::{HzError, HzResult};
 use serde::{Deserialize, Serialize};
 
-pub use hz_diff::DiffOptions;
+pub use hz_diff::{DiffOptions, DiffScope, DiffSource, PatchSource};
 pub use hz_worktree::{
     CreateWorktree, CreatedWorktree, FindWorktree, HandoffMode, HandoffWorktree, ListWorktrees,
     LocalWorktree, LocalWorktreeInfo, PathWorktree, RemoveWorktree, WorktreeEntry, WorktreeHandoff,

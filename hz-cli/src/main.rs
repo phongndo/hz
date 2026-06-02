@@ -3,9 +3,10 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     fs,
-    io::{self, IsTerminal, Write},
+    io::{self, IsTerminal, Read, Write},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitCode, Stdio},
+    sync::Arc,
 };
 
 use clap::{
@@ -101,10 +102,8 @@ examples:
   hz update --install-dir ~/.local/bin"
     )]
     Update(UpdateArgs),
-    #[command(about = "Render a Git diff")]
+    #[command(about = "Review a Git diff")]
     Diff(DiffArgs),
-    #[command(about = "Open the hz terminal UI")]
-    Tui,
     #[command(name = "__complete", hide = true)]
     Complete(CompleteArgs),
 }
@@ -237,10 +236,21 @@ enum ShellArg {
 
 #[derive(Debug, Args)]
 struct DiffArgs {
+    #[arg(value_name = "REV", num_args = 0..=2)]
+    revs: Vec<String>,
     #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
     #[arg(short = 'b', long)]
     base: Option<String>,
+    #[arg(long, conflicts_with = "unstaged", conflicts_with_all = ["base", "revs"])]
+    staged: bool,
+    #[arg(long, conflicts_with_all = ["base", "revs"])]
+    unstaged: bool,
+    #[arg(long = "no-untracked")]
+    no_untracked: bool,
+    /// Read an existing unified diff from FILE, or stdin when FILE is `-`.
+    #[arg(long, value_name = "FILE")]
+    patch: Option<PathBuf>,
     #[arg(short = 's', long)]
     stat: bool,
 }
@@ -299,17 +309,91 @@ fn run() -> HzResult<()> {
         Some(Command::Shell(args)) => shell_script(args),
         Some(Command::Update(args)) => update(args),
         Some(Command::Diff(args)) => {
-            let output = hz_command::diff(hz_command::DiffOptions {
-                repo: args.repo,
-                base: args.base,
-                stat: args.stat,
-            })?;
-            print!("{output}");
-            Ok(())
+            let stat = args.stat;
+            let options = diff_options(args)?;
+            if io::stdout().is_terminal() && !stat {
+                hz_tui::run_diff(options)
+            } else {
+                let output = hz_command::diff(options)?;
+                print!("{output}");
+                Ok(())
+            }
         }
-        Some(Command::Tui) => hz_tui::run(),
         Some(Command::Complete(args)) => complete(args),
     }
+}
+
+fn diff_options(args: DiffArgs) -> HzResult<hz_command::DiffOptions> {
+    if let Some(patch) = args.patch {
+        if args.base.is_some() || !args.revs.is_empty() {
+            return Err(hz_core::HzError::Usage(
+                "use --patch without revisions or --base".to_owned(),
+            ));
+        }
+        if args.staged || args.unstaged || args.no_untracked {
+            return Err(hz_core::HzError::Usage(
+                "--staged, --unstaged, and --no-untracked do not apply to --patch".to_owned(),
+            ));
+        }
+
+        return Ok(hz_command::DiffOptions {
+            repo: args.repo,
+            source: patch_source(patch)?,
+            scope: hz_command::DiffScope::All,
+            include_untracked: false,
+            stat: args.stat,
+        });
+    }
+
+    let source = match (args.base, args.revs.as_slice()) {
+        (Some(base), []) => hz_command::DiffSource::Base(base),
+        (Some(_), _) => {
+            return Err(hz_core::HzError::Usage(
+                "use either --base or positional revisions, not both".to_owned(),
+            ));
+        }
+        (None, []) => hz_command::DiffSource::Worktree,
+        (None, [base]) => hz_command::DiffSource::Base(base.clone()),
+        (None, [left, right]) => hz_command::DiffSource::Range {
+            left: left.clone(),
+            right: right.clone(),
+        },
+        (None, _) => {
+            return Err(hz_core::HzError::Usage(
+                "hz diff accepts at most two revisions".to_owned(),
+            ));
+        }
+    };
+
+    let scope = if args.staged {
+        hz_command::DiffScope::Staged
+    } else if args.unstaged {
+        hz_command::DiffScope::Unstaged
+    } else {
+        hz_command::DiffScope::All
+    };
+
+    Ok(hz_command::DiffOptions {
+        repo: args.repo,
+        source,
+        scope,
+        include_untracked: !args.no_untracked,
+        stat: args.stat,
+    })
+}
+
+fn patch_source(path: PathBuf) -> HzResult<hz_command::DiffSource> {
+    if path == Path::new("-") {
+        let mut patch = String::new();
+        io::stdin().read_to_string(&mut patch)?;
+        return Ok(hz_command::DiffSource::Patch(
+            hz_command::PatchSource::Stdin(Arc::from(patch)),
+        ));
+    }
+
+    Ok(hz_command::DiffSource::Patch(
+        hz_command::PatchSource::File(path),
+    ))
 }
 
 fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
@@ -2556,15 +2640,54 @@ mod tests {
             command => panic!("expected new command, got {command:?}"),
         }
 
-        let cli = Cli::try_parse_from(["hz", "diff", "-r", "/repo", "-b", "main", "-s"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "hz",
+            "diff",
+            "-r",
+            "/repo",
+            "--unstaged",
+            "--no-untracked",
+            "-s",
+        ])
+        .unwrap();
         match cli.command {
             Some(Command::Diff(args)) => {
                 assert_eq!(args.repo, Some(PathBuf::from("/repo")));
-                assert_eq!(args.base.as_deref(), Some("main"));
+                assert!(args.unstaged);
+                assert!(args.no_untracked);
                 assert!(args.stat);
             }
             command => panic!("expected diff command, got {command:?}"),
         }
+
+        let cli = Cli::try_parse_from(["hz", "diff", "-b", "main"]).unwrap();
+        match cli.command {
+            Some(Command::Diff(args)) => assert_eq!(args.base.as_deref(), Some("main")),
+            command => panic!("expected diff command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "diff", "main", "feature"]).unwrap();
+        match cli.command {
+            Some(Command::Diff(args)) => assert_eq!(args.revs, ["main", "feature"]),
+            command => panic!("expected diff command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "diff", "--patch", "changes.diff", "--stat"]).unwrap();
+        match cli.command {
+            Some(Command::Diff(args)) => {
+                assert_eq!(args.patch, Some(PathBuf::from("changes.diff")));
+                assert!(args.stat);
+            }
+            command => panic!("expected diff command, got {command:?}"),
+        }
+    }
+
+    #[test]
+    fn diff_scope_flags_conflict_with_revisions_at_parse_time() {
+        assert!(Cli::try_parse_from(["hz", "diff", "--staged", "main"]).is_err());
+        assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "main"]).is_err());
+        assert!(Cli::try_parse_from(["hz", "diff", "--staged", "--base", "main"]).is_err());
+        assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "--base", "main"]).is_err());
     }
 
     #[test]

@@ -4,6 +4,7 @@ members = [
     "hz-command",
     "hz-core",
     "hz-diff",
+    "hz-bench",
     "hz-git",
     "hz-tui",
     "hz-worktree",

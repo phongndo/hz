@@ -9,6 +9,7 @@ room for a future TUI/runtime layer.
 
 ```text
 hz-cli       command parsing and CLI argument shape
+hz-bench     local benchmark fixture generation
 hz-command   command facade shared by CLI and future TUI/runtime callers
 hz-core      shared errors and common models
 hz-git       low-level git integration boundary
@@ -168,6 +169,31 @@ branch-backed destination worktree named `fix-login`.
 
 Use `hz handoff <worktree> --branch` to move branch ownership instead
 of applying a patch. Branch handoff is clean-only on both sides.
+
+## Diff review
+
+`hz diff` opens a read-only terminal diff viewer when stdout is an interactive
+terminal. It falls back to plain patch output for pipes, and `--stat` prints a
+summary without opening the viewer.
+
+```sh
+hz diff
+hz diff --staged
+hz diff --unstaged
+hz diff --no-untracked
+hz diff --base main
+hz diff main feature
+hz diff --patch changes.diff
+cat changes.diff | hz diff --patch -
+hz diff --stat
+```
+
+The default view is all working tree changes against `HEAD`, including
+untracked files. Patch mode reads an existing unified diff from a file or stdin
+without requiring a Git repository. The viewer uses split mode on wide terminals
+and unified mode on narrower terminals, and switches as the terminal is resized.
+Use `s` to toggle split/unified, `j/k` to scroll, `n/p` for files, `]/[` for
+hunks, `r` to reload, and `q` to quit.
 
 ## Repo lifecycle
 
