@@ -242,9 +242,9 @@ struct DiffArgs {
     repo: Option<PathBuf>,
     #[arg(short = 'b', long)]
     base: Option<String>,
-    #[arg(long, conflicts_with = "unstaged")]
+    #[arg(long, conflicts_with = "unstaged", conflicts_with_all = ["base", "revs"])]
     staged: bool,
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["base", "revs"])]
     unstaged: bool,
     #[arg(long = "no-untracked")]
     no_untracked: bool,
@@ -2645,8 +2645,6 @@ mod tests {
             "diff",
             "-r",
             "/repo",
-            "-b",
-            "main",
             "--unstaged",
             "--no-untracked",
             "-s",
@@ -2655,11 +2653,16 @@ mod tests {
         match cli.command {
             Some(Command::Diff(args)) => {
                 assert_eq!(args.repo, Some(PathBuf::from("/repo")));
-                assert_eq!(args.base.as_deref(), Some("main"));
                 assert!(args.unstaged);
                 assert!(args.no_untracked);
                 assert!(args.stat);
             }
+            command => panic!("expected diff command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "diff", "-b", "main"]).unwrap();
+        match cli.command {
+            Some(Command::Diff(args)) => assert_eq!(args.base.as_deref(), Some("main")),
             command => panic!("expected diff command, got {command:?}"),
         }
 
@@ -2677,6 +2680,14 @@ mod tests {
             }
             command => panic!("expected diff command, got {command:?}"),
         }
+    }
+
+    #[test]
+    fn diff_scope_flags_conflict_with_revisions_at_parse_time() {
+        assert!(Cli::try_parse_from(["hz", "diff", "--staged", "main"]).is_err());
+        assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "main"]).is_err());
+        assert!(Cli::try_parse_from(["hz", "diff", "--staged", "--base", "main"]).is_err());
+        assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "--base", "main"]).is_err());
     }
 
     #[test]

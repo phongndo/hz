@@ -658,15 +658,7 @@ struct DiffFileBuilder {
 
 impl DiffFileBuilder {
     fn from_diff_git(line: &str) -> Self {
-        let mut old_path = None;
-        let mut new_path = None;
-        let mut parts = line.split_whitespace();
-        let _ = parts.next();
-        let _ = parts.next();
-        if let (Some(old), Some(new)) = (parts.next(), parts.next()) {
-            old_path = strip_prefix_path(old, "a/");
-            new_path = strip_prefix_path(new, "b/");
-        }
+        let (old_path, new_path) = diff_git_paths(line);
 
         Self {
             old_path,
@@ -697,7 +689,9 @@ impl DiffFileBuilder {
             self.status = FileStatus::Copied;
             self.new_path = Some(line.trim_start_matches("copy to ").to_owned());
         } else if line.starts_with("old mode ") || line.starts_with("new mode ") {
-            self.status = FileStatus::TypeChanged;
+            if !matches!(self.status, FileStatus::Renamed | FileStatus::Copied) {
+                self.status = FileStatus::TypeChanged;
+            }
         } else if line.starts_with("Binary files ") || line == "GIT binary patch" {
             self.is_binary = true;
         } else if let Some(path) = line.strip_prefix("--- ") {
@@ -728,6 +722,37 @@ impl DiffFileBuilder {
             is_binary: self.is_binary,
         }
     }
+}
+
+fn diff_git_paths(line: &str) -> (Option<String>, Option<String>) {
+    let Some(paths) = line.strip_prefix("diff --git ") else {
+        return (None, None);
+    };
+
+    split_diff_git_paths(paths)
+        .map(|(old, new)| (strip_prefix_path(old, "a/"), strip_prefix_path(new, "b/")))
+        .unwrap_or((None, None))
+}
+
+fn split_diff_git_paths(paths: &str) -> Option<(&str, &str)> {
+    let mut fallback = None;
+    for (separator, _) in paths.match_indices(" b/") {
+        let old = &paths[..separator];
+        let new = &paths[separator + 1..];
+        if !old.starts_with("a/") || !new.starts_with("b/") {
+            continue;
+        }
+
+        let old_path = old.strip_prefix("a/").unwrap_or(old);
+        let new_path = new.strip_prefix("b/").unwrap_or(new);
+        if old_path == new_path {
+            return Some((old, new));
+        }
+
+        fallback = Some((old, new));
+    }
+
+    fallback
 }
 
 fn strip_prefix_path(path: &str, prefix: &str) -> Option<String> {
@@ -869,6 +894,32 @@ mod tests {
         assert_eq!(files[0].hunks[0].lines[1].new_line, None);
         assert_eq!(files[0].hunks[0].lines[2].old_line, None);
         assert_eq!(files[0].hunks[0].lines[2].new_line, Some(2));
+    }
+
+    #[test]
+    fn parse_patch_preserves_binary_paths_with_spaces() {
+        let patch = "diff --git a/my file.bin b/my file.bin\nindex 1111111..2222222 100644\nGIT binary patch\nliteral 1\nKcmZQz1ONa4\n\n";
+
+        let files = parse_patch(patch);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].old_path.as_deref(), Some("my file.bin"));
+        assert_eq!(files[0].new_path.as_deref(), Some("my file.bin"));
+        assert_eq!(files[0].display_path(), "my file.bin");
+        assert!(files[0].is_binary);
+    }
+
+    #[test]
+    fn rename_or_copy_status_wins_over_later_mode_headers() {
+        let renamed = parse_patch(
+            "diff --git a/old.txt b/new.txt\nrename from old.txt\nrename to new.txt\nold mode 100644\nnew mode 100755\n",
+        );
+        assert_eq!(renamed[0].status, FileStatus::Renamed);
+
+        let copied = parse_patch(
+            "diff --git a/source.txt b/copy.txt\ncopy from source.txt\ncopy to copy.txt\nold mode 100644\nnew mode 100755\n",
+        );
+        assert_eq!(copied[0].status, FileStatus::Copied);
     }
 
     #[test]

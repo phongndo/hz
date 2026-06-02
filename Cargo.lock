@@ -378,6 +378,7 @@ dependencies = [
  "hz-core",
  "hz-diff",
  "ratatui",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

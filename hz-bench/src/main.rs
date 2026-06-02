@@ -226,11 +226,11 @@ fn generate_fixtures(args: FixturesArgs) -> BenchResult<()> {
 }
 
 fn selected_scenarios(args: &FixturesArgs) -> Vec<ScenarioKind> {
-    let mut selected = if args.scenario.is_empty() || args.all {
-        ScenarioKind::standard().to_vec()
-    } else {
-        args.scenario.clone()
-    };
+    let mut selected = Vec::new();
+    if args.all || args.scenario.is_empty() {
+        selected.extend_from_slice(ScenarioKind::standard());
+    }
+    selected.extend(args.scenario.iter().copied());
 
     if args.stress && !selected.contains(&ScenarioKind::HugeMixedStress) {
         selected.push(ScenarioKind::HugeMixedStress);
@@ -805,6 +805,9 @@ fn patch_path(path: &Path) -> String {
 fn initialize_repo(path: &Path) -> BenchResult<()> {
     fs::create_dir_all(path)?;
     git(path, &["init"])?;
+    git(path, &["config", "core.autocrlf", "false"])?;
+    git(path, &["config", "core.eol", "lf"])?;
+    git(path, &["config", "commit.gpgsign", "false"])?;
     git(path, &["config", "user.name", "Benchmark User"])?;
     git(path, &["config", "user.email", "benchmark@example.com"])?;
     Ok(())
@@ -907,6 +910,7 @@ fn binary_blob(size: usize, seed: u8) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn scenario_names_are_unique() {
@@ -947,5 +951,50 @@ mod tests {
         assert!(patch.contains("diff --git a/dir/file.ts b/dir/file.ts"));
         assert!(patch.contains("@@ -0,0 +1,2 @@"));
         assert!(patch.contains("+one\n+two\n"));
+    }
+
+    #[test]
+    fn all_scenarios_include_explicit_stress_selection() {
+        let args = FixturesArgs {
+            out: PathBuf::from("fixtures"),
+            scenario: vec![ScenarioKind::HugeMixedStress],
+            all: true,
+            stress: false,
+            force: false,
+        };
+
+        let selected = selected_scenarios(&args);
+
+        assert!(selected.starts_with(ScenarioKind::standard()));
+        assert_eq!(selected.last(), Some(&ScenarioKind::HugeMixedStress));
+    }
+
+    #[test]
+    fn initialize_repo_pins_deterministic_git_config() {
+        let repo = temp_test_dir("git-config");
+
+        initialize_repo(&repo).expect("repo should initialize");
+
+        assert_eq!(
+            git(&repo, &["config", "core.autocrlf"]).unwrap().trim(),
+            "false"
+        );
+        assert_eq!(git(&repo, &["config", "core.eol"]).unwrap().trim(), "lf");
+        assert_eq!(
+            git(&repo, &["config", "commit.gpgsign"]).unwrap().trim(),
+            "false"
+        );
+
+        fs::remove_dir_all(repo).expect("test repo should be removed");
+    }
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hz-bench-{name}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ))
     }
 }

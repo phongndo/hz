@@ -4,6 +4,7 @@ use std::{
 };
 
 use crossterm::{
+    cursor::Show,
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
         MouseEvent, MouseEventKind,
@@ -20,6 +21,7 @@ use ratatui::{
     prelude::{Color, Line, Modifier, Span, Style, Text},
     widgets::Paragraph,
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const EVENT_POLL: Duration = Duration::from_millis(120);
 const MAX_READY_EVENTS_PER_FRAME: usize = 64;
@@ -33,6 +35,7 @@ const MOUSE_SCROLL_REFERENCE_INTERVAL_MS: f64 = 100.0;
 const MIN_SPLIT_WIDTH: u16 = 120;
 const GUTTER_WIDTH: usize = 7;
 const UNIFIED_GUTTER_WIDTH: usize = 13;
+const NOTICE_TTL: Duration = Duration::from_millis(1_500);
 
 fn muted() -> Color {
     Color::Rgb(125, 135, 148)
@@ -61,25 +64,56 @@ pub fn run() -> HzResult<()> {
 pub fn run_diff(options: DiffOptions) -> HzResult<()> {
     let changeset = hz_diff::load_review_ref(&options)?;
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
+    let mut cleanup = TerminalCleanup::install()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     let layout = default_layout_for_width(terminal.size()?.width);
     let mut app = DiffApp::new(options, changeset, layout);
 
     let result = run_loop(&mut terminal, &mut app);
+    let cleanup_result = cleanup.cleanup();
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
+    result?;
+    cleanup_result
+}
 
-    result
+struct TerminalCleanup {
+    active: bool,
+}
+
+impl TerminalCleanup {
+    fn install() -> HzResult<Self> {
+        enable_raw_mode()?;
+        let mut cleanup = Self { active: true };
+        let mut stdout = io::stdout();
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+            let _ = cleanup.cleanup();
+            return Err(error.into());
+        }
+
+        Ok(cleanup)
+    }
+
+    fn cleanup(&mut self) -> HzResult<()> {
+        if !self.active {
+            return Ok(());
+        }
+        self.active = false;
+
+        let raw_mode_result = disable_raw_mode();
+        let mut stdout = io::stdout();
+        let screen_result = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
+
+        raw_mode_result?;
+        screen_result?;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalCleanup {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
 }
 
 type CrosstermTerminal = Terminal<CrosstermBackend<io::Stdout>>;
@@ -316,6 +350,7 @@ fn push_split_hunk_rows(
 
 fn run_loop(terminal: &mut CrosstermTerminal, app: &mut DiffApp) -> HzResult<()> {
     loop {
+        app.expire_notice(Instant::now());
         if app.dirty {
             terminal.draw(|frame| draw(frame, app))?;
             app.dirty = false;
@@ -438,6 +473,12 @@ impl MouseScroll {
 }
 
 #[derive(Debug)]
+struct Notice {
+    text: String,
+    expires_at: Instant,
+}
+
+#[derive(Debug)]
 struct DiffApp {
     options: DiffOptions,
     changeset: Changeset,
@@ -448,7 +489,7 @@ struct DiffApp {
     viewport_rows: usize,
     selected_file: usize,
     mouse_scroll: MouseScroll,
-    notice: Option<String>,
+    notice: Option<Notice>,
     dirty: bool,
 }
 
@@ -496,6 +537,25 @@ impl DiffApp {
         }
 
         Ok(false)
+    }
+
+    fn set_notice(&mut self, text: impl Into<String>) {
+        self.notice = Some(Notice {
+            text: text.into(),
+            expires_at: Instant::now() + NOTICE_TTL,
+        });
+        self.dirty = true;
+    }
+
+    fn expire_notice(&mut self, now: Instant) {
+        let expired = self
+            .notice
+            .as_ref()
+            .is_some_and(|notice| now >= notice.expires_at);
+        if expired {
+            self.notice = None;
+            self.dirty = true;
+        }
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
@@ -606,7 +666,7 @@ impl DiffApp {
         self.set_scroll(scroll);
         self.dirty = true;
         if show_notice {
-            self.notice = Some(self.layout.label().to_owned());
+            self.set_notice(self.layout.label());
         }
     }
 
@@ -635,7 +695,7 @@ impl DiffApp {
             .file_start_row(self.selected_file)
             .unwrap_or_default();
         self.set_scroll(scroll);
-        self.notice = Some("reloaded".to_owned());
+        self.set_notice("reloaded");
         self.dirty = true;
         Ok(())
     }
@@ -658,7 +718,11 @@ fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
-    let notice = app.notice.as_deref().unwrap_or("");
+    let notice = app
+        .notice
+        .as_ref()
+        .map(|notice| notice.text.as_str())
+        .unwrap_or("");
     let line = Line::from(vec![
         Span::styled(
             &app.changeset.title,
@@ -901,7 +965,7 @@ fn progress_label(scroll: usize, max_scroll: usize) -> String {
 
 fn fit_padded(text: &str, width: usize) -> String {
     let mut out = fit(text, width);
-    let len = out.chars().count();
+    let len = UnicodeWidthStr::width(out.as_str());
     if len < width {
         out.push_str(&" ".repeat(width - len));
     }
@@ -913,8 +977,8 @@ fn right_aligned(left: &str, right: &str, width: usize) -> String {
         return String::new();
     }
 
-    let left_len = left.chars().count();
-    let right_len = right.chars().count();
+    let left_len = UnicodeWidthStr::width(left);
+    let right_len = UnicodeWidthStr::width(right);
     if left_len + right_len + 1 >= width {
         return fit(&format!("{left}  {right}"), width);
     }
@@ -927,7 +991,13 @@ fn fit(text: &str, width: usize) -> String {
         return String::new();
     }
     let mut out = String::new();
-    for ch in text.chars().take(width) {
+    let mut used = 0;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > width {
+            break;
+        }
+        used += ch_width;
         out.push(ch);
     }
     out
@@ -974,11 +1044,36 @@ mod tests {
     }
 
     #[test]
+    fn notices_expire_after_ttl() {
+        let changeset = changeset_with_context_lines(1);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        app.set_notice("reloaded");
+        let expires_at = app.notice.as_ref().unwrap().expires_at;
+        app.dirty = false;
+
+        app.expire_notice(expires_at - Duration::from_millis(1));
+        assert!(app.notice.is_some());
+        assert!(!app.dirty);
+
+        app.expire_notice(expires_at);
+        assert!(app.notice.is_none());
+        assert!(app.dirty);
+    }
+
+    #[test]
     fn progress_label_is_bounded() {
         assert_eq!(progress_label(0, 0), "100%");
         assert_eq!(progress_label(0, 20), "0%");
         assert_eq!(progress_label(10, 20), "50%");
         assert_eq!(progress_label(100, 20), "100%");
+    }
+
+    #[test]
+    fn fit_helpers_use_terminal_display_width() {
+        assert_eq!(fit("界a", 2), "界");
+        assert_eq!(fit_padded("e\u{301}", 2), "e\u{301} ");
+        assert_eq!(right_aligned("界", "x", 5), "界  x");
     }
 
     #[test]
