@@ -1845,12 +1845,20 @@ fn worktree_completion_candidates(
     }
 
     for worktree in worktrees {
-        push_completion_candidate(&mut candidates, worktree.branch);
-        push_completion_candidate(&mut candidates, Some(worktree.handle));
-        push_completion_candidate(&mut candidates, Some(worktree.id));
+        push_worktree_completion_candidate(&mut candidates, &worktree);
     }
 
     Ok(candidates)
+}
+
+fn push_worktree_completion_candidate(
+    candidates: &mut Vec<String>,
+    worktree: &hz_command::WorktreeEntry,
+) {
+    push_completion_candidate(
+        candidates,
+        Some(worktree_branch_or_handle(worktree).to_owned()),
+    );
 }
 
 fn push_completion_candidate(candidates: &mut Vec<String>, candidate: Option<String>) {
@@ -2828,6 +2836,25 @@ mod tests {
         push_completion_candidate(&mut candidates, None);
 
         assert_eq!(candidates, vec!["local", "feature/ui"]);
+    }
+
+    #[test]
+    fn worktree_completion_candidates_use_display_targets() {
+        let mut branched = test_entry(hz_command::WorktreeSource::Managed);
+        branched.id = "45aa44e4-9dd5-4e74-b7ae-82db4b365e78".to_owned();
+        branched.handle = "45aa44e4-9dd5-4e74-b7ae-82db4b365e78".to_owned();
+        branched.branch = Some("feat(tui)/diff".to_owned());
+
+        let mut detached = test_entry(hz_command::WorktreeSource::Managed);
+        detached.id = "de625fc0-3962-4680-be9c-37fca7a57aaf".to_owned();
+        detached.handle = "tw61".to_owned();
+        detached.branch = None;
+
+        let mut candidates = Vec::new();
+        push_worktree_completion_candidate(&mut candidates, &branched);
+        push_worktree_completion_candidate(&mut candidates, &detached);
+
+        assert_eq!(candidates, vec!["feat(tui)/diff", "tw61"]);
     }
 
     #[test]
