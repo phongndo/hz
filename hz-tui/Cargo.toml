@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 crossterm.workspace = true
 hz-core.workspace = true
+hz-diff.workspace = true
 ratatui.workspace = true
