@@ -251,6 +251,9 @@ struct DiffArgs {
     /// Read an existing unified diff from FILE, or stdin when FILE is `-`.
     #[arg(long, value_name = "FILE")]
     patch: Option<PathBuf>,
+    /// Disable live reload in the interactive diff viewer.
+    #[arg(long = "no-watch")]
+    no_watch: bool,
     #[arg(short = 's', long)]
     stat: bool,
 }
@@ -310,9 +313,10 @@ fn run() -> HzResult<()> {
         Some(Command::Update(args)) => update(args),
         Some(Command::Diff(args)) => {
             let stat = args.stat;
+            let live_updates = !args.no_watch;
             let options = diff_options(args)?;
             if io::stdout().is_terminal() && !stat {
-                hz_tui::run_diff(options)
+                hz_tui::run_diff_with_live_updates(options, live_updates)
             } else {
                 let output = hz_command::diff(options)?;
                 print!("{output}");
@@ -2655,6 +2659,7 @@ mod tests {
             "/repo",
             "--unstaged",
             "--no-untracked",
+            "--no-watch",
             "-s",
         ])
         .unwrap();
@@ -2663,6 +2668,7 @@ mod tests {
                 assert_eq!(args.repo, Some(PathBuf::from("/repo")));
                 assert!(args.unstaged);
                 assert!(args.no_untracked);
+                assert!(args.no_watch);
                 assert!(args.stat);
             }
             command => panic!("expected diff command, got {command:?}"),

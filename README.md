@@ -220,6 +220,7 @@ hz diff --base main
 hz diff main feature
 hz diff --patch changes.diff
 cat changes.diff | hz diff --patch -
+hz diff --no-watch
 hz diff --stat
 ```
 
@@ -227,8 +228,9 @@ The default view is all working tree changes against `HEAD`, including
 untracked files. Patch mode reads an existing unified diff from a file or stdin
 without requiring a Git repository. The viewer uses split mode on wide terminals
 and unified mode on narrower terminals, and switches as the terminal is resized.
-Use `s` to toggle split/unified, `j/k` to scroll, `n/p` for files, `]/[` for
-hunks, `r` to reload, and `q` to quit.
+Working tree diffs live-reload as files or Git state change; use `--no-watch` to
+disable filesystem watching. Use `s` to toggle split/unified, `j/k` to scroll,
+`n/p` for files, `]/[` for hunks, `r` to reload, and `q` to quit.
 
 ### Repo lifecycle
 

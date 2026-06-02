@@ -1,5 +1,9 @@
 use std::{
+    ffi::OsStr,
     io,
+    path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -12,8 +16,9 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use hz_core::HzResult;
-use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffStats, FileStatus};
+use hz_core::{HzError, HzResult};
+use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffSource, DiffStats, FileStatus};
+use notify::{RecursiveMode, Watcher};
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -24,6 +29,7 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const EVENT_POLL: Duration = Duration::from_millis(120);
+const LIVE_RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);
 const MAX_READY_EVENTS_PER_FRAME: usize = 64;
 const MOUSE_SCROLL_HISTORY_SIZE: usize = 3;
 const MOUSE_SCROLL_STREAK_TIMEOUT: Duration = Duration::from_millis(150);
@@ -62,6 +68,10 @@ pub fn run() -> HzResult<()> {
 }
 
 pub fn run_diff(options: DiffOptions) -> HzResult<()> {
+    run_diff_with_live_updates(options, true)
+}
+
+pub fn run_diff_with_live_updates(options: DiffOptions, live_updates: bool) -> HzResult<()> {
     let changeset = hz_diff::load_review_ref(&options)?;
 
     let mut cleanup = TerminalCleanup::install()?;
@@ -69,8 +79,23 @@ pub fn run_diff(options: DiffOptions) -> HzResult<()> {
     let mut terminal = Terminal::new(backend)?;
     let layout = default_layout_for_width(terminal.size()?.width);
     let mut app = DiffApp::new(options, changeset, layout);
+    let live_diff = if live_updates && live_diff_supported(&app.options) {
+        match LiveDiff::start(app.options.clone(), &app.changeset.repo) {
+            Ok(live_diff) => Some(live_diff),
+            Err(error) => {
+                app.set_notice(format!("live reload unavailable: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
 
-    let result = run_loop(&mut terminal, &mut app);
+    let result = run_loop(
+        &mut terminal,
+        &mut app,
+        live_diff.as_ref().map(|live_diff| &live_diff.reload_rx),
+    );
     let cleanup_result = cleanup.cleanup();
 
     result?;
@@ -114,6 +139,258 @@ impl Drop for TerminalCleanup {
     fn drop(&mut self) {
         let _ = self.cleanup();
     }
+}
+
+#[derive(Debug)]
+struct LiveDiff {
+    _watcher: notify::RecommendedWatcher,
+    _worker: thread::JoinHandle<()>,
+    control_tx: Sender<LiveDiffCommand>,
+    reload_rx: Receiver<LiveDiffReload>,
+}
+
+impl LiveDiff {
+    fn start(options: DiffOptions, repo: &Path) -> HzResult<Self> {
+        let watch_spec = live_diff_watch_spec(repo)?;
+        let filter = watch_spec.filter.clone();
+        let (control_tx, control_rx) = mpsc::channel();
+        let (reload_tx, reload_rx) = mpsc::channel();
+        let watcher_tx = control_tx.clone();
+
+        let mut watcher =
+            notify::recommended_watcher(move |result: Result<notify::Event, notify::Error>| {
+                match result {
+                    Ok(event) if filter.is_relevant_event(&event) => {
+                        let _ = watcher_tx.send(LiveDiffCommand::Changed);
+                    }
+                    Ok(_) | Err(_) => {}
+                }
+            })
+            .map_err(|error| watcher_error("failed to start live diff watcher", error))?;
+
+        for watch_path in &watch_spec.watch_paths {
+            if !watch_path.path.exists() {
+                continue;
+            }
+            watcher
+                .watch(&watch_path.path, watch_path.recursive_mode())
+                .map_err(|error| {
+                    watcher_error(
+                        &format!("failed to watch {}", watch_path.path.display()),
+                        error,
+                    )
+                })?;
+        }
+
+        let worker = spawn_live_diff_worker(options, control_rx, reload_tx);
+
+        Ok(Self {
+            _watcher: watcher,
+            _worker: worker,
+            control_tx,
+            reload_rx,
+        })
+    }
+}
+
+impl Drop for LiveDiff {
+    fn drop(&mut self) {
+        let _ = self.control_tx.send(LiveDiffCommand::Stop);
+    }
+}
+
+#[derive(Debug)]
+enum LiveDiffCommand {
+    Changed,
+    Stop,
+}
+
+#[derive(Debug)]
+enum LiveDiffReload {
+    Loaded(HzResult<Changeset>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LiveDiffWatchPath {
+    path: PathBuf,
+    recursive: bool,
+}
+
+impl LiveDiffWatchPath {
+    fn recursive_mode(&self) -> RecursiveMode {
+        if self.recursive {
+            RecursiveMode::Recursive
+        } else {
+            RecursiveMode::NonRecursive
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LiveDiffWatchSpec {
+    watch_paths: Vec<LiveDiffWatchPath>,
+    filter: LiveDiffFilter,
+}
+
+impl LiveDiffWatchSpec {
+    fn new(repo: &Path) -> Self {
+        let mut spec = Self {
+            watch_paths: Vec::new(),
+            filter: LiveDiffFilter {
+                repo: repo.to_path_buf(),
+                git_state_paths: Vec::new(),
+            },
+        };
+        spec.add_watch_path(repo.to_path_buf(), true);
+        spec
+    }
+
+    fn add_git_state_path(&mut self, path: PathBuf) {
+        if !self
+            .filter
+            .git_state_paths
+            .iter()
+            .any(|known| known == &path)
+        {
+            self.filter.git_state_paths.push(path);
+        }
+    }
+
+    fn add_watch_path(&mut self, path: PathBuf, recursive: bool) {
+        if let Some(existing) = self
+            .watch_paths
+            .iter_mut()
+            .find(|watch_path| watch_path.path == path)
+        {
+            existing.recursive |= recursive;
+            return;
+        }
+
+        self.watch_paths.push(LiveDiffWatchPath { path, recursive });
+    }
+
+    fn add_git_state(&mut self, path: PathBuf) {
+        self.add_git_state_path(path.clone());
+        if path.is_dir() {
+            self.add_watch_path(path, true);
+        } else if let Some(parent) = path.parent() {
+            self.add_watch_path(parent.to_path_buf(), false);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LiveDiffFilter {
+    repo: PathBuf,
+    git_state_paths: Vec<PathBuf>,
+}
+
+impl LiveDiffFilter {
+    fn is_relevant_event(&self, event: &notify::Event) -> bool {
+        if matches!(event.kind, notify::EventKind::Access(_)) {
+            return false;
+        }
+
+        if event.paths.is_empty() {
+            return true;
+        }
+
+        event.paths.iter().any(|path| self.is_relevant_path(path))
+    }
+
+    fn is_relevant_path(&self, path: &Path) -> bool {
+        let joined;
+        let path = if path.is_absolute() || path.starts_with(&self.repo) {
+            path
+        } else {
+            joined = self.repo.join(path);
+            &joined
+        };
+
+        if self.is_git_state_path(path) {
+            return true;
+        }
+
+        if self.is_inside_repo_dot_git(path) {
+            return false;
+        }
+
+        path.starts_with(&self.repo)
+    }
+
+    fn is_git_state_path(&self, path: &Path) -> bool {
+        self.git_state_paths.iter().any(|state_path| {
+            path == state_path
+                || path.starts_with(state_path)
+                || state_path.parent().is_some_and(|parent| path == parent)
+        })
+    }
+
+    fn is_inside_repo_dot_git(&self, path: &Path) -> bool {
+        let Ok(relative) = path.strip_prefix(&self.repo) else {
+            return false;
+        };
+
+        relative
+            .components()
+            .next()
+            .is_some_and(|component| component.as_os_str() == OsStr::new(".git"))
+    }
+}
+
+fn live_diff_supported(options: &DiffOptions) -> bool {
+    matches!(options.source, DiffSource::Worktree)
+}
+
+fn live_diff_watch_spec(repo: &Path) -> HzResult<LiveDiffWatchSpec> {
+    let mut spec = LiveDiffWatchSpec::new(repo);
+    for git_path in [
+        "index",
+        "index.lock",
+        "HEAD",
+        "HEAD.lock",
+        "refs",
+        "packed-refs",
+        "packed-refs.lock",
+        "info/exclude",
+        "config",
+    ] {
+        spec.add_git_state(hz_git::git_path(repo, git_path)?);
+    }
+    Ok(spec)
+}
+
+fn spawn_live_diff_worker(
+    options: DiffOptions,
+    control_rx: Receiver<LiveDiffCommand>,
+    reload_tx: Sender<LiveDiffReload>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        while let Ok(LiveDiffCommand::Changed) = control_rx.recv() {
+            if !wait_for_live_diff_quiet_period(&control_rx) {
+                break;
+            }
+
+            let changeset = hz_diff::load_review_ref(&options);
+            if reload_tx.send(LiveDiffReload::Loaded(changeset)).is_err() {
+                break;
+            }
+        }
+    })
+}
+
+fn wait_for_live_diff_quiet_period(control_rx: &Receiver<LiveDiffCommand>) -> bool {
+    loop {
+        match control_rx.recv_timeout(LIVE_RELOAD_DEBOUNCE) {
+            Ok(LiveDiffCommand::Changed) => continue,
+            Ok(LiveDiffCommand::Stop) | Err(RecvTimeoutError::Disconnected) => return false,
+            Err(RecvTimeoutError::Timeout) => return true,
+        }
+    }
+}
+
+fn watcher_error(context: &str, error: notify::Error) -> HzError {
+    HzError::Usage(format!("{context}: {error}"))
 }
 
 type CrosstermTerminal = Terminal<CrosstermBackend<io::Stdout>>;
@@ -348,9 +625,14 @@ fn push_split_hunk_rows(
     }
 }
 
-fn run_loop(terminal: &mut CrosstermTerminal, app: &mut DiffApp) -> HzResult<()> {
+fn run_loop(
+    terminal: &mut CrosstermTerminal,
+    app: &mut DiffApp,
+    live_reload_rx: Option<&Receiver<LiveDiffReload>>,
+) -> HzResult<()> {
     loop {
         app.expire_notice(Instant::now());
+        drain_live_reloads(app, live_reload_rx);
         if app.dirty {
             terminal.draw(|frame| draw(frame, app))?;
             app.dirty = false;
@@ -378,6 +660,21 @@ fn run_loop(terminal: &mut CrosstermTerminal, app: &mut DiffApp) -> HzResult<()>
     }
 
     Ok(())
+}
+
+fn drain_live_reloads(app: &mut DiffApp, live_reload_rx: Option<&Receiver<LiveDiffReload>>) {
+    let Some(live_reload_rx) = live_reload_rx else {
+        return;
+    };
+
+    while let Ok(reload) = live_reload_rx.try_recv() {
+        match reload {
+            LiveDiffReload::Loaded(Ok(changeset)) => app.replace_changeset(changeset, None),
+            LiveDiffReload::Loaded(Err(error)) => {
+                app.set_notice(format!("live reload failed: {error}"));
+            }
+        }
+    }
 }
 
 fn handle_event(app: &mut DiffApp, event: Event) -> HzResult<bool> {
@@ -671,12 +968,29 @@ impl DiffApp {
     }
 
     fn reload(&mut self) -> HzResult<()> {
+        let changeset = hz_diff::load_review_ref(&self.options)?;
+        self.replace_changeset(changeset, Some("reloaded"));
+        Ok(())
+    }
+
+    fn replace_changeset(&mut self, changeset: Changeset, notice: Option<&str>) {
+        if self.changeset == changeset {
+            if let Some(notice) = notice {
+                self.set_notice(notice);
+            }
+            return;
+        }
+
         let selected_path = self
             .changeset
             .files
             .get(self.selected_file)
             .map(|file| file.display_path().to_owned());
-        let changeset = hz_diff::load_review_ref(&self.options)?;
+        let relative_scroll = self
+            .model
+            .file_start_row(self.selected_file)
+            .map(|start| self.scroll.saturating_sub(start))
+            .unwrap_or_default();
         let selected_file = selected_path
             .and_then(|path| {
                 changeset
@@ -693,11 +1007,13 @@ impl DiffApp {
         let scroll = self
             .model
             .file_start_row(self.selected_file)
+            .map(|start| start.saturating_add(relative_scroll))
             .unwrap_or_default();
         self.set_scroll(scroll);
-        self.set_notice("reloaded");
+        if let Some(notice) = notice {
+            self.set_notice(notice);
+        }
         self.dirty = true;
-        Ok(())
     }
 }
 
@@ -1006,7 +1322,7 @@ fn fit(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn default_layout_uses_split_only_when_terminal_is_wide_enough() {
@@ -1067,6 +1383,43 @@ mod tests {
         assert_eq!(progress_label(0, 20), "0%");
         assert_eq!(progress_label(10, 20), "50%");
         assert_eq!(progress_label(100, 20), "100%");
+    }
+
+    #[test]
+    fn live_diff_filter_ignores_non_state_git_paths() {
+        let repo = std::env::temp_dir().join("hz-tui-live-filter-repo");
+        let other = std::env::temp_dir().join("hz-tui-live-filter-other");
+        let filter = LiveDiffFilter {
+            repo: repo.clone(),
+            git_state_paths: vec![
+                repo.join(".git/index"),
+                repo.join(".git/index.lock"),
+                repo.join(".git/refs"),
+            ],
+        };
+
+        assert!(filter.is_relevant_path(Path::new("src/lib.rs")));
+        assert!(filter.is_relevant_path(&repo.join("src/lib.rs")));
+        assert!(filter.is_relevant_path(&repo.join(".git/index")));
+        assert!(filter.is_relevant_path(&repo.join(".git/index.lock")));
+        assert!(filter.is_relevant_path(&repo.join(".git/refs/heads/main")));
+        assert!(!filter.is_relevant_path(&repo.join(".git/logs/HEAD")));
+        assert!(!filter.is_relevant_path(&other.join("file.rs")));
+    }
+
+    #[test]
+    fn live_diff_watch_paths_upgrade_to_recursive() {
+        let mut spec = LiveDiffWatchSpec::new(Path::new("repo"));
+
+        spec.add_watch_path(PathBuf::from("repo/.git"), false);
+        spec.add_watch_path(PathBuf::from("repo/.git"), true);
+
+        let watch_path = spec
+            .watch_paths
+            .iter()
+            .find(|watch_path| watch_path.path == Path::new("repo/.git"))
+            .unwrap();
+        assert!(watch_path.recursive);
     }
 
     #[test]

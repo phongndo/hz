@@ -355,7 +355,7 @@ fn untracked_paths(repo: &Path) -> HzResult<Vec<PathBuf>> {
     Ok(parse_untracked_paths(&output.stdout))
 }
 
-fn git_path(repo: &Path, path: &str) -> HzResult<PathBuf> {
+pub fn git_path(repo: &Path, path: &str) -> HzResult<PathBuf> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
