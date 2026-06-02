@@ -68,7 +68,7 @@ hzlocal() {
   hz cd local "$@"
 }
 
-_hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell update diff tui worktree wt"
+_hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell update diff worktree wt"
 _hz_worktree_commands="new path cd list ls remove rm handoff"
 _hz_shells="zsh bash fish"
 
@@ -143,10 +143,7 @@ _hz_complete_command_args() {
       [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir -h --help" "$current"
       ;;
     diff)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -b --base -s --stat -h --help" "$current"
-      ;;
-    tui)
-      [[ "$current" == -* ]] && _hz_reply "-h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -b --base --staged --unstaged --no-untracked --patch -s --stat -h --help" "$current"
       ;;
   esac
 }

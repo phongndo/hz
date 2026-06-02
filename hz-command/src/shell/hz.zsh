@@ -101,8 +101,7 @@ _hz_complete_main() {
     'cleanup:run worktree cleanup'
     'shell:print shell integration'
     'update:update hz from GitHub releases'
-    'diff:render a git diff'
-    'tui:open the terminal UI'
+    'diff:review a git diff'
     'worktree:worktree commands'
     'wt:worktree commands'
   )
@@ -150,10 +149,12 @@ _hz_complete_option_value() {
       fi
       ;;
     -B|--base)
-      if [[ "$cmd" == "new" ]]; then
-        _message 'branch'
-        return 0
-      fi
+      case "$cmd" in
+        new|diff)
+          _message 'branch or revision'
+          return 0
+          ;;
+      esac
       ;;
     -b|--branch)
       case "$cmd" in
@@ -180,6 +181,12 @@ _hz_complete_option_value() {
     --install-dir)
       if [[ "$cmd" == "update" ]]; then
         _files -/
+        return 0
+      fi
+      ;;
+    --patch)
+      if [[ "$cmd" == "diff" ]]; then
+        _files
         return 0
       fi
       ;;
@@ -220,10 +227,7 @@ _hz_complete_command_options() {
       compadd -- --target-version --install-dir -h --help
       ;;
     diff)
-      compadd -- -r --repo -b --base -s --stat -h --help
-      ;;
-    tui)
-      compadd -- -h --help
+      compadd -- -r --repo -b --base --staged --unstaged --no-untracked --patch -s --stat -h --help
       ;;
   esac
 }

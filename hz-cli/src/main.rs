@@ -47,7 +47,7 @@ const RELEASE_REPO: &str = "phongndo/hz";
 #[command(
     name = "hz",
     version,
-    about = "Parallel agent workspace CLI",
+    about = "Terminal workspace manager for parallel AI agents",
     help_template = HELP_TEMPLATE,
     next_help_heading = "options",
     subcommand_help_heading = "commands",
@@ -73,7 +73,7 @@ enum Command {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
-    #[command(about = "Create a Git worktree for a parallel agent")]
+    #[command(about = "Create an isolated Git worktree for a task or agent")]
     New(NewWorktreeArgs),
     #[command(alias = "cd", about = "Print the directory for a worktree")]
     Path(PathWorktreeArgs),
@@ -110,7 +110,7 @@ examples:
 
 #[derive(Debug, Subcommand)]
 enum WorktreeCommand {
-    #[command(about = "Create a Git worktree for a parallel agent")]
+    #[command(about = "Create an isolated Git worktree for a task or agent")]
     New(NewWorktreeArgs),
     #[command(alias = "cd", about = "Print the directory for a worktree")]
     Path(PathWorktreeArgs),

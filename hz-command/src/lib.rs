@@ -935,9 +935,15 @@ mod tests {
         assert!(script.contains("'rm:remove one or more worktrees'"));
         assert!(script.contains("'install:install shell integration'"));
         assert!(script.contains("'update:update hz from GitHub releases'"));
+        assert!(script.contains("'diff:review a git diff'"));
+        assert!(!script.contains("tui:open the terminal UI"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
+        assert!(script.contains("--patch"));
+        assert!(script.contains("--staged"));
+        assert!(script.contains("--unstaged"));
+        assert!(script.contains("--no-untracked"));
         assert!(hzlocal_completion.contains("_hz_complete_command_options cd"));
         assert!(!hzlocal_completion.contains("_hz_complete_command_positionals cd"));
     }
@@ -955,6 +961,11 @@ mod tests {
         assert!(script.contains("-l no-cleanup"));
         assert!(script.contains("-l max-detached"));
         assert!(script.contains("-l target-version"));
+        assert!(script.contains("-l patch"));
+        assert!(script.contains("-l staged"));
+        assert!(script.contains("-l unstaged"));
+        assert!(script.contains("-l no-untracked"));
+        assert!(!script.contains("tui"));
     }
 
     #[test]
@@ -969,6 +980,11 @@ mod tests {
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
         assert!(script.contains("--target-version"));
+        assert!(script.contains("--patch"));
+        assert!(script.contains("--staged"));
+        assert!(script.contains("--unstaged"));
+        assert!(script.contains("--no-untracked"));
+        assert!(!script.contains("tui"));
     }
 
     #[test]
