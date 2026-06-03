@@ -60,6 +60,9 @@ const MAX_HIGHLIGHT_QUEUE_ENTRIES: usize = 512;
 const MAX_SYNTAX_RESULTS_PER_FRAME: usize = 64;
 const HIGHLIGHT_PREFETCH_VIEWPORTS: usize = 1;
 const SYNTAX_THEME_ID: u64 = 0;
+const MAX_INLINE_DIFF_LINE_BYTES: usize = 4 * 1024;
+const MAX_INLINE_DIFF_TOKENS: usize = 256;
+const MAX_INLINE_DIFF_CACHE_ENTRIES: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiffBenchmarkOptions {
@@ -137,6 +140,14 @@ fn addition_fg() -> Color {
 
 fn deletion_fg() -> Color {
     Color::Rgb(232, 141, 141)
+}
+
+fn addition_inline_bg() -> Color {
+    Color::Rgb(35, 92, 50)
+}
+
+fn deletion_inline_bg() -> Color {
+    Color::Rgb(105, 41, 52)
 }
 
 pub fn run() -> HzResult<()> {
@@ -479,6 +490,24 @@ impl SyntaxKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct InlineHunkKey {
+    generation: u64,
+    file: usize,
+    hunk: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InlineRange {
+    byte_start: usize,
+    byte_end: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct InlineLineEmphasis {
+    ranges: Vec<InlineRange>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SyntaxSkipReason {
     InvalidPosition,
@@ -547,8 +576,8 @@ where
             return;
         }
 
-        if self.entries.contains_key(&key) {
-            self.entries.insert(key, value);
+        if let Some(entry) = self.entries.get_mut(&key) {
+            *entry = value;
             self.touch(&key);
             return;
         }
@@ -854,18 +883,15 @@ impl SyntaxRuntime {
         &mut self,
         options: &DiffOptions,
         changeset: &Changeset,
-        generation: u64,
-        file: usize,
-        hunk: usize,
-        side: DiffSide,
+        position: SyntaxPosition,
         priority: SyntaxPriority,
     ) {
-        let position = SyntaxPosition {
+        let SyntaxPosition {
             generation,
             file,
             hunk,
             side,
-        };
+        } = position;
         self.stats.queue_requests = self.stats.queue_requests.saturating_add(1);
         if let Some(key) = self.position_keys.get(&position).copied() {
             if self.cache.contains_key(&key) {
@@ -1542,6 +1568,226 @@ fn unified_syntax_side(kind: DiffLineKind) -> Option<DiffSide> {
     }
 }
 
+fn compute_hunk_inline_emphasis(lines: &[DiffLine]) -> Vec<InlineLineEmphasis> {
+    let mut emphasis = vec![InlineLineEmphasis::default(); lines.len()];
+    let mut index = 0usize;
+
+    while index < lines.len() {
+        match lines[index].kind {
+            DiffLineKind::Deletion | DiffLineKind::Addition => {
+                let mut deletions = Vec::new();
+                let mut additions = Vec::new();
+                while index < lines.len()
+                    && matches!(
+                        lines[index].kind,
+                        DiffLineKind::Deletion | DiffLineKind::Addition
+                    )
+                {
+                    match lines[index].kind {
+                        DiffLineKind::Deletion => deletions.push(index),
+                        DiffLineKind::Addition => additions.push(index),
+                        DiffLineKind::Context | DiffLineKind::Meta => {}
+                    }
+                    index += 1;
+                }
+                compute_changed_block_inline_emphasis(lines, &deletions, &additions, &mut emphasis);
+            }
+            DiffLineKind::Context | DiffLineKind::Meta => index += 1,
+        }
+    }
+
+    emphasis
+}
+
+fn compute_changed_block_inline_emphasis(
+    lines: &[DiffLine],
+    deletions: &[usize],
+    additions: &[usize],
+    emphasis: &mut [InlineLineEmphasis],
+) {
+    let paired_rows = deletions.len().max(additions.len());
+    for pair_index in 0..paired_rows {
+        match (deletions.get(pair_index), additions.get(pair_index)) {
+            (Some(deletion), Some(addition)) => {
+                let (old_ranges, new_ranges) =
+                    changed_token_ranges(&lines[*deletion].text, &lines[*addition].text);
+                emphasis[*deletion].ranges = old_ranges;
+                emphasis[*addition].ranges = new_ranges;
+            }
+            (Some(deletion), None) => {
+                emphasis[*deletion].ranges = full_line_inline_range(&lines[*deletion].text);
+            }
+            (None, Some(addition)) => {
+                emphasis[*addition].ranges = full_line_inline_range(&lines[*addition].text);
+            }
+            (None, None) => {}
+        }
+    }
+}
+
+fn changed_token_ranges(old: &str, new: &str) -> (Vec<InlineRange>, Vec<InlineRange>) {
+    if old == new {
+        return (Vec::new(), Vec::new());
+    }
+    if old.len() > MAX_INLINE_DIFF_LINE_BYTES || new.len() > MAX_INLINE_DIFF_LINE_BYTES {
+        return (Vec::new(), Vec::new());
+    }
+
+    let old_tokens = inline_tokens(old);
+    let new_tokens = inline_tokens(new);
+    if old_tokens.len() > MAX_INLINE_DIFF_TOKENS || new_tokens.len() > MAX_INLINE_DIFF_TOKENS {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut old_changed = vec![true; old_tokens.len()];
+    let mut new_changed = vec![true; new_tokens.len()];
+    mark_unchanged_lcs_tokens(
+        old,
+        &old_tokens,
+        new,
+        &new_tokens,
+        &mut old_changed,
+        &mut new_changed,
+    );
+
+    (
+        inline_ranges_from_tokens(&old_tokens, &old_changed),
+        inline_ranges_from_tokens(&new_tokens, &new_changed),
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InlineToken {
+    byte_start: usize,
+    byte_end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InlineCharClass {
+    Word,
+    Whitespace,
+    Other,
+}
+
+fn inline_tokens(text: &str) -> Vec<InlineToken> {
+    let mut tokens = Vec::new();
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((start, ch)) = chars.next() {
+        let class = inline_char_class(ch);
+        let mut end = start + ch.len_utf8();
+
+        if class != InlineCharClass::Other {
+            while let Some((_, next)) = chars.peek().copied() {
+                if inline_char_class(next) != class {
+                    break;
+                }
+                let Some((next_start, next)) = chars.next() else {
+                    break;
+                };
+                end = next_start + next.len_utf8();
+            }
+        }
+
+        tokens.push(InlineToken {
+            byte_start: start,
+            byte_end: end,
+        });
+    }
+
+    tokens
+}
+
+fn inline_char_class(ch: char) -> InlineCharClass {
+    if ch.is_whitespace() {
+        InlineCharClass::Whitespace
+    } else if ch == '_' || ch.is_alphanumeric() {
+        InlineCharClass::Word
+    } else {
+        InlineCharClass::Other
+    }
+}
+
+fn mark_unchanged_lcs_tokens(
+    old: &str,
+    old_tokens: &[InlineToken],
+    new: &str,
+    new_tokens: &[InlineToken],
+    old_changed: &mut [bool],
+    new_changed: &mut [bool],
+) {
+    let cols = new_tokens.len() + 1;
+    let mut lengths = vec![0u16; (old_tokens.len() + 1) * cols];
+
+    for old_index in 0..old_tokens.len() {
+        for new_index in 0..new_tokens.len() {
+            let cell = (old_index + 1) * cols + new_index + 1;
+            lengths[cell] = if inline_token_text(old, old_tokens[old_index])
+                == inline_token_text(new, new_tokens[new_index])
+            {
+                lengths[old_index * cols + new_index].saturating_add(1)
+            } else {
+                lengths[old_index * cols + new_index + 1]
+                    .max(lengths[(old_index + 1) * cols + new_index])
+            };
+        }
+    }
+
+    let mut old_index = old_tokens.len();
+    let mut new_index = new_tokens.len();
+    while old_index > 0 && new_index > 0 {
+        if inline_token_text(old, old_tokens[old_index - 1])
+            == inline_token_text(new, new_tokens[new_index - 1])
+        {
+            old_changed[old_index - 1] = false;
+            new_changed[new_index - 1] = false;
+            old_index -= 1;
+            new_index -= 1;
+        } else if lengths[(old_index - 1) * cols + new_index]
+            >= lengths[old_index * cols + new_index - 1]
+        {
+            old_index -= 1;
+        } else {
+            new_index -= 1;
+        }
+    }
+}
+
+fn inline_token_text(text: &str, token: InlineToken) -> &str {
+    &text[token.byte_start..token.byte_end]
+}
+
+fn inline_ranges_from_tokens(tokens: &[InlineToken], changed: &[bool]) -> Vec<InlineRange> {
+    let mut ranges: Vec<InlineRange> = Vec::new();
+    for (token, is_changed) in tokens.iter().zip(changed) {
+        if !*is_changed {
+            continue;
+        }
+        if let Some(last) = ranges.last_mut()
+            && last.byte_end == token.byte_start
+        {
+            last.byte_end = token.byte_end;
+            continue;
+        }
+        ranges.push(InlineRange {
+            byte_start: token.byte_start,
+            byte_end: token.byte_end,
+        });
+    }
+    ranges
+}
+
+fn full_line_inline_range(text: &str) -> Vec<InlineRange> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![InlineRange {
+            byte_start: 0,
+            byte_end: text.len(),
+        }]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LiveDiffWatchPath {
     path: PathBuf,
@@ -2128,6 +2374,7 @@ struct DiffApp {
     mouse_scroll: MouseScroll,
     notice: Option<Notice>,
     syntax: Option<SyntaxRuntime>,
+    inline_cache: LruCache<InlineHunkKey, Vec<InlineLineEmphasis>>,
     generation: u64,
     dirty: bool,
 }
@@ -2174,6 +2421,7 @@ impl DiffApp {
             mouse_scroll: MouseScroll::default(),
             notice,
             syntax,
+            inline_cache: LruCache::new(MAX_INLINE_DIFF_CACHE_ENTRIES),
             generation: 0,
             dirty: true,
         }
@@ -2390,15 +2638,7 @@ impl DiffApp {
             return;
         }
         if let Some(syntax) = self.syntax.as_mut() {
-            syntax.queue_hunk(
-                &self.options,
-                &self.changeset,
-                self.generation,
-                file,
-                hunk,
-                side,
-                priority,
-            );
+            syntax.queue_hunk(&self.options, &self.changeset, position, priority);
         }
     }
 
@@ -2435,6 +2675,30 @@ impl DiffApp {
                 line,
             )
         })
+    }
+
+    fn inline_ranges(&mut self, file: usize, hunk: usize, line: usize) -> Vec<InlineRange> {
+        let key = InlineHunkKey {
+            generation: self.generation,
+            file,
+            hunk,
+        };
+        if !self.inline_cache.contains_key(&key) {
+            let emphasis = self
+                .changeset
+                .files
+                .get(file)
+                .and_then(|file_diff| file_diff.hunks.get(hunk))
+                .map(|hunk_diff| compute_hunk_inline_emphasis(&hunk_diff.lines))
+                .unwrap_or_default();
+            self.inline_cache.insert(key, emphasis);
+        }
+
+        self.inline_cache
+            .get(&key)
+            .and_then(|hunk_emphasis| hunk_emphasis.get(line))
+            .map(|line_emphasis| line_emphasis.ranges.clone())
+            .unwrap_or_default()
     }
 
     fn move_file(&mut self, delta: isize) {
@@ -2532,6 +2796,7 @@ impl DiffApp {
         self.stats = changeset.stats();
         self.changeset = changeset;
         self.generation = self.generation.wrapping_add(1);
+        self.inline_cache.clear();
         if let Some(syntax) = self.syntax.as_mut() {
             syntax.clear(self.generation);
         }
@@ -2664,11 +2929,12 @@ fn render_row(app: &mut DiffApp, row: UiRow, width: usize) -> Line<'static> {
             let diff_line = app.changeset.files[file].hunks[hunk].lines[line].clone();
             let syntax = unified_syntax_side(diff_line.kind)
                 .and_then(|side| app.syntax_line(file, hunk, line, side));
-            render_unified_line(&diff_line, syntax.as_ref(), width)
+            let inline = app.inline_ranges(file, hunk, line);
+            render_unified_line(&diff_line, syntax.as_ref(), &inline, width)
         }
         UiRow::MetaLine { file, hunk, line } => {
             let diff_line = app.changeset.files[file].hunks[hunk].lines[line].clone();
-            render_unified_line(&diff_line, None, width)
+            render_unified_line(&diff_line, None, &[], width)
         }
         UiRow::SplitLine {
             file,
@@ -2682,6 +2948,7 @@ fn render_row(app: &mut DiffApp, row: UiRow, width: usize) -> Line<'static> {
 fn render_unified_line(
     line: &DiffLine,
     syntax: Option<&HighlightedLine>,
+    inline: &[InlineRange],
     width: usize,
 ) -> Line<'static> {
     if width == 0 {
@@ -2709,13 +2976,20 @@ fn render_unified_line(
         fit_padded(&gutter, gutter_width),
         Style::default().fg(muted()).bg(row_bg(line.kind)),
     )];
-    spans.extend(content_spans(&line.text, syntax, line.kind, content_width));
+    spans.extend(content_spans(
+        &line.text,
+        syntax,
+        inline,
+        line.kind,
+        content_width,
+    ));
     Line::from(spans)
 }
 
 fn content_spans(
     text: &str,
     syntax: Option<&HighlightedLine>,
+    inline: &[InlineRange],
     kind: DiffLineKind,
     width: usize,
 ) -> Vec<Span<'static>> {
@@ -2723,32 +2997,154 @@ fn content_spans(
         return Vec::new();
     }
 
-    let Some(syntax) = syntax else {
-        return vec![Span::styled(fit_padded(text, width), line_style(kind))];
-    };
-    if !syntax_line_matches_text(syntax, text) {
+    let inline = valid_inline_ranges(text, inline);
+    let syntax = syntax.filter(|syntax| syntax_line_matches_text(syntax, text));
+    if syntax.is_none() && inline.is_empty() {
         return vec![Span::styled(fit_padded(text, width), line_style(kind))];
     }
 
-    let mut spans = Vec::new();
-    let mut used = 0;
-    for segment in &syntax.segments {
-        if used >= width {
-            break;
+    let mut writer = ContentSpanWriter::new(&inline, kind, width);
+
+    if let Some(syntax) = syntax {
+        let mut byte_start = 0usize;
+        for segment in &syntax.segments {
+            if !writer.push_segment(&segment.text, byte_start, syntax_style(segment.class, kind)) {
+                break;
+            }
+            byte_start += segment.text.len();
         }
-        let fitted = fit(&segment.text, width - used);
+    } else {
+        writer.push_segment(text, 0, line_style(kind));
+    }
+
+    writer.finish()
+}
+
+fn valid_inline_ranges(text: &str, ranges: &[InlineRange]) -> Vec<InlineRange> {
+    let mut valid = ranges
+        .iter()
+        .filter_map(|range| {
+            let byte_start = range.byte_start.min(text.len());
+            let byte_end = range.byte_end.min(text.len());
+            (byte_start < byte_end
+                && text.is_char_boundary(byte_start)
+                && text.is_char_boundary(byte_end))
+            .then_some(InlineRange {
+                byte_start,
+                byte_end,
+            })
+        })
+        .collect::<Vec<_>>();
+    valid.sort_by_key(|range| (range.byte_start, range.byte_end));
+    valid
+}
+
+struct ContentSpanWriter<'a> {
+    spans: Vec<Span<'static>>,
+    inline: &'a [InlineRange],
+    kind: DiffLineKind,
+    width: usize,
+    used: usize,
+}
+
+impl<'a> ContentSpanWriter<'a> {
+    fn new(inline: &'a [InlineRange], kind: DiffLineKind, width: usize) -> Self {
+        Self {
+            spans: Vec::new(),
+            inline,
+            kind,
+            width,
+            used: 0,
+        }
+    }
+
+    fn push_segment(
+        &mut self,
+        segment_text: &str,
+        segment_byte_start: usize,
+        style: Style,
+    ) -> bool {
+        let segment_byte_end = segment_byte_start + segment_text.len();
+        let mut cursor = segment_byte_start;
+
+        for range in self.inline {
+            if self.used >= self.width {
+                return false;
+            }
+            if range.byte_end <= cursor {
+                continue;
+            }
+            if range.byte_start >= segment_byte_end {
+                break;
+            }
+
+            let normal_end = range.byte_start.min(segment_byte_end);
+            if !self.push_piece(segment_text, segment_byte_start, cursor, normal_end, style) {
+                return false;
+            }
+
+            let inline_start = range.byte_start.max(cursor).min(segment_byte_end);
+            let inline_end = range.byte_end.min(segment_byte_end);
+            if !self.push_piece(
+                segment_text,
+                segment_byte_start,
+                inline_start,
+                inline_end,
+                inline_style(style, self.kind),
+            ) {
+                return false;
+            }
+            cursor = inline_end;
+        }
+
+        self.push_piece(
+            segment_text,
+            segment_byte_start,
+            cursor,
+            segment_byte_end,
+            style,
+        )
+    }
+
+    fn push_piece(
+        &mut self,
+        segment_text: &str,
+        segment_byte_start: usize,
+        byte_start: usize,
+        byte_end: usize,
+        style: Style,
+    ) -> bool {
+        if byte_start >= byte_end {
+            return true;
+        }
+        let remaining = self.width.saturating_sub(self.used);
+        if remaining == 0 {
+            return false;
+        }
+
+        let relative_start = byte_start.saturating_sub(segment_byte_start);
+        let relative_end = byte_end.saturating_sub(segment_byte_start);
+        let piece = &segment_text[relative_start..relative_end];
+        let fitted = fit(piece, remaining);
         if fitted.is_empty() {
-            break;
+            return false;
         }
-        used += UnicodeWidthStr::width(fitted.as_str());
-        spans.push(Span::styled(fitted, syntax_style(segment.class, kind)));
+
+        let fitted_len = fitted.len();
+        self.used += UnicodeWidthStr::width(fitted.as_str());
+        self.spans.push(Span::styled(fitted, style));
+        fitted_len == piece.len()
     }
 
-    if used < width {
-        spans.push(Span::styled(" ".repeat(width - used), line_style(kind)));
+    fn finish(mut self) -> Vec<Span<'static>> {
+        if self.used < self.width {
+            self.spans.push(Span::styled(
+                " ".repeat(self.width - self.used),
+                line_style(self.kind),
+            ));
+        }
+        self.spans
     }
-
-    spans
 }
 
 fn syntax_line_matches_text(syntax: &HighlightedLine, text: &str) -> bool {
@@ -2768,6 +3164,14 @@ fn syntax_style(class: Option<SyntaxClass>, kind: DiffLineKind) -> Style {
         style = style.fg(color);
     }
     style
+}
+
+fn inline_style(style: Style, kind: DiffLineKind) -> Style {
+    match kind {
+        DiffLineKind::Addition => style.bg(addition_inline_bg()).add_modifier(Modifier::BOLD),
+        DiffLineKind::Deletion => style.bg(deletion_inline_bg()).add_modifier(Modifier::BOLD),
+        DiffLineKind::Context | DiffLineKind::Meta => style,
+    }
 }
 
 fn syntax_fg(class: SyntaxClass) -> Option<Color> {
@@ -2809,6 +3213,12 @@ fn render_split_line(
     };
     let left_syntax = left.and_then(|index| app.syntax_line(file, hunk, index, DiffSide::Old));
     let right_syntax = right.and_then(|index| app.syntax_line(file, hunk, index, DiffSide::New));
+    let left_inline = left
+        .map(|index| app.inline_ranges(file, hunk, index))
+        .unwrap_or_default();
+    let right_inline = right
+        .map(|index| app.inline_ranges(file, hunk, index))
+        .unwrap_or_default();
 
     let separator_width = usize::from(width > 1);
     let left_width = width.saturating_sub(separator_width) / 2;
@@ -2816,6 +3226,7 @@ fn render_split_line(
     let mut spans = split_cell_spans(
         left_line.as_ref(),
         left_syntax.as_ref(),
+        &left_inline,
         SplitSide::Old,
         left_width,
     );
@@ -2825,6 +3236,7 @@ fn render_split_line(
     spans.extend(split_cell_spans(
         right_line.as_ref(),
         right_syntax.as_ref(),
+        &right_inline,
         SplitSide::New,
         right_width,
     ));
@@ -2840,6 +3252,7 @@ enum SplitSide {
 fn split_cell_spans(
     line: Option<&DiffLine>,
     syntax: Option<&HighlightedLine>,
+    inline: &[InlineRange],
     side: SplitSide,
     width: usize,
 ) -> Vec<Span<'static>> {
@@ -2869,7 +3282,13 @@ fn split_cell_spans(
         fit_padded(&format!("{line_number:>5} {sign}"), gutter_width),
         Style::default().fg(muted()).bg(row_bg(line.kind)),
     )];
-    spans.extend(content_spans(&line.text, syntax, line.kind, content_width));
+    spans.extend(content_spans(
+        &line.text,
+        syntax,
+        inline,
+        line.kind,
+        content_width,
+    ));
     spans
 }
 
@@ -3075,7 +3494,7 @@ mod tests {
             }],
         };
 
-        let spans = content_spans("right", Some(&syntax), DiffLineKind::Addition, 8);
+        let spans = content_spans("right", Some(&syntax), &[], DiffLineKind::Addition, 8);
         let text = spans
             .iter()
             .map(|span| span.content.as_ref())
@@ -3083,6 +3502,119 @@ mod tests {
 
         assert_eq!(text, "right   ");
         assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn inline_emphasis_marks_changed_tokens_in_paired_lines() {
+        let lines = vec![
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(1),
+                new_line: None,
+                text: "let count = 1;".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(1),
+                text: "let total = 2;".to_owned(),
+            },
+        ];
+
+        let emphasis = compute_hunk_inline_emphasis(&lines);
+
+        assert_eq!(
+            range_texts(&lines[0].text, &emphasis[0].ranges),
+            ["count", "1"]
+        );
+        assert_eq!(
+            range_texts(&lines[1].text, &emphasis[1].ranges),
+            ["total", "2"]
+        );
+    }
+
+    #[test]
+    fn inline_emphasis_marks_unpaired_changed_lines() {
+        let lines = vec![DiffLine {
+            kind: DiffLineKind::Deletion,
+            old_line: Some(1),
+            new_line: None,
+            text: "removed line".to_owned(),
+        }];
+
+        let emphasis = compute_hunk_inline_emphasis(&lines);
+
+        assert_eq!(emphasis[0].ranges, full_line_inline_range(&lines[0].text));
+    }
+
+    #[test]
+    fn inline_diff_skips_expensive_long_line_pairs() {
+        let lines = vec![
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(1),
+                new_line: None,
+                text: "a".repeat(MAX_INLINE_DIFF_LINE_BYTES + 1),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(1),
+                text: "b".repeat(MAX_INLINE_DIFF_LINE_BYTES + 1),
+            },
+        ];
+
+        let emphasis = compute_hunk_inline_emphasis(&lines);
+
+        assert!(emphasis[0].ranges.is_empty());
+        assert!(emphasis[1].ranges.is_empty());
+    }
+
+    #[test]
+    fn content_spans_layers_inline_emphasis_over_syntax() {
+        let text = "let value = 2;";
+        let number_start = text.find('2').unwrap();
+        let syntax = HighlightedLine {
+            segments: vec![
+                hz_syntax::SyntaxSegment {
+                    byte_start: 0,
+                    byte_end: 12,
+                    text: "let value = ".to_owned(),
+                    class: Some(SyntaxClass::Keyword),
+                },
+                hz_syntax::SyntaxSegment {
+                    byte_start: 12,
+                    byte_end: 13,
+                    text: "2".to_owned(),
+                    class: Some(SyntaxClass::Number),
+                },
+                hz_syntax::SyntaxSegment {
+                    byte_start: 13,
+                    byte_end: 14,
+                    text: ";".to_owned(),
+                    class: Some(SyntaxClass::Punctuation),
+                },
+            ],
+        };
+
+        let spans = content_spans(
+            text,
+            Some(&syntax),
+            &[InlineRange {
+                byte_start: number_start,
+                byte_end: number_start + 1,
+            }],
+            DiffLineKind::Addition,
+            20,
+        );
+        let number = spans
+            .iter()
+            .find(|span| span.content.as_ref() == "2")
+            .expect("number span should be split out for inline emphasis");
+
+        assert_eq!(number.style.fg, syntax_fg(SyntaxClass::Number));
+        assert_eq!(number.style.bg, Some(addition_inline_bg()));
+        assert!(number.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
@@ -3578,6 +4110,13 @@ mod tests {
                 source_lines: 1,
             }),
         }
+    }
+
+    fn range_texts(text: &str, ranges: &[InlineRange]) -> Vec<String> {
+        ranges
+            .iter()
+            .map(|range| text[range.byte_start..range.byte_end].to_owned())
+            .collect()
     }
 
     fn temp_test_dir(name: &str) -> PathBuf {

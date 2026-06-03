@@ -15,6 +15,8 @@
 Syntax highlighting is implemented and on by default for bundled core languages.
 The interactive renderer is still hunk-local, lazy, bounded, and non-downloading.
 `hz diff --no-syntax` / `hz --no-syntax` disables syntax for a run.
+Inline diff emphasis is implemented for changed tokens/words in split and
+unified layouts, independently of syntax highlighting.
 
 Language management currently supports:
 
@@ -23,8 +25,8 @@ Language management currently supports:
 - `hz ts update`, `hz ts doctor`, `hz ts clean`, `hz ts path`, and filtered
   `hz ts available` for diagnostics and cache maintenance.
 
-Open follow-up work remains in Phases 4, 6, and 7 below: theme/config knobs,
-inline emphasis, and semantic experiments.
+Open follow-up work remains in Phases 4 and 7 below: theme/config knobs and
+semantic experiments.
 
 ## Phase 0: MVP foundation
 
@@ -186,11 +188,13 @@ input and unavailable full-file contents.
 
 ## Phase 6: inline diff emphasis
 
-- Add word/token-level changed-region emphasis.
-- Compute inline differences independently of syntax highlighting.
-- Layer inline emphasis over syntax foreground and diff backgrounds.
-- Keep split and unified layouts visually consistent.
-- Cap expensive inline diff work for very long lines.
+Status: implemented.
+
+- [x] Add word/token-level changed-region emphasis.
+- [x] Compute inline differences independently of syntax highlighting.
+- [x] Layer inline emphasis over syntax foreground and diff backgrounds.
+- [x] Keep split and unified layouts visually consistent.
+- [x] Cap expensive inline diff work for very long lines.
 
 ## Phase 7: semantic diff experiments
 
