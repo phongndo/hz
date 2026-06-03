@@ -13,8 +13,17 @@ use tree_sitter_language_pack::LanguageRegistry;
 
 const CONFIG_DIR: &str = "hz";
 const CONFIG_FILE: &str = "tree-sitter.json";
+const SETTINGS_FILE: &str = "config.toml";
+const LEGACY_SETTINGS_FILE: &str = "syntax.toml";
+const COLORSCHEME_DIR: &str = "colorscheme";
 const LANGUAGE_PACK_VERSION: &str = "1.9.0-rc.17";
 const ARTIFACT_SOURCE: &str = "github:kreuzberg-dev/tree-sitter-language-pack";
+
+pub const DEFAULT_MAX_HIGHLIGHT_SOURCE_BYTES: usize = 128 * 1024;
+pub const DEFAULT_MAX_HIGHLIGHT_LINE_BYTES: usize = 8 * 1024;
+pub const DEFAULT_HIGHLIGHT_CACHE_ENTRIES: usize = 512;
+pub const DEFAULT_HIGHLIGHT_QUEUE_ENTRIES: usize = 512;
+pub const DEFAULT_HIGHLIGHT_PREFETCH_VIEWPORTS: usize = 1;
 
 const CORE_LANGUAGES: &[&str] = &[
     "rust",
@@ -169,6 +178,258 @@ struct StoredParserArtifact {
     source: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+struct StoredSyntaxSettings {
+    mode: Option<SyntaxMode>,
+    colorscheme: Option<StoredSyntaxThemeConfig>,
+    theme: Option<StoredSyntaxThemeConfig>,
+    #[serde(default)]
+    colors: ColorOverrides,
+    #[serde(default, flatten)]
+    color_overrides: ColorOverrides,
+    #[serde(default, alias = "background_transparent", alias = "transparent_bg")]
+    transparent_background: bool,
+    #[serde(default)]
+    diff: StoredDiffSettings,
+    #[serde(default)]
+    limits: StoredSyntaxLimits,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+struct StoredDiffSettings {
+    line_background: Option<DiffBackground>,
+    gutter_background: Option<DiffGutterBackground>,
+    inline_background: Option<DiffBackground>,
+    #[serde(alias = "word_background", alias = "word_diff_background")]
+    word_background: Option<DiffBackground>,
+    sign_style: Option<DiffSignStyle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum StoredSyntaxThemeConfig {
+    Name(String),
+    Table(StoredSyntaxThemeTable),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+struct StoredSyntaxThemeTable {
+    source: Option<SyntaxThemeSource>,
+    name: Option<String>,
+    path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+struct StoredSyntaxLimits {
+    max_source_kib: Option<usize>,
+    max_line_kib: Option<usize>,
+    cache_entries: Option<usize>,
+    queue_entries: Option<usize>,
+    prefetch_viewports: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxSettings {
+    pub mode: SyntaxMode,
+    pub theme: SyntaxThemeConfig,
+    pub colors: ColorOverrides,
+    pub transparent_background: bool,
+    pub diff: DiffSettings,
+    pub limits: SyntaxLimits,
+}
+
+impl Default for SyntaxSettings {
+    fn default() -> Self {
+        Self {
+            mode: SyntaxMode::Enabled,
+            theme: SyntaxThemeConfig::default(),
+            colors: ColorOverrides::default(),
+            transparent_background: false,
+            diff: DiffSettings::default(),
+            limits: SyntaxLimits::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ColorOverrides {
+    #[serde(alias = "background")]
+    pub bg: Option<String>,
+    #[serde(alias = "foreground")]
+    pub fg: Option<String>,
+    pub header: Option<String>,
+    pub file: Option<String>,
+    pub hunk: Option<String>,
+    pub notice: Option<String>,
+    pub muted: Option<String>,
+    pub gutter_bg: Option<String>,
+    pub empty_diff: Option<String>,
+    pub addition_fg: Option<String>,
+    pub addition_gutter_bg: Option<String>,
+    pub addition_bg: Option<String>,
+    pub addition_inline_bg: Option<String>,
+    pub deletion_fg: Option<String>,
+    pub deletion_gutter_bg: Option<String>,
+    pub deletion_bg: Option<String>,
+    pub deletion_inline_bg: Option<String>,
+    pub attribute: Option<String>,
+    pub comment: Option<String>,
+    pub constant: Option<String>,
+    pub constructor: Option<String>,
+    pub function: Option<String>,
+    pub keyword: Option<String>,
+    pub label: Option<String>,
+    pub module: Option<String>,
+    pub number: Option<String>,
+    pub operator: Option<String>,
+    pub property: Option<String>,
+    pub punctuation: Option<String>,
+    pub string: Option<String>,
+    pub tag: Option<String>,
+    pub r#type: Option<String>,
+    pub variable: Option<String>,
+}
+
+impl ColorOverrides {
+    fn overlay(self, overrides: Self) -> Self {
+        Self {
+            bg: overrides.bg.or(self.bg),
+            fg: overrides.fg.or(self.fg),
+            header: overrides.header.or(self.header),
+            file: overrides.file.or(self.file),
+            hunk: overrides.hunk.or(self.hunk),
+            notice: overrides.notice.or(self.notice),
+            muted: overrides.muted.or(self.muted),
+            gutter_bg: overrides.gutter_bg.or(self.gutter_bg),
+            empty_diff: overrides.empty_diff.or(self.empty_diff),
+            addition_fg: overrides.addition_fg.or(self.addition_fg),
+            addition_gutter_bg: overrides.addition_gutter_bg.or(self.addition_gutter_bg),
+            addition_bg: overrides.addition_bg.or(self.addition_bg),
+            addition_inline_bg: overrides.addition_inline_bg.or(self.addition_inline_bg),
+            deletion_fg: overrides.deletion_fg.or(self.deletion_fg),
+            deletion_gutter_bg: overrides.deletion_gutter_bg.or(self.deletion_gutter_bg),
+            deletion_bg: overrides.deletion_bg.or(self.deletion_bg),
+            deletion_inline_bg: overrides.deletion_inline_bg.or(self.deletion_inline_bg),
+            attribute: overrides.attribute.or(self.attribute),
+            comment: overrides.comment.or(self.comment),
+            constant: overrides.constant.or(self.constant),
+            constructor: overrides.constructor.or(self.constructor),
+            function: overrides.function.or(self.function),
+            keyword: overrides.keyword.or(self.keyword),
+            label: overrides.label.or(self.label),
+            module: overrides.module.or(self.module),
+            number: overrides.number.or(self.number),
+            operator: overrides.operator.or(self.operator),
+            property: overrides.property.or(self.property),
+            punctuation: overrides.punctuation.or(self.punctuation),
+            string: overrides.string.or(self.string),
+            tag: overrides.tag.or(self.tag),
+            r#type: overrides.r#type.or(self.r#type),
+            variable: overrides.variable.or(self.variable),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffSettings {
+    pub line_background: DiffBackground,
+    pub gutter_background: DiffGutterBackground,
+    pub inline_background: DiffBackground,
+    pub sign_style: DiffSignStyle,
+}
+
+impl Default for DiffSettings {
+    fn default() -> Self {
+        Self {
+            line_background: DiffBackground::Subtle,
+            gutter_background: DiffGutterBackground::Delta,
+            inline_background: DiffBackground::Strong,
+            sign_style: DiffSignStyle::Bold,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiffBackground {
+    None,
+    #[default]
+    Subtle,
+    Strong,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiffGutterBackground {
+    Base,
+    #[default]
+    Delta,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiffSignStyle {
+    Normal,
+    #[default]
+    Bold,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SyntaxMode {
+    #[default]
+    Enabled,
+    Builtin,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxThemeConfig {
+    pub source: SyntaxThemeSource,
+    pub name: Option<String>,
+    pub path: Option<PathBuf>,
+}
+
+impl Default for SyntaxThemeConfig {
+    fn default() -> Self {
+        Self {
+            source: SyntaxThemeSource::Builtin,
+            name: Some("system".to_owned()),
+            path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SyntaxThemeSource {
+    #[default]
+    Builtin,
+    Ansi,
+    Base16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyntaxLimits {
+    pub max_source_bytes: usize,
+    pub max_line_bytes: usize,
+    pub cache_entries: usize,
+    pub queue_entries: usize,
+    pub prefetch_viewports: usize,
+}
+
+impl Default for SyntaxLimits {
+    fn default() -> Self {
+        Self {
+            max_source_bytes: DEFAULT_MAX_HIGHLIGHT_SOURCE_BYTES,
+            max_line_bytes: DEFAULT_MAX_HIGHLIGHT_LINE_BYTES,
+            cache_entries: DEFAULT_HIGHLIGHT_CACHE_ENTRIES,
+            queue_entries: DEFAULT_HIGHLIGHT_QUEUE_ENTRIES,
+            prefetch_viewports: DEFAULT_HIGHLIGHT_PREFETCH_VIEWPORTS,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyntaxParserArtifact {
     pub language: String,
@@ -264,11 +525,17 @@ pub struct SyntaxLanguageSet {
 
 impl SyntaxLanguageSet {
     pub fn load() -> HzResult<Self> {
+        let settings = load_settings()?;
+        Self::load_with_mode(settings.mode)
+    }
+
+    pub fn load_with_mode(mode: SyntaxMode) -> HzResult<Self> {
         let config = load_config()?;
         let installed = installed_language_set();
+        let trusted = trusted_language_set(&installed, &config);
         Ok(Self {
-            enabled: enabled_language_set_from_config(&config),
-            trusted: trusted_language_set(&installed, &config),
+            enabled: enabled_language_set_for_mode(mode, &config, &trusted),
+            trusted,
             installed,
         })
     }
@@ -372,6 +639,35 @@ impl SyntaxHighlighter {
 
 pub fn config_path() -> HzResult<PathBuf> {
     config_home().map(|path| path.join(CONFIG_DIR).join(CONFIG_FILE))
+}
+
+pub fn settings_path() -> HzResult<PathBuf> {
+    config_home().map(|path| path.join(CONFIG_DIR).join(SETTINGS_FILE))
+}
+
+fn legacy_settings_path() -> HzResult<PathBuf> {
+    config_home().map(|path| path.join(CONFIG_DIR).join(LEGACY_SETTINGS_FILE))
+}
+
+pub fn colorscheme_dir() -> HzResult<PathBuf> {
+    config_home().map(|path| path.join(CONFIG_DIR).join(COLORSCHEME_DIR))
+}
+
+pub fn load_settings() -> HzResult<SyntaxSettings> {
+    let mut path = settings_path()?;
+    if !path.exists() {
+        let legacy_path = legacy_settings_path()?;
+        if legacy_path.exists() {
+            path = legacy_path;
+        }
+    }
+    if !path.exists() {
+        return Ok(SyntaxSettings::default());
+    }
+
+    let contents = fs::read_to_string(&path)?;
+    parse_settings(&contents)
+        .map_err(|error| HzError::Usage(format!("failed to parse {}: {error}", path.display())))
 }
 
 pub fn cache_dir() -> HzResult<String> {
@@ -846,14 +1142,153 @@ fn save_config(config: &StoredSyntaxConfig) -> HzResult<()> {
     Ok(())
 }
 
+fn parse_settings(contents: &str) -> Result<SyntaxSettings, toml::de::Error> {
+    let stored: StoredSyntaxSettings = toml::from_str(contents)?;
+    Ok(settings_from_stored(stored))
+}
+
+fn settings_from_stored(stored: StoredSyntaxSettings) -> SyntaxSettings {
+    let colorscheme = stored.colorscheme.or(stored.theme);
+
+    SyntaxSettings {
+        mode: stored.mode.unwrap_or_default(),
+        theme: colorscheme
+            .map(theme_config_from_stored)
+            .unwrap_or_default(),
+        colors: stored.colors.overlay(stored.color_overrides),
+        transparent_background: stored.transparent_background,
+        diff: diff_from_stored(stored.diff),
+        limits: limits_from_stored(stored.limits),
+    }
+}
+
+fn diff_from_stored(stored: StoredDiffSettings) -> DiffSettings {
+    let defaults = DiffSettings::default();
+    DiffSettings {
+        line_background: stored.line_background.unwrap_or(defaults.line_background),
+        gutter_background: stored
+            .gutter_background
+            .unwrap_or(defaults.gutter_background),
+        inline_background: stored
+            .inline_background
+            .or(stored.word_background)
+            .unwrap_or(defaults.inline_background),
+        sign_style: stored.sign_style.unwrap_or(defaults.sign_style),
+    }
+}
+
+fn theme_config_from_stored(stored: StoredSyntaxThemeConfig) -> SyntaxThemeConfig {
+    match stored {
+        StoredSyntaxThemeConfig::Name(name) => theme_config_from_name(name),
+        StoredSyntaxThemeConfig::Table(table) => theme_config_from_table(table),
+    }
+}
+
+fn theme_config_from_name(name: String) -> SyntaxThemeConfig {
+    let name = name.trim().to_owned();
+    if let Some(source) = theme_source_from_name(&name) {
+        return SyntaxThemeConfig {
+            source,
+            name: None,
+            path: None,
+        };
+    }
+
+    SyntaxThemeConfig {
+        source: SyntaxThemeSource::Builtin,
+        name: (!name.is_empty()).then_some(name),
+        path: None,
+    }
+}
+
+fn theme_config_from_table(table: StoredSyntaxThemeTable) -> SyntaxThemeConfig {
+    let name = table
+        .name
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty());
+    let source = table
+        .source
+        .or_else(|| name.as_deref().and_then(theme_source_from_name))
+        .or_else(|| table.path.as_ref().map(|_| SyntaxThemeSource::Base16))
+        .unwrap_or_default();
+    let name = if theme_source_from_name(name.as_deref().unwrap_or_default()).is_some() {
+        None
+    } else {
+        name
+    };
+
+    SyntaxThemeConfig {
+        source,
+        name,
+        path: table.path,
+    }
+}
+
+fn theme_source_from_name(name: &str) -> Option<SyntaxThemeSource> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "ansi" | "terminal" => Some(SyntaxThemeSource::Ansi),
+        "base16" => Some(SyntaxThemeSource::Base16),
+        _ => None,
+    }
+}
+
+fn limits_from_stored(stored: StoredSyntaxLimits) -> SyntaxLimits {
+    let defaults = SyntaxLimits::default();
+    SyntaxLimits {
+        max_source_bytes: kib_or_default(stored.max_source_kib, defaults.max_source_bytes),
+        max_line_bytes: kib_or_default(stored.max_line_kib, defaults.max_line_bytes),
+        cache_entries: non_zero_or_default(stored.cache_entries, defaults.cache_entries),
+        queue_entries: non_zero_or_default(stored.queue_entries, defaults.queue_entries),
+        prefetch_viewports: stored
+            .prefetch_viewports
+            .unwrap_or(defaults.prefetch_viewports),
+    }
+}
+
+fn kib_or_default(kib: Option<usize>, default: usize) -> usize {
+    kib.and_then(|kib| kib.checked_mul(1024))
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or(default)
+}
+
+fn non_zero_or_default(value: Option<usize>, default: usize) -> usize {
+    value.filter(|value| *value > 0).unwrap_or(default)
+}
+
 fn enabled_language_set() -> HzResult<BTreeSet<String>> {
     Ok(enabled_language_set_from_config(&load_config()?))
+}
+
+fn enabled_language_set_for_mode(
+    mode: SyntaxMode,
+    config: &StoredSyntaxConfig,
+    trusted: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    match mode {
+        SyntaxMode::Enabled => enabled_language_set_from_config(config),
+        SyntaxMode::Builtin => bundled_highlight_language_set(),
+        SyntaxMode::All => {
+            let mut enabled = bundled_highlight_language_set();
+            enabled.extend(trusted.iter().cloned());
+            enabled
+        }
+    }
 }
 
 fn enabled_language_set_from_config(config: &StoredSyntaxConfig) -> BTreeSet<String> {
     let mut enabled = language_vec_to_set(&config.languages);
     enabled.extend(core_enabled_language_set());
     enabled
+}
+
+fn bundled_highlight_language_set() -> BTreeSet<String> {
+    tree_sitter_language_pack::available_languages()
+        .into_iter()
+        .map(normalize_language_name)
+        .filter(|language| {
+            tree_sitter_language_pack::has_parser(language) && has_highlights(language)
+        })
+        .collect()
 }
 
 fn core_enabled_language_set() -> BTreeSet<String> {
@@ -1344,6 +1779,171 @@ mod tests {
             languages,
             BTreeSet::from(["bash".to_owned(), "elixir".to_owned(), "ruby".to_owned()])
         );
+    }
+
+    #[test]
+    fn syntax_settings_default_to_enabled_system_colorscheme() {
+        let settings = parse_settings("").expect("empty settings should parse");
+
+        assert_eq!(settings.mode, SyntaxMode::Enabled);
+        assert_eq!(settings.theme.source, SyntaxThemeSource::Builtin);
+        assert_eq!(settings.theme.name.as_deref(), Some("system"));
+        assert!(!settings.transparent_background);
+        assert_eq!(settings.diff, DiffSettings::default());
+        assert_eq!(settings.limits, SyntaxLimits::default());
+    }
+
+    #[test]
+    fn syntax_settings_supports_ansi_colorscheme_and_limits() {
+        let settings = parse_settings(
+            r#"
+mode = "builtin"
+colorscheme = "ansi"
+transparent_background = true
+
+[limits]
+max_source_kib = 64
+max_line_kib = 4
+cache_entries = 128
+queue_entries = 256
+prefetch_viewports = 2
+
+[diff]
+line_background = "subtle"
+gutter_background = "delta"
+inline_background = "strong"
+sign_style = "bold"
+"#,
+        )
+        .expect("settings should parse");
+
+        assert_eq!(settings.mode, SyntaxMode::Builtin);
+        assert_eq!(settings.theme.source, SyntaxThemeSource::Ansi);
+        assert_eq!(settings.theme.name, None);
+        assert!(settings.transparent_background);
+        assert_eq!(settings.limits.max_source_bytes, 64 * 1024);
+        assert_eq!(settings.limits.max_line_bytes, 4 * 1024);
+        assert_eq!(settings.limits.cache_entries, 128);
+        assert_eq!(settings.limits.queue_entries, 256);
+        assert_eq!(settings.limits.prefetch_viewports, 2);
+        assert_eq!(settings.diff.line_background, DiffBackground::Subtle);
+        assert_eq!(settings.diff.gutter_background, DiffGutterBackground::Delta);
+        assert_eq!(settings.diff.inline_background, DiffBackground::Strong);
+        assert_eq!(settings.diff.sign_style, DiffSignStyle::Bold);
+    }
+
+    #[test]
+    fn syntax_settings_supports_legacy_theme_key() {
+        let settings = parse_settings(
+            r#"
+theme = "ansi"
+"#,
+        )
+        .expect("legacy theme key should parse");
+
+        assert_eq!(settings.theme.source, SyntaxThemeSource::Ansi);
+        assert_eq!(settings.theme.name, None);
+    }
+
+    #[test]
+    fn syntax_settings_prefers_colorscheme_over_legacy_theme() {
+        let settings = parse_settings(
+            r#"
+colorscheme = "system"
+theme = "ansi"
+"#,
+        )
+        .expect("settings should parse");
+
+        assert_eq!(settings.theme.source, SyntaxThemeSource::Builtin);
+        assert_eq!(settings.theme.name.as_deref(), Some("system"));
+    }
+
+    #[test]
+    fn syntax_settings_supports_color_overrides() {
+        let settings = parse_settings(
+            r##"
+colorscheme = "system"
+bg = "#111315"
+addition_bg = "#1f3025"
+
+[colors]
+addition_bg = "#222222"
+deletion_bg = "#372526"
+"##,
+        )
+        .expect("settings should parse");
+
+        assert_eq!(settings.colors.bg.as_deref(), Some("#111315"));
+        assert_eq!(settings.colors.addition_bg.as_deref(), Some("#1f3025"));
+        assert_eq!(settings.colors.deletion_bg.as_deref(), Some("#372526"));
+    }
+
+    #[test]
+    fn syntax_settings_supports_word_background_alias() {
+        let settings = parse_settings(
+            r#"
+[diff]
+line_background = "none"
+word_background = "subtle"
+sign_style = "normal"
+"#,
+        )
+        .expect("settings should parse");
+
+        assert_eq!(settings.diff.line_background, DiffBackground::None);
+        assert_eq!(settings.diff.inline_background, DiffBackground::Subtle);
+        assert_eq!(settings.diff.sign_style, DiffSignStyle::Normal);
+    }
+
+    #[test]
+    fn syntax_settings_accept_background_transparent_alias() {
+        let settings =
+            parse_settings("background_transparent = true").expect("settings should parse alias");
+
+        assert!(settings.transparent_background);
+    }
+
+    #[test]
+    fn syntax_settings_supports_base16_colorscheme_table() {
+        let settings = parse_settings(
+            r#"
+mode = "all"
+
+[colorscheme]
+source = "base16"
+path = "~/themes/example.yaml"
+"#,
+        )
+        .expect("settings should parse");
+
+        assert_eq!(settings.mode, SyntaxMode::All);
+        assert_eq!(settings.theme.source, SyntaxThemeSource::Base16);
+        assert_eq!(
+            settings.theme.path,
+            Some(PathBuf::from("~/themes/example.yaml"))
+        );
+    }
+
+    #[test]
+    fn syntax_modes_choose_enabled_languages_without_downloads() {
+        let config = StoredSyntaxConfig {
+            languages: vec!["definitely_custom_language".to_owned()],
+            parsers: Vec::new(),
+        };
+        let trusted = BTreeSet::from(["elixir".to_owned()]);
+
+        let enabled = enabled_language_set_for_mode(SyntaxMode::Enabled, &config, &trusted);
+        let builtin = enabled_language_set_for_mode(SyntaxMode::Builtin, &config, &trusted);
+        let all = enabled_language_set_for_mode(SyntaxMode::All, &config, &trusted);
+
+        assert!(enabled.contains("rust"));
+        assert!(enabled.contains("definitely_custom_language"));
+        assert!(!builtin.contains("definitely_custom_language"));
+        assert!(builtin.contains("rust"));
+        assert!(all.contains("rust"));
+        assert!(all.contains("elixir"));
+        assert!(!all.contains("definitely_custom_language"));
     }
 
     #[test]

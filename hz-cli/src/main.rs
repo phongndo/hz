@@ -138,7 +138,7 @@ enum TreeSitterCommand {
     Available(TreeSitterAvailableArgs),
     #[command(about = "Remove cached tree-sitter parser libraries")]
     Clean,
-    #[command(about = "Print tree-sitter cache and config paths")]
+    #[command(about = "Print tree-sitter cache and syntax config paths")]
     Path,
     #[command(about = "Validate enabled syntax highlighting languages")]
     Doctor,
@@ -423,8 +423,19 @@ fn tree_sitter(command: TreeSitterCommand) -> HzResult<()> {
             );
         }
         TreeSitterCommand::Path => {
-            println!("cache  {}", hz_command::syntax_cache_dir()?);
-            println!("config {}", hz_command::syntax_config_path()?.display());
+            println!("cache       {}", hz_command::syntax_cache_dir()?);
+            println!(
+                "registry    {}",
+                hz_command::syntax_config_path()?.display()
+            );
+            println!(
+                "config      {}",
+                hz_command::syntax_settings_path()?.display()
+            );
+            println!(
+                "colorscheme {}",
+                hz_command::syntax_colorscheme_dir()?.display()
+            );
         }
         TreeSitterCommand::Doctor => {
             let report = hz_command::syntax_doctor()?;

@@ -137,7 +137,7 @@ _hz_complete_ts_subcommand() {
     'list:list syntax highlighting languages'
     'available:list syntax highlighting languages'
     'clean:remove cached parser libraries'
-    'path:print tree-sitter cache and config paths'
+    'path:print tree-sitter cache and syntax config paths'
     'doctor:validate enabled syntax highlighting languages'
   )
 

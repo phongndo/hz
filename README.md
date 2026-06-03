@@ -250,6 +250,23 @@ hunk-local highlighting. Highlighting stays lazy and cached, and falls back to
 plain diff text for missing languages, missing queries, or very large
 hunks/lines.
 
+Syntax mode, diff styling, colorscheme, and performance limits are user-local in
+`~/.config/hz/config.toml`; repo `.hz/hz.toml` does not control parser loading.
+The default colorscheme is the built-in, read-only `system` scheme: terminal
+foreground/background and ANSI syntax colors stay system-driven, while hz owns
+the hunk-style diff red/green accents and changed-line backgrounds. Put
+Base16/Tinted scheme files in
+`~/.config/hz/colorscheme/` and set `colorscheme = "name"` for cross-tool
+compatibility with editors such as Neovim. Built-in colorscheme names are
+resolved before user files, so custom files cannot replace the default `system`
+scheme; layer `bg`, `addition_bg`, `deletion_bg`, and related overrides in
+`config.toml`, or use a new colorscheme name for a full custom scheme.
+Built-in diff colorschemes include
+`hz-dark`, `catppuccin-mocha`, `gruvbox-dark`, `tokyonight`, and `dracula`. Set
+`transparent_background = true` to let the terminal background show through diff
+and inline backgrounds for non-system colorschemes. `hz ts path` prints the cache,
+registry, user config, and colorscheme paths.
+
 ### Repo lifecycle
 
 `hz init` initializes repo-local lifecycle config:

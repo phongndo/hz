@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
+    env,
     ffi::OsStr,
     fs,
     hash::{Hash, Hasher},
@@ -28,7 +29,11 @@ use hz_core::{HzError, HzResult};
 use hz_diff::{
     Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, DiffStats, FileStatus,
 };
-use hz_syntax::{HighlightedLine, SyntaxClass, SyntaxHighlighter, SyntaxLanguageSet};
+use hz_syntax::{
+    ColorOverrides, DiffBackground, DiffGutterBackground, DiffSettings, DiffSignStyle,
+    HighlightedLine, SyntaxClass, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits,
+    SyntaxSettings, SyntaxThemeConfig, SyntaxThemeSource,
+};
 use notify::{RecursiveMode, Watcher};
 use ratatui::{
     Frame, Terminal,
@@ -56,16 +61,31 @@ const DIFF_INDICATOR: &str = "▌";
 const EMPTY_DIFF_FILL: char = '╱';
 const EMPTY_DIFF_FILL_SPACING: usize = 3;
 const NOTICE_TTL: Duration = Duration::from_millis(1_500);
-const MAX_HIGHLIGHT_HUNK_BYTES: usize = 128 * 1024;
-const MAX_HIGHLIGHT_LINE_BYTES: usize = 8 * 1024;
-const MAX_HIGHLIGHT_CACHE_ENTRIES: usize = 512;
-const MAX_HIGHLIGHT_QUEUE_ENTRIES: usize = 512;
 const MAX_SYNTAX_RESULTS_PER_FRAME: usize = 64;
-const HIGHLIGHT_PREFETCH_VIEWPORTS: usize = 1;
 const SYNTAX_THEME_ID: u64 = 0;
 const MAX_INLINE_DIFF_LINE_BYTES: usize = 4 * 1024;
 const MAX_INLINE_DIFF_TOKENS: usize = 256;
 const MAX_INLINE_DIFF_CACHE_ENTRIES: usize = 512;
+
+fn line_gutter_fg(kind: DiffLineKind, theme: DiffTheme) -> Color {
+    match kind {
+        DiffLineKind::Addition => theme.addition_fg,
+        DiffLineKind::Deletion => theme.deletion_fg,
+        DiffLineKind::Context | DiffLineKind::Meta => theme.foreground,
+    }
+}
+
+fn line_gutter_bg(kind: DiffLineKind, theme: DiffTheme) -> Color {
+    if theme.transparent_background {
+        return Color::Reset;
+    }
+
+    match (theme.diff.gutter_background, kind) {
+        (DiffGutterBackground::Delta, DiffLineKind::Addition) => theme.addition_gutter_bg,
+        (DiffGutterBackground::Delta, DiffLineKind::Deletion) => theme.deletion_gutter_bg,
+        _ => theme.gutter_bg,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiffBenchmarkOptions {
@@ -125,36 +145,945 @@ pub struct SyntaxBenchmarkReport {
     pub estimated_memory_peak_bytes: u64,
 }
 
-fn muted() -> Color {
-    Color::Rgb(125, 135, 148)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DiffTheme {
+    foreground: Color,
+    background: Color,
+    header: Color,
+    file: Color,
+    hunk: Color,
+    notice: Color,
+    muted: Color,
+    gutter_bg: Color,
+    empty_diff: Color,
+    addition_fg: Color,
+    addition_gutter_bg: Color,
+    addition_bg: Color,
+    addition_inline_bg: Color,
+    deletion_fg: Color,
+    deletion_gutter_bg: Color,
+    deletion_bg: Color,
+    deletion_inline_bg: Color,
+    transparent_background: bool,
+    diff: DiffSettings,
+    syntax: SyntaxPalette,
 }
 
-fn addition_bg() -> Color {
-    Color::Rgb(16, 48, 27)
+impl Default for DiffTheme {
+    fn default() -> Self {
+        Self::system()
+    }
 }
 
-fn deletion_bg() -> Color {
-    Color::Rgb(52, 25, 30)
+impl DiffTheme {
+    fn system() -> Self {
+        let base = RgbColor::new(0x11, 0x13, 0x15);
+        let green = RgbColor::new(0x88, 0xd3, 0x9b);
+        let red = RgbColor::new(0xf0, 0xa0, 0xa0);
+        Self {
+            foreground: Color::Reset,
+            background: Color::Reset,
+            header: Color::Reset,
+            file: Color::Reset,
+            hunk: Color::Indexed(13),
+            notice: green.color(),
+            muted: Color::Indexed(8),
+            gutter_bg: Color::Indexed(0),
+            empty_diff: Color::Rgb(0x3d, 0x42, 0x49),
+            addition_fg: green.color(),
+            addition_gutter_bg: base.blend(green, 0.12).color(),
+            addition_bg: Color::Rgb(0x1f, 0x30, 0x25),
+            addition_inline_bg: base.blend(green, 0.28).color(),
+            deletion_fg: red.color(),
+            deletion_gutter_bg: base.blend(red, 0.12).color(),
+            deletion_bg: Color::Rgb(0x37, 0x25, 0x26),
+            deletion_inline_bg: base.blend(red, 0.28).color(),
+            transparent_background: false,
+            diff: DiffSettings::default(),
+            syntax: SyntaxPalette::ansi(),
+        }
+    }
+
+    fn terminal_dark() -> Self {
+        let base = RgbColor::new(0x12, 0x12, 0x12);
+        let green = RgbColor::new(0x9b, 0xd6, 0xa6);
+        let red = RgbColor::new(0xe8, 0x8d, 0x8d);
+        Self {
+            foreground: Color::Reset,
+            background: base.color(),
+            header: Color::Rgb(220, 225, 232),
+            file: Color::Rgb(215, 218, 224),
+            hunk: Color::Rgb(205, 130, 170),
+            notice: Color::Green,
+            muted: Color::Rgb(125, 135, 148),
+            gutter_bg: Color::Rgb(12, 16, 20),
+            empty_diff: Color::Rgb(38, 45, 54),
+            addition_fg: Color::Indexed(2),
+            addition_gutter_bg: base.blend(green, 0.035).color(),
+            addition_bg: base.blend(green, 0.045).color(),
+            addition_inline_bg: base.blend(green, 0.14).color(),
+            deletion_fg: Color::Indexed(1),
+            deletion_gutter_bg: base.blend(red, 0.035).color(),
+            deletion_bg: base.blend(red, 0.045).color(),
+            deletion_inline_bg: base.blend(red, 0.14).color(),
+            transparent_background: false,
+            diff: DiffSettings::default(),
+            syntax: SyntaxPalette::terminal_dark(),
+        }
+    }
+
+    fn terminal_light() -> Self {
+        let base = RgbColor::new(0xff, 0xff, 0xff);
+        let green = RgbColor::new(0x22, 0x5f, 0x2d);
+        let red = RgbColor::new(0xb0, 0x38, 0x37);
+        Self {
+            foreground: Color::Reset,
+            background: base.color(),
+            header: Color::Rgb(36, 41, 47),
+            file: Color::Rgb(45, 51, 59),
+            hunk: Color::Rgb(138, 43, 92),
+            notice: Color::Green,
+            muted: Color::Rgb(106, 115, 125),
+            gutter_bg: Color::Rgb(238, 242, 246),
+            empty_diff: Color::Rgb(225, 228, 232),
+            addition_fg: Color::Indexed(2),
+            addition_gutter_bg: base.blend(green, 0.035).color(),
+            addition_bg: base.blend(green, 0.045).color(),
+            addition_inline_bg: base.blend(green, 0.14).color(),
+            deletion_fg: Color::Indexed(1),
+            deletion_gutter_bg: base.blend(red, 0.035).color(),
+            deletion_bg: base.blend(red, 0.045).color(),
+            deletion_inline_bg: base.blend(red, 0.14).color(),
+            transparent_background: false,
+            diff: DiffSettings::default(),
+            syntax: SyntaxPalette::terminal_light(),
+        }
+    }
+
+    fn minimal() -> Self {
+        Self {
+            foreground: Color::Reset,
+            background: Color::Reset,
+            header: Color::White,
+            file: Color::White,
+            hunk: Color::Magenta,
+            notice: Color::Green,
+            muted: Color::DarkGray,
+            gutter_bg: Color::Black,
+            empty_diff: Color::DarkGray,
+            addition_fg: Color::Green,
+            addition_gutter_bg: Color::Black,
+            addition_bg: Color::Reset,
+            addition_inline_bg: Color::Green,
+            deletion_fg: Color::Red,
+            deletion_gutter_bg: Color::Black,
+            deletion_bg: Color::Reset,
+            deletion_inline_bg: Color::Red,
+            transparent_background: false,
+            diff: DiffSettings::default(),
+            syntax: SyntaxPalette::minimal(),
+        }
+    }
+
+    fn ansi() -> Self {
+        Self {
+            foreground: Color::Reset,
+            background: Color::Reset,
+            header: Color::Indexed(15),
+            file: Color::Indexed(15),
+            hunk: Color::Indexed(13),
+            notice: Color::Indexed(2),
+            muted: Color::Indexed(8),
+            gutter_bg: Color::Indexed(0),
+            empty_diff: Color::Indexed(8),
+            addition_fg: Color::Indexed(2),
+            addition_gutter_bg: Color::Indexed(0),
+            addition_bg: Color::Reset,
+            addition_inline_bg: Color::Indexed(22),
+            deletion_fg: Color::Indexed(1),
+            deletion_gutter_bg: Color::Indexed(0),
+            deletion_bg: Color::Reset,
+            deletion_inline_bg: Color::Indexed(52),
+            transparent_background: false,
+            diff: DiffSettings::default(),
+            syntax: SyntaxPalette::ansi(),
+        }
+    }
+
+    fn catppuccin_mocha() -> Self {
+        let base = RgbColor::new(0x1e, 0x1e, 0x2e);
+        let green = RgbColor::new(0xa6, 0xe3, 0xa1);
+        let red = RgbColor::new(0xf3, 0x8b, 0xa8);
+        Self {
+            foreground: Color::Rgb(0xcd, 0xd6, 0xf4),
+            background: base.color(),
+            header: Color::Rgb(0xb4, 0xbe, 0xfe),
+            file: Color::Rgb(0xcd, 0xd6, 0xf4),
+            hunk: Color::Rgb(0xcb, 0xa6, 0xf7),
+            notice: green.color(),
+            muted: Color::Rgb(0x6c, 0x70, 0x86),
+            gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
+            empty_diff: Color::Rgb(0x31, 0x32, 0x44),
+            addition_fg: green.color(),
+            addition_gutter_bg: base.blend(green, 0.035).color(),
+            addition_bg: base.blend(green, 0.045).color(),
+            addition_inline_bg: base.blend(green, 0.14).color(),
+            deletion_fg: red.color(),
+            deletion_gutter_bg: base.blend(red, 0.035).color(),
+            deletion_bg: base.blend(red, 0.045).color(),
+            deletion_inline_bg: base.blend(red, 0.14).color(),
+            transparent_background: false,
+            diff: DiffSettings::default(),
+            syntax: SyntaxPalette::catppuccin_mocha(),
+        }
+    }
+
+    fn gruvbox_dark() -> Self {
+        let base = RgbColor::new(0x28, 0x28, 0x28);
+        let green = RgbColor::new(0xb8, 0xbb, 0x26);
+        let red = RgbColor::new(0xfb, 0x49, 0x34);
+        Self {
+            foreground: Color::Rgb(0xeb, 0xdb, 0xb2),
+            background: base.color(),
+            header: Color::Rgb(0xfb, 0xf1, 0xc7),
+            file: Color::Rgb(0xeb, 0xdb, 0xb2),
+            hunk: Color::Rgb(0xd3, 0x86, 0x9b),
+            notice: green.color(),
+            muted: Color::Rgb(0x92, 0x83, 0x74),
+            gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
+            empty_diff: Color::Rgb(0x3c, 0x38, 0x36),
+            addition_fg: green.color(),
+            addition_gutter_bg: base.blend(green, 0.035).color(),
+            addition_bg: base.blend(green, 0.045).color(),
+            addition_inline_bg: base.blend(green, 0.14).color(),
+            deletion_fg: red.color(),
+            deletion_gutter_bg: base.blend(red, 0.035).color(),
+            deletion_bg: base.blend(red, 0.045).color(),
+            deletion_inline_bg: base.blend(red, 0.14).color(),
+            transparent_background: false,
+            diff: DiffSettings::default(),
+            syntax: SyntaxPalette::gruvbox_dark(),
+        }
+    }
+
+    fn tokyonight() -> Self {
+        let base = RgbColor::new(0x1a, 0x1b, 0x26);
+        let green = RgbColor::new(0x9e, 0xce, 0x6a);
+        let red = RgbColor::new(0xf7, 0x76, 0x8e);
+        Self {
+            foreground: Color::Rgb(0xc0, 0xca, 0xf5),
+            background: base.color(),
+            header: Color::Rgb(0xc0, 0xca, 0xf5),
+            file: Color::Rgb(0xc0, 0xca, 0xf5),
+            hunk: Color::Rgb(0xbb, 0x9a, 0xf7),
+            notice: green.color(),
+            muted: Color::Rgb(0x56, 0x5f, 0x89),
+            gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
+            empty_diff: Color::Rgb(0x24, 0x28, 0x3b),
+            addition_fg: green.color(),
+            addition_gutter_bg: base.blend(green, 0.035).color(),
+            addition_bg: base.blend(green, 0.045).color(),
+            addition_inline_bg: base.blend(green, 0.14).color(),
+            deletion_fg: red.color(),
+            deletion_gutter_bg: base.blend(red, 0.035).color(),
+            deletion_bg: base.blend(red, 0.045).color(),
+            deletion_inline_bg: base.blend(red, 0.14).color(),
+            transparent_background: false,
+            diff: DiffSettings::default(),
+            syntax: SyntaxPalette::tokyonight(),
+        }
+    }
+
+    fn dracula() -> Self {
+        let base = RgbColor::new(0x28, 0x2a, 0x36);
+        let green = RgbColor::new(0x50, 0xfa, 0x7b);
+        let red = RgbColor::new(0xff, 0x55, 0x55);
+        Self {
+            foreground: Color::Rgb(0xf8, 0xf8, 0xf2),
+            background: base.color(),
+            header: Color::Rgb(0xf8, 0xf8, 0xf2),
+            file: Color::Rgb(0xf8, 0xf8, 0xf2),
+            hunk: Color::Rgb(0xff, 0x79, 0xc6),
+            notice: green.color(),
+            muted: Color::Rgb(0x62, 0x72, 0xa4),
+            gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
+            empty_diff: Color::Rgb(0x44, 0x47, 0x5a),
+            addition_fg: green.color(),
+            addition_gutter_bg: base.blend(green, 0.035).color(),
+            addition_bg: base.blend(green, 0.045).color(),
+            addition_inline_bg: base.blend(green, 0.14).color(),
+            deletion_fg: red.color(),
+            deletion_gutter_bg: base.blend(red, 0.035).color(),
+            deletion_bg: base.blend(red, 0.045).color(),
+            deletion_inline_bg: base.blend(red, 0.14).color(),
+            transparent_background: false,
+            diff: DiffSettings::default(),
+            syntax: SyntaxPalette::dracula(),
+        }
+    }
+
+    fn base16(scheme: Base16Scheme) -> Self {
+        Self {
+            foreground: scheme.base05.color(),
+            background: scheme.base00.color(),
+            header: scheme.base06.color(),
+            file: scheme.base05.color(),
+            hunk: scheme.base0e.color(),
+            notice: scheme.base0b.color(),
+            muted: scheme.base03.color(),
+            gutter_bg: scheme.base00.blend(RgbColor::new(0, 0, 0), 0.18).color(),
+            empty_diff: scheme.base01.color(),
+            addition_fg: scheme.base0b.color(),
+            addition_gutter_bg: scheme.base00.blend(scheme.base0b, 0.035).color(),
+            addition_bg: scheme.base00.blend(scheme.base0b, 0.045).color(),
+            addition_inline_bg: scheme.base00.blend(scheme.base0b, 0.14).color(),
+            deletion_fg: scheme.base08.color(),
+            deletion_gutter_bg: scheme.base00.blend(scheme.base08, 0.035).color(),
+            deletion_bg: scheme.base00.blend(scheme.base08, 0.045).color(),
+            deletion_inline_bg: scheme.base00.blend(scheme.base08, 0.14).color(),
+            transparent_background: false,
+            diff: DiffSettings::default(),
+            syntax: SyntaxPalette::base16(scheme),
+        }
+    }
+
+    fn with_transparent_background(mut self, transparent: bool) -> Self {
+        self.transparent_background = transparent;
+        self
+    }
+
+    fn with_diff_settings(mut self, diff: DiffSettings) -> Self {
+        self.diff = diff;
+        self
+    }
+
+    fn with_color_overrides(mut self, colors: &ColorOverrides) -> HzResult<Self> {
+        if let Some(color) = config_color(&colors.bg, "bg")? {
+            self.background = color;
+        }
+        if let Some(color) = config_color(&colors.fg, "fg")? {
+            self.foreground = color;
+        }
+        if let Some(color) = config_color(&colors.header, "header")? {
+            self.header = color;
+        }
+        if let Some(color) = config_color(&colors.file, "file")? {
+            self.file = color;
+        }
+        if let Some(color) = config_color(&colors.hunk, "hunk")? {
+            self.hunk = color;
+        }
+        if let Some(color) = config_color(&colors.notice, "notice")? {
+            self.notice = color;
+        }
+        if let Some(color) = config_color(&colors.muted, "muted")? {
+            self.muted = color;
+        }
+        if let Some(color) = config_color(&colors.gutter_bg, "gutter_bg")? {
+            self.gutter_bg = color;
+        }
+        if let Some(color) = config_color(&colors.empty_diff, "empty_diff")? {
+            self.empty_diff = color;
+        }
+        if let Some(color) = config_color(&colors.addition_fg, "addition_fg")? {
+            self.addition_fg = color;
+        }
+        if let Some(color) = config_color(&colors.addition_gutter_bg, "addition_gutter_bg")? {
+            self.addition_gutter_bg = color;
+        }
+        if let Some(color) = config_color(&colors.addition_bg, "addition_bg")? {
+            self.addition_bg = color;
+        }
+        if let Some(color) = config_color(&colors.addition_inline_bg, "addition_inline_bg")? {
+            self.addition_inline_bg = color;
+        }
+        if let Some(color) = config_color(&colors.deletion_fg, "deletion_fg")? {
+            self.deletion_fg = color;
+        }
+        if let Some(color) = config_color(&colors.deletion_gutter_bg, "deletion_gutter_bg")? {
+            self.deletion_gutter_bg = color;
+        }
+        if let Some(color) = config_color(&colors.deletion_bg, "deletion_bg")? {
+            self.deletion_bg = color;
+        }
+        if let Some(color) = config_color(&colors.deletion_inline_bg, "deletion_inline_bg")? {
+            self.deletion_inline_bg = color;
+        }
+        if let Some(color) = config_color(&colors.attribute, "attribute")? {
+            self.syntax.attribute = Some(color);
+        }
+        if let Some(color) = config_color(&colors.comment, "comment")? {
+            self.syntax.comment = Some(color);
+        }
+        if let Some(color) = config_color(&colors.constant, "constant")? {
+            self.syntax.constant = Some(color);
+        }
+        if let Some(color) = config_color(&colors.constructor, "constructor")? {
+            self.syntax.constructor = Some(color);
+        }
+        if let Some(color) = config_color(&colors.function, "function")? {
+            self.syntax.function = Some(color);
+        }
+        if let Some(color) = config_color(&colors.keyword, "keyword")? {
+            self.syntax.keyword = Some(color);
+        }
+        if let Some(color) = config_color(&colors.label, "label")? {
+            self.syntax.label = Some(color);
+        }
+        if let Some(color) = config_color(&colors.module, "module")? {
+            self.syntax.module = Some(color);
+        }
+        if let Some(color) = config_color(&colors.number, "number")? {
+            self.syntax.number = Some(color);
+        }
+        if let Some(color) = config_color(&colors.operator, "operator")? {
+            self.syntax.operator = Some(color);
+        }
+        if let Some(color) = config_color(&colors.property, "property")? {
+            self.syntax.property = Some(color);
+        }
+        if let Some(color) = config_color(&colors.punctuation, "punctuation")? {
+            self.syntax.punctuation = Some(color);
+        }
+        if let Some(color) = config_color(&colors.string, "string")? {
+            self.syntax.string = Some(color);
+        }
+        if let Some(color) = config_color(&colors.tag, "tag")? {
+            self.syntax.tag = Some(color);
+        }
+        if let Some(color) = config_color(&colors.r#type, "type")? {
+            self.syntax.r#type = Some(color);
+        }
+        if let Some(color) = config_color(&colors.variable, "variable")? {
+            self.syntax.variable = Some(color);
+        }
+        Ok(self)
+    }
 }
 
-fn addition_fg() -> Color {
-    Color::Rgb(155, 214, 166)
+fn config_color(value: &Option<String>, name: &str) -> HzResult<Option<Color>> {
+    value
+        .as_deref()
+        .map(|value| parse_config_color(value, name))
+        .transpose()
 }
 
-fn deletion_fg() -> Color {
-    Color::Rgb(232, 141, 141)
+fn parse_config_color(value: &str, name: &str) -> HzResult<Color> {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+
+    if matches!(lower.as_str(), "default" | "reset" | "none") {
+        return Ok(Color::Reset);
+    }
+
+    if let Some(color) = parse_config_hex_color(trimmed) {
+        return Ok(color.color());
+    }
+
+    if let Some(index) = parse_ansi_index(&lower) {
+        return Ok(Color::Indexed(index));
+    }
+
+    if let Some(color) = parse_named_color(&lower) {
+        return Ok(color);
+    }
+
+    Err(HzError::Usage(format!(
+        "invalid color for {name}: {value}; expected #rrggbb, ansi-N, or a named color"
+    )))
 }
 
-fn addition_inline_bg() -> Color {
-    Color::Rgb(35, 92, 50)
+fn parse_config_hex_color(value: &str) -> Option<RgbColor> {
+    let value = value
+        .trim()
+        .trim_matches(['\'', '"'])
+        .strip_prefix('#')
+        .or_else(|| value.trim().strip_prefix("0x"))
+        .unwrap_or_else(|| value.trim().trim_matches(['\'', '"']));
+    parse_hex_digits(value)
 }
 
-fn deletion_inline_bg() -> Color {
-    Color::Rgb(105, 41, 52)
+fn parse_ansi_index(value: &str) -> Option<u8> {
+    let index = value
+        .strip_prefix("ansi-")
+        .or_else(|| value.strip_prefix("ansi:"))
+        .or_else(|| value.strip_prefix("indexed-"))
+        .or_else(|| value.strip_prefix("indexed:"))
+        .unwrap_or(value);
+    index.parse::<u8>().ok()
 }
 
-fn empty_diff_fg() -> Color {
-    Color::Rgb(38, 45, 54)
+fn parse_named_color(value: &str) -> Option<Color> {
+    match value.replace('_', "-").as_str() {
+        "black" => Some(Color::Black),
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "yellow" => Some(Color::Yellow),
+        "blue" => Some(Color::Blue),
+        "magenta" | "purple" => Some(Color::Magenta),
+        "cyan" => Some(Color::Cyan),
+        "gray" | "grey" => Some(Color::Gray),
+        "dark-gray" | "dark-grey" | "bright-black" => Some(Color::DarkGray),
+        "white" | "bright-white" => Some(Color::White),
+        "bright-red" | "light-red" => Some(Color::LightRed),
+        "bright-green" | "light-green" => Some(Color::LightGreen),
+        "bright-yellow" | "light-yellow" => Some(Color::LightYellow),
+        "bright-blue" | "light-blue" => Some(Color::LightBlue),
+        "bright-magenta" | "light-magenta" | "bright-purple" | "light-purple" => {
+            Some(Color::LightMagenta)
+        }
+        "bright-cyan" | "light-cyan" => Some(Color::LightCyan),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SyntaxPalette {
+    attribute: Option<Color>,
+    comment: Option<Color>,
+    constant: Option<Color>,
+    constructor: Option<Color>,
+    function: Option<Color>,
+    keyword: Option<Color>,
+    label: Option<Color>,
+    module: Option<Color>,
+    number: Option<Color>,
+    operator: Option<Color>,
+    property: Option<Color>,
+    punctuation: Option<Color>,
+    string: Option<Color>,
+    tag: Option<Color>,
+    r#type: Option<Color>,
+    variable: Option<Color>,
+}
+
+impl SyntaxPalette {
+    fn terminal_dark() -> Self {
+        Self {
+            attribute: Some(Color::Rgb(150, 200, 240)),
+            comment: Some(Color::Rgb(125, 135, 148)),
+            constant: Some(Color::Rgb(229, 192, 123)),
+            constructor: Some(Color::Rgb(102, 217, 239)),
+            function: Some(Color::Rgb(130, 190, 255)),
+            keyword: Some(Color::Rgb(198, 153, 230)),
+            label: Some(Color::Rgb(150, 180, 255)),
+            module: Some(Color::Rgb(150, 180, 255)),
+            number: Some(Color::Rgb(229, 192, 123)),
+            operator: Some(Color::Rgb(220, 170, 255)),
+            property: Some(Color::Rgb(150, 200, 240)),
+            punctuation: Some(Color::Rgb(125, 135, 148)),
+            string: Some(Color::Rgb(173, 219, 177)),
+            tag: Some(Color::Rgb(240, 150, 150)),
+            r#type: Some(Color::Rgb(102, 217, 239)),
+            variable: None,
+        }
+    }
+
+    fn terminal_light() -> Self {
+        Self {
+            attribute: Some(Color::Rgb(0, 92, 197)),
+            comment: Some(Color::Rgb(106, 115, 125)),
+            constant: Some(Color::Rgb(177, 82, 0)),
+            constructor: Some(Color::Rgb(0, 95, 115)),
+            function: Some(Color::Rgb(0, 92, 197)),
+            keyword: Some(Color::Rgb(111, 66, 193)),
+            label: Some(Color::Rgb(0, 92, 197)),
+            module: Some(Color::Rgb(0, 92, 197)),
+            number: Some(Color::Rgb(177, 82, 0)),
+            operator: Some(Color::Rgb(111, 66, 193)),
+            property: Some(Color::Rgb(0, 92, 197)),
+            punctuation: Some(Color::Rgb(106, 115, 125)),
+            string: Some(Color::Rgb(34, 134, 58)),
+            tag: Some(Color::Rgb(176, 56, 55)),
+            r#type: Some(Color::Rgb(0, 95, 115)),
+            variable: None,
+        }
+    }
+
+    fn minimal() -> Self {
+        Self {
+            attribute: None,
+            comment: Some(Color::DarkGray),
+            constant: Some(Color::Yellow),
+            constructor: Some(Color::Cyan),
+            function: Some(Color::Blue),
+            keyword: Some(Color::Magenta),
+            label: Some(Color::Blue),
+            module: Some(Color::Blue),
+            number: Some(Color::Yellow),
+            operator: Some(Color::Magenta),
+            property: None,
+            punctuation: Some(Color::DarkGray),
+            string: Some(Color::Green),
+            tag: Some(Color::Red),
+            r#type: Some(Color::Cyan),
+            variable: None,
+        }
+    }
+
+    fn ansi() -> Self {
+        Self {
+            attribute: Some(Color::Indexed(12)),
+            comment: Some(Color::Indexed(8)),
+            constant: Some(Color::Indexed(11)),
+            constructor: Some(Color::Indexed(14)),
+            function: Some(Color::Indexed(12)),
+            keyword: Some(Color::Indexed(13)),
+            label: Some(Color::Indexed(12)),
+            module: Some(Color::Indexed(12)),
+            number: Some(Color::Indexed(11)),
+            operator: Some(Color::Indexed(13)),
+            property: Some(Color::Indexed(12)),
+            punctuation: Some(Color::Indexed(8)),
+            string: Some(Color::Indexed(10)),
+            tag: Some(Color::Indexed(9)),
+            r#type: Some(Color::Indexed(14)),
+            variable: None,
+        }
+    }
+
+    fn catppuccin_mocha() -> Self {
+        Self {
+            attribute: Some(Color::Rgb(0x94, 0xe2, 0xd5)),
+            comment: Some(Color::Rgb(0x6c, 0x70, 0x86)),
+            constant: Some(Color::Rgb(0xfa, 0xb3, 0x87)),
+            constructor: Some(Color::Rgb(0xf9, 0xe2, 0xaf)),
+            function: Some(Color::Rgb(0x89, 0xb4, 0xfa)),
+            keyword: Some(Color::Rgb(0xcb, 0xa6, 0xf7)),
+            label: Some(Color::Rgb(0xb4, 0xbe, 0xfe)),
+            module: Some(Color::Rgb(0xb4, 0xbe, 0xfe)),
+            number: Some(Color::Rgb(0xfa, 0xb3, 0x87)),
+            operator: Some(Color::Rgb(0xcb, 0xa6, 0xf7)),
+            property: Some(Color::Rgb(0x89, 0xdc, 0xeb)),
+            punctuation: Some(Color::Rgb(0x6c, 0x70, 0x86)),
+            string: Some(Color::Rgb(0xa6, 0xe3, 0xa1)),
+            tag: Some(Color::Rgb(0xf3, 0x8b, 0xa8)),
+            r#type: Some(Color::Rgb(0xf9, 0xe2, 0xaf)),
+            variable: None,
+        }
+    }
+
+    fn gruvbox_dark() -> Self {
+        Self {
+            attribute: Some(Color::Rgb(0x8e, 0xc0, 0x7c)),
+            comment: Some(Color::Rgb(0x92, 0x83, 0x74)),
+            constant: Some(Color::Rgb(0xfe, 0x80, 0x19)),
+            constructor: Some(Color::Rgb(0xfa, 0xbd, 0x2f)),
+            function: Some(Color::Rgb(0x83, 0xa5, 0x98)),
+            keyword: Some(Color::Rgb(0xfb, 0x49, 0x34)),
+            label: Some(Color::Rgb(0xd3, 0x86, 0x9b)),
+            module: Some(Color::Rgb(0x83, 0xa5, 0x98)),
+            number: Some(Color::Rgb(0xd3, 0x86, 0x9b)),
+            operator: Some(Color::Rgb(0xfe, 0x80, 0x19)),
+            property: Some(Color::Rgb(0x8e, 0xc0, 0x7c)),
+            punctuation: Some(Color::Rgb(0x92, 0x83, 0x74)),
+            string: Some(Color::Rgb(0xb8, 0xbb, 0x26)),
+            tag: Some(Color::Rgb(0xfb, 0x49, 0x34)),
+            r#type: Some(Color::Rgb(0xfa, 0xbd, 0x2f)),
+            variable: None,
+        }
+    }
+
+    fn tokyonight() -> Self {
+        Self {
+            attribute: Some(Color::Rgb(0x73, 0xda, 0xca)),
+            comment: Some(Color::Rgb(0x56, 0x5f, 0x89)),
+            constant: Some(Color::Rgb(0xff, 0x9e, 0x64)),
+            constructor: Some(Color::Rgb(0xe0, 0xaf, 0x68)),
+            function: Some(Color::Rgb(0x7a, 0xa2, 0xf7)),
+            keyword: Some(Color::Rgb(0xbb, 0x9a, 0xf7)),
+            label: Some(Color::Rgb(0x7a, 0xa2, 0xf7)),
+            module: Some(Color::Rgb(0x7a, 0xa2, 0xf7)),
+            number: Some(Color::Rgb(0xff, 0x9e, 0x64)),
+            operator: Some(Color::Rgb(0xbb, 0x9a, 0xf7)),
+            property: Some(Color::Rgb(0x73, 0xda, 0xca)),
+            punctuation: Some(Color::Rgb(0x56, 0x5f, 0x89)),
+            string: Some(Color::Rgb(0x9e, 0xce, 0x6a)),
+            tag: Some(Color::Rgb(0xf7, 0x76, 0x8e)),
+            r#type: Some(Color::Rgb(0x2a, 0xc3, 0xde)),
+            variable: None,
+        }
+    }
+
+    fn dracula() -> Self {
+        Self {
+            attribute: Some(Color::Rgb(0x8b, 0xe9, 0xfd)),
+            comment: Some(Color::Rgb(0x62, 0x72, 0xa4)),
+            constant: Some(Color::Rgb(0xbd, 0x93, 0xf9)),
+            constructor: Some(Color::Rgb(0x8b, 0xe9, 0xfd)),
+            function: Some(Color::Rgb(0x50, 0xfa, 0x7b)),
+            keyword: Some(Color::Rgb(0xff, 0x79, 0xc6)),
+            label: Some(Color::Rgb(0xbd, 0x93, 0xf9)),
+            module: Some(Color::Rgb(0xbd, 0x93, 0xf9)),
+            number: Some(Color::Rgb(0xbd, 0x93, 0xf9)),
+            operator: Some(Color::Rgb(0xff, 0x79, 0xc6)),
+            property: Some(Color::Rgb(0x8b, 0xe9, 0xfd)),
+            punctuation: Some(Color::Rgb(0x62, 0x72, 0xa4)),
+            string: Some(Color::Rgb(0xf1, 0xfa, 0x8c)),
+            tag: Some(Color::Rgb(0xff, 0x55, 0x55)),
+            r#type: Some(Color::Rgb(0x8b, 0xe9, 0xfd)),
+            variable: None,
+        }
+    }
+
+    fn base16(scheme: Base16Scheme) -> Self {
+        Self {
+            attribute: Some(scheme.base0c.color()),
+            comment: Some(scheme.base03.color()),
+            constant: Some(scheme.base09.color()),
+            constructor: Some(scheme.base0a.color()),
+            function: Some(scheme.base0d.color()),
+            keyword: Some(scheme.base0e.color()),
+            label: Some(scheme.base0d.color()),
+            module: Some(scheme.base0d.color()),
+            number: Some(scheme.base09.color()),
+            operator: Some(scheme.base0e.color()),
+            property: Some(scheme.base0c.color()),
+            punctuation: Some(scheme.base04.color()),
+            string: Some(scheme.base0b.color()),
+            tag: Some(scheme.base08.color()),
+            r#type: Some(scheme.base0a.color()),
+            variable: None,
+        }
+    }
+
+    fn color(self, class: SyntaxClass) -> Option<Color> {
+        match class {
+            SyntaxClass::Attribute => self.attribute,
+            SyntaxClass::Comment => self.comment,
+            SyntaxClass::Constant => self.constant,
+            SyntaxClass::Constructor => self.constructor,
+            SyntaxClass::Function => self.function,
+            SyntaxClass::Keyword => self.keyword,
+            SyntaxClass::Label => self.label,
+            SyntaxClass::Module => self.module,
+            SyntaxClass::Number => self.number,
+            SyntaxClass::Operator => self.operator,
+            SyntaxClass::Property => self.property,
+            SyntaxClass::Punctuation => self.punctuation,
+            SyntaxClass::String => self.string,
+            SyntaxClass::Tag => self.tag,
+            SyntaxClass::Type => self.r#type,
+            SyntaxClass::Variable => self.variable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Base16Scheme {
+    base00: RgbColor,
+    base01: RgbColor,
+    base03: RgbColor,
+    base04: RgbColor,
+    base05: RgbColor,
+    base06: RgbColor,
+    base08: RgbColor,
+    base09: RgbColor,
+    base0a: RgbColor,
+    base0b: RgbColor,
+    base0c: RgbColor,
+    base0d: RgbColor,
+    base0e: RgbColor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RgbColor {
+    red: u8,
+    green: u8,
+    blue: u8,
+}
+
+impl RgbColor {
+    const fn new(red: u8, green: u8, blue: u8) -> Self {
+        Self { red, green, blue }
+    }
+
+    fn color(self) -> Color {
+        Color::Rgb(self.red, self.green, self.blue)
+    }
+
+    fn blend(self, other: Self, amount: f32) -> Self {
+        let amount = amount.clamp(0.0, 1.0);
+        let mix = |a: u8, b: u8| -> u8 {
+            ((f32::from(a) * (1.0 - amount)) + (f32::from(b) * amount)).round() as u8
+        };
+        Self {
+            red: mix(self.red, other.red),
+            green: mix(self.green, other.green),
+            blue: mix(self.blue, other.blue),
+        }
+    }
+}
+
+fn diff_theme_from_config(config: &SyntaxThemeConfig) -> HzResult<DiffTheme> {
+    match config.source {
+        SyntaxThemeSource::Builtin => {
+            let name = config.name.as_deref();
+            match builtin_diff_theme(name) {
+                Ok(theme) => Ok(theme),
+                Err(error) => {
+                    if let Some(name) = name {
+                        if let Some(theme) = load_named_colorscheme(name)? {
+                            return Ok(theme);
+                        }
+                    }
+                    Err(error)
+                }
+            }
+        }
+        SyntaxThemeSource::Ansi => Ok(DiffTheme::ansi()),
+        SyntaxThemeSource::Base16 => {
+            let path = config.path.as_ref().ok_or_else(|| {
+                HzError::Usage("base16 colorscheme requires colorscheme.path".to_owned())
+            })?;
+            Ok(DiffTheme::base16(load_base16_scheme(path)?))
+        }
+    }
+}
+
+fn load_named_colorscheme(name: &str) -> HzResult<Option<DiffTheme>> {
+    let name = name.trim();
+    if name.is_empty() || Path::new(name).file_name().and_then(OsStr::to_str) != Some(name) {
+        return Ok(None);
+    }
+
+    let colorscheme_dir = hz_syntax::colorscheme_dir()?;
+    for path in colorscheme_paths(&colorscheme_dir, name) {
+        if path.exists() {
+            return Ok(Some(DiffTheme::base16(load_base16_scheme(&path)?)));
+        }
+    }
+    Ok(None)
+}
+
+fn colorscheme_paths(dir: &Path, name: &str) -> Vec<PathBuf> {
+    let path = dir.join(name);
+    if Path::new(name).extension().is_some() {
+        return vec![path];
+    }
+
+    ["toml", "yaml", "yml"]
+        .into_iter()
+        .map(|extension| path.with_extension(extension))
+        .collect()
+}
+
+fn builtin_diff_theme(name: Option<&str>) -> HzResult<DiffTheme> {
+    let name = name.unwrap_or("system").trim().to_ascii_lowercase();
+    match name.as_str() {
+        "system" | "default" | "" => Ok(DiffTheme::system()),
+        "terminal-dark" | "hz-dark" | "dark" => Ok(DiffTheme::terminal_dark()),
+        "terminal-light" | "hz-light" | "light" => Ok(DiffTheme::terminal_light()),
+        "minimal" => Ok(DiffTheme::minimal()),
+        "catppuccin" | "catppuccin-mocha" | "mocha" => Ok(DiffTheme::catppuccin_mocha()),
+        "gruvbox" | "gruvbox-dark" => Ok(DiffTheme::gruvbox_dark()),
+        "tokyonight" | "tokyo-night" | "tokyonight-night" => Ok(DiffTheme::tokyonight()),
+        "dracula" => Ok(DiffTheme::dracula()),
+        name => Err(HzError::Usage(format!("unknown colorscheme '{name}'"))),
+    }
+}
+
+fn load_base16_scheme(path: &Path) -> HzResult<Base16Scheme> {
+    let path = expand_user_path(path);
+    let contents = fs::read_to_string(&path)?;
+    parse_base16_scheme(&contents).ok_or_else(|| {
+        HzError::Usage(format!(
+            "failed to parse base16 colorscheme at {}; expected base00 through base0F",
+            path.display()
+        ))
+    })
+}
+
+fn expand_user_path(path: &Path) -> PathBuf {
+    let path_text = path.to_string_lossy();
+    if path_text == "~" {
+        return env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| path.to_path_buf());
+    }
+    if let Some(rest) = path_text.strip_prefix("~/") {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
+fn parse_base16_scheme(contents: &str) -> Option<Base16Scheme> {
+    let mut colors: [Option<RgbColor>; 16] = [None; 16];
+    for line in contents.lines() {
+        let Some((index, color)) = parse_base16_line(line) else {
+            continue;
+        };
+        colors[index] = Some(color);
+    }
+
+    if colors.iter().any(Option::is_none) {
+        return None;
+    }
+
+    Some(Base16Scheme {
+        base00: colors[0]?,
+        base01: colors[1]?,
+        base03: colors[3]?,
+        base04: colors[4]?,
+        base05: colors[5]?,
+        base06: colors[6]?,
+        base08: colors[8]?,
+        base09: colors[9]?,
+        base0a: colors[10]?,
+        base0b: colors[11]?,
+        base0c: colors[12]?,
+        base0d: colors[13]?,
+        base0e: colors[14]?,
+    })
+}
+
+fn parse_base16_line(line: &str) -> Option<(usize, RgbColor)> {
+    let line = line.trim();
+    let (key, value) = line.split_once(':').or_else(|| line.split_once('='))?;
+    let key = key.trim().trim_matches(['\'', '"']).to_ascii_lowercase();
+    let index = base16_index(&key)?;
+    let color = parse_hex_color(value)?;
+    Some((index, color))
+}
+
+fn base16_index(key: &str) -> Option<usize> {
+    let suffix = key.strip_prefix("base")?;
+    if suffix.len() != 2 || !suffix.starts_with('0') {
+        return None;
+    }
+    usize::from_str_radix(suffix, 16)
+        .ok()
+        .filter(|index| *index < 16)
+}
+
+fn parse_hex_color(value: &str) -> Option<RgbColor> {
+    let value = value.trim();
+    if let Some(hash) = value.find('#') {
+        return parse_hex_digits(value.get(hash + 1..hash + 7)?);
+    }
+
+    let token = value
+        .trim_matches(['\'', '"', ',', ' '])
+        .split_whitespace()
+        .next()?;
+    parse_hex_digits(token.trim_matches(['\'', '"', ',']))
+}
+
+fn parse_hex_digits(digits: &str) -> Option<RgbColor> {
+    if digits.len() < 6
+        || !digits.as_bytes()[..6]
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(RgbColor {
+        red: u8::from_str_radix(&digits[0..2], 16).ok()?,
+        green: u8::from_str_radix(&digits[2..4], 16).ok()?,
+        blue: u8::from_str_radix(&digits[4..6], 16).ok()?,
+    })
 }
 
 pub fn run() -> HzResult<()> {
@@ -807,6 +1736,7 @@ impl SyntaxWorkerQueueState {
 #[derive(Debug)]
 struct SyntaxRuntime {
     languages: SyntaxLanguageSet,
+    limits: SyntaxLimits,
     result_rx: Receiver<SyntaxResult>,
     queue: SyntaxWorkerQueue,
     cache: LruCache<SyntaxKey, HighlightedSide>,
@@ -821,49 +1751,27 @@ struct SyntaxRuntime {
 }
 
 impl SyntaxRuntime {
-    fn start() -> HzResult<Option<Self>> {
-        let languages = SyntaxLanguageSet::load()?;
-        if languages.is_empty() {
-            return Ok(None);
-        }
-
-        let (result_tx, result_rx) = mpsc::channel();
-        let queue = SyntaxWorkerQueue::new(MAX_HIGHLIGHT_QUEUE_ENTRIES, 0);
-        let worker_queue = queue.clone();
-        let worker = thread::spawn(move || run_syntax_worker(worker_queue, result_tx));
-
-        Ok(Some(Self {
-            languages,
-            result_rx,
-            queue,
-            cache: LruCache::new(MAX_HIGHLIGHT_CACHE_ENTRIES),
-            pending: HashSet::new(),
-            position_keys: HashMap::new(),
-            line_maps: HashMap::new(),
-            skipped: HashMap::new(),
-            unavailable_full_files: HashSet::new(),
-            failed: HashSet::new(),
-            stats: SyntaxBenchmarkReport::default(),
-            worker: Some(worker),
-        }))
+    fn start(settings: &SyntaxSettings) -> HzResult<Option<Self>> {
+        let languages = SyntaxLanguageSet::load_with_mode(settings.mode)?;
+        Ok(Self::start_with_language_set(languages, settings.limits))
     }
 
-    fn start_with_languages(languages: Vec<String>) -> Option<Self> {
-        let languages = SyntaxLanguageSet::from_enabled_languages(&languages);
+    fn start_with_language_set(languages: SyntaxLanguageSet, limits: SyntaxLimits) -> Option<Self> {
         if languages.is_empty() {
             return None;
         }
 
         let (result_tx, result_rx) = mpsc::channel();
-        let queue = SyntaxWorkerQueue::new(MAX_HIGHLIGHT_QUEUE_ENTRIES, 0);
+        let queue = SyntaxWorkerQueue::new(limits.queue_entries, 0);
         let worker_queue = queue.clone();
         let worker = thread::spawn(move || run_syntax_worker(worker_queue, result_tx));
 
         Some(Self {
             languages,
+            limits,
             result_rx,
             queue,
-            cache: LruCache::new(MAX_HIGHLIGHT_CACHE_ENTRIES),
+            cache: LruCache::new(limits.cache_entries),
             pending: HashSet::new(),
             position_keys: HashMap::new(),
             line_maps: HashMap::new(),
@@ -873,6 +1781,11 @@ impl SyntaxRuntime {
             stats: SyntaxBenchmarkReport::default(),
             worker: Some(worker),
         })
+    }
+
+    fn start_with_languages(languages: Vec<String>, limits: SyntaxLimits) -> Option<Self> {
+        let languages = SyntaxLanguageSet::from_enabled_languages(&languages);
+        Self::start_with_language_set(languages, limits)
     }
 
     fn clear(&mut self, generation: u64) {
@@ -973,7 +1886,7 @@ impl SyntaxRuntime {
             }
         }
 
-        let source = match build_hunk_source(&hunk_diff.lines, side) {
+        let source = match build_hunk_source(&hunk_diff.lines, side, self.limits) {
             Ok(source) => source,
             Err(reason) => {
                 self.skip(position, reason);
@@ -1032,6 +1945,7 @@ impl SyntaxRuntime {
             key,
             language,
             source,
+            limits: self.limits,
         };
 
         match self.queue.try_push(job, priority) {
@@ -1192,6 +2106,7 @@ struct SyntaxJob {
     key: SyntaxKey,
     language: String,
     source: SyntaxJobSource,
+    limits: SyntaxLimits,
 }
 
 #[derive(Debug)]
@@ -1271,7 +2186,7 @@ fn run_syntax_worker(queue: SyntaxWorkerQueue, result_tx: Sender<SyntaxResult>) 
     let mut highlighter = SyntaxHighlighter::new();
     while let Some(job) = queue.pop() {
         let side = panic::catch_unwind(AssertUnwindSafe(|| {
-            let (source, source_bytes, source_lines) = load_job_source(job.source)?;
+            let (source, source_bytes, source_lines) = load_job_source(job.source, job.limits)?;
             highlighter
                 .highlight(&job.language, &source)
                 .map(|highlighted| SyntaxSuccess {
@@ -1292,12 +2207,13 @@ fn run_syntax_worker(queue: SyntaxWorkerQueue, result_tx: Sender<SyntaxResult>) 
 
 fn load_job_source(
     source: SyntaxJobSource,
+    limits: SyntaxLimits,
 ) -> Result<(String, Option<u64>, Option<u64>), SyntaxJobFailure> {
     match source {
         SyntaxJobSource::Hunk(source) => Ok((source.text, None, None)),
         SyntaxJobSource::FullFile(source) => {
             let text = load_full_file_source(&source).map_err(|_| SyntaxJobFailure::Unavailable)?;
-            validate_highlight_source(&text).map_err(|_| SyntaxJobFailure::Unavailable)?;
+            validate_highlight_source(&text, limits).map_err(|_| SyntaxJobFailure::Unavailable)?;
             let source_bytes = text.len() as u64;
             let source_lines = source_line_count(&text) as u64;
             Ok((text, Some(source_bytes), Some(source_lines)))
@@ -1312,7 +2228,11 @@ fn syntax_path(file: &hz_diff::DiffFile, side: DiffSide) -> Option<&str> {
     }
 }
 
-fn build_hunk_source(lines: &[DiffLine], side: DiffSide) -> Result<HunkSource, SyntaxSkipReason> {
+fn build_hunk_source(
+    lines: &[DiffLine],
+    side: DiffSide,
+    limits: SyntaxLimits,
+) -> Result<HunkSource, SyntaxSkipReason> {
     let mut text = String::new();
     let mut line_map = vec![None; lines.len()];
     let mut source_lines = 0;
@@ -1321,14 +2241,14 @@ fn build_hunk_source(lines: &[DiffLine], side: DiffSide) -> Result<HunkSource, S
         if !line_belongs_to_side(line.kind, side) {
             continue;
         }
-        if line.text.len() > MAX_HIGHLIGHT_LINE_BYTES {
+        if line.text.len() > limits.max_line_bytes {
             return Err(SyntaxSkipReason::TooLarge);
         }
         if source_lines > 0 {
             text.push('\n');
         }
         text.push_str(&line.text);
-        if text.len() > MAX_HIGHLIGHT_HUNK_BYTES {
+        if text.len() > limits.max_source_bytes {
             return Err(SyntaxSkipReason::TooLarge);
         }
         line_map[index] = Some(source_lines);
@@ -1531,13 +2451,13 @@ fn git_merge_base(repo: &Path, base: &str, head: &str) -> Result<String, SyntaxS
     Ok(rev)
 }
 
-fn validate_highlight_source(source: &str) -> Result<(), SyntaxSkipReason> {
-    if source.len() > MAX_HIGHLIGHT_HUNK_BYTES {
+fn validate_highlight_source(source: &str, limits: SyntaxLimits) -> Result<(), SyntaxSkipReason> {
+    if source.len() > limits.max_source_bytes {
         return Err(SyntaxSkipReason::TooLarge);
     }
     if source
         .lines()
-        .any(|line| line.len() > MAX_HIGHLIGHT_LINE_BYTES)
+        .any(|line| line.len() > limits.max_line_bytes)
     {
         return Err(SyntaxSkipReason::TooLarge);
     }
@@ -1622,10 +2542,10 @@ fn compute_changed_block_inline_emphasis(
                 emphasis[*addition].ranges = new_ranges;
             }
             (Some(deletion), None) => {
-                emphasis[*deletion].ranges = full_line_inline_range(&lines[*deletion].text);
+                emphasis[*deletion].ranges = Vec::new();
             }
             (None, Some(addition)) => {
-                emphasis[*addition].ranges = full_line_inline_range(&lines[*addition].text);
+                emphasis[*addition].ranges = Vec::new();
             }
             (None, None) => {}
         }
@@ -1782,17 +2702,6 @@ fn inline_ranges_from_tokens(tokens: &[InlineToken], changed: &[bool]) -> Vec<In
         });
     }
     ranges
-}
-
-fn full_line_inline_range(text: &str) -> Vec<InlineRange> {
-    if text.is_empty() {
-        Vec::new()
-    } else {
-        vec![InlineRange {
-            byte_start: 0,
-            byte_end: text.len(),
-        }]
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2380,10 +3289,29 @@ struct DiffApp {
     selected_file: usize,
     mouse_scroll: MouseScroll,
     notice: Option<Notice>,
+    theme: DiffTheme,
+    syntax_limits: SyntaxLimits,
     syntax: Option<SyntaxRuntime>,
     inline_cache: LruCache<InlineHunkKey, Vec<InlineLineEmphasis>>,
     generation: u64,
     dirty: bool,
+}
+
+fn load_syntax_settings_for_diff(load_user_settings: bool) -> (SyntaxSettings, Option<Notice>) {
+    if !load_user_settings {
+        return (SyntaxSettings::default(), None);
+    }
+
+    match hz_syntax::load_settings() {
+        Ok(settings) => (settings, None),
+        Err(error) => (
+            SyntaxSettings::default(),
+            Some(Notice {
+                text: format!("syntax settings ignored: {error}"),
+                expires_at: Instant::now() + NOTICE_TTL,
+            }),
+        ),
+    }
 }
 
 impl DiffApp {
@@ -2400,20 +3328,43 @@ impl DiffApp {
     ) -> Self {
         let model = UiModel::new(&changeset, layout);
         let stats = changeset.stats();
-        let (syntax, notice) = match syntax_mode {
-            SyntaxStartupMode::Config => match SyntaxRuntime::start() {
-                Ok(syntax) => (syntax, None),
-                Err(error) => (
-                    None,
-                    Some(Notice {
+        let (settings, mut notice) = load_syntax_settings_for_diff(matches!(
+            syntax_mode,
+            SyntaxStartupMode::Config | SyntaxStartupMode::Disabled
+        ));
+        let theme = match diff_theme_from_config(&settings.theme).and_then(|theme| {
+            theme
+                .with_color_overrides(&settings.colors)
+                .map(|theme| theme.with_transparent_background(settings.transparent_background))
+        }) {
+            Ok(theme) => theme.with_diff_settings(settings.diff),
+            Err(error) => {
+                notice = Some(Notice {
+                    text: format!("colorscheme ignored: {error}"),
+                    expires_at: Instant::now() + NOTICE_TTL,
+                });
+                DiffTheme::default()
+                    .with_color_overrides(&settings.colors)
+                    .unwrap_or_else(|_| DiffTheme::default())
+                    .with_transparent_background(settings.transparent_background)
+                    .with_diff_settings(settings.diff)
+            }
+        };
+        let syntax_limits = settings.limits;
+        let syntax = match syntax_mode {
+            SyntaxStartupMode::Config => match SyntaxRuntime::start(&settings) {
+                Ok(syntax) => syntax,
+                Err(error) => {
+                    notice = Some(Notice {
                         text: format!("syntax disabled: {error}"),
                         expires_at: Instant::now() + NOTICE_TTL,
-                    }),
-                ),
+                    });
+                    None
+                }
             },
-            SyntaxStartupMode::Disabled => (None, None),
+            SyntaxStartupMode::Disabled => None,
             SyntaxStartupMode::Languages(languages) => {
-                (SyntaxRuntime::start_with_languages(languages), None)
+                SyntaxRuntime::start_with_languages(languages, syntax_limits)
             }
         };
         Self {
@@ -2427,6 +3378,8 @@ impl DiffApp {
             selected_file: 0,
             mouse_scroll: MouseScroll::default(),
             notice,
+            theme,
+            syntax_limits,
             syntax,
             inline_cache: LruCache::new(MAX_INLINE_DIFF_CACHE_ENTRIES),
             generation: 0,
@@ -2550,7 +3503,7 @@ impl DiffApp {
             &mut requested,
         );
 
-        let prefetch_rows = visible_rows.saturating_mul(HIGHLIGHT_PREFETCH_VIEWPORTS);
+        let prefetch_rows = visible_rows.saturating_mul(self.syntax_limits.prefetch_viewports);
         let ahead_end = visible_end
             .saturating_add(prefetch_rows)
             .min(self.model.len());
@@ -2848,11 +3801,11 @@ fn draw_header(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
         Span::styled(
             &app.changeset.title,
             Style::default()
-                .fg(Color::Rgb(220, 225, 232))
+                .fg(app.theme.header)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled(app.layout.label(), Style::default().fg(muted())),
+        Span::styled(app.layout.label(), Style::default().fg(app.theme.muted)),
         Span::raw(format!(
             "  {} files  +{} -{}  {}",
             app.stats.files,
@@ -2861,9 +3814,12 @@ fn draw_header(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
             progress_label(app.scroll, app.max_scroll())
         )),
         Span::raw("  "),
-        Span::styled(notice, Style::default().fg(Color::Green)),
+        Span::styled(notice, Style::default().fg(app.theme.notice)),
     ]);
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(base_bg(app.theme))),
+        area,
+    );
 }
 
 fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
@@ -2871,8 +3827,9 @@ fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "No changes.",
-                Style::default().fg(Color::DarkGray),
-            ))),
+                Style::default().fg(app.theme.muted),
+            )))
+            .style(Style::default().bg(base_bg(app.theme))),
             area,
         );
         return;
@@ -2894,10 +3851,14 @@ fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
         ));
     }
 
-    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(base_bg(app.theme))),
+        area,
+    );
 }
 
 fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> Line<'static> {
+    let theme = app.theme;
     match row {
         UiRow::FileHeader(file_index) => {
             let file = &app.changeset.files[file_index];
@@ -2906,10 +3867,7 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
                 &format!("+{} -{}", file.additions, file.deletions),
                 width,
             );
-            Line::from(Span::styled(
-                text,
-                Style::default().fg(Color::Rgb(215, 218, 224)),
-            ))
+            Line::from(Span::styled(text, Style::default().fg(theme.file)))
         }
         UiRow::BinaryFile(file_index) => {
             let file = &app.changeset.files[file_index];
@@ -2920,21 +3878,21 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
             };
             Line::from(Span::styled(
                 fit_padded(&format!("  {message}"), width),
-                Style::default().fg(muted()),
+                Style::default().fg(theme.muted),
             ))
         }
         UiRow::Collapsed { lines } => {
             let label = format!("⋯ {lines} unchanged");
             Line::from(Span::styled(
                 fit_padded(&label, width),
-                Style::default().fg(muted()),
+                Style::default().fg(theme.muted),
             ))
         }
         UiRow::HunkHeader { file, hunk } => {
             let hunk = &app.changeset.files[file].hunks[hunk];
             Line::from(Span::styled(
                 fit_padded(&hunk.header, width),
-                Style::default().fg(Color::Rgb(205, 130, 170)),
+                Style::default().fg(theme.hunk),
             ))
         }
         UiRow::UnifiedLine { file, hunk, line } => {
@@ -2942,11 +3900,18 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
             let syntax = unified_syntax_side(diff_line.kind)
                 .and_then(|side| app.syntax_line(file, hunk, line, side));
             let inline = app.inline_ranges(file, hunk, line);
-            render_unified_line(&diff_line, syntax.as_ref(), &inline, row_index, width)
+            render_unified_line(
+                &diff_line,
+                syntax.as_ref(),
+                &inline,
+                row_index,
+                width,
+                theme,
+            )
         }
         UiRow::MetaLine { file, hunk, line } => {
             let diff_line = app.changeset.files[file].hunks[hunk].lines[line].clone();
-            render_unified_line(&diff_line, None, &[], row_index, width)
+            render_unified_line(&diff_line, None, &[], row_index, width, theme)
         }
         UiRow::SplitLine {
             file,
@@ -2961,8 +3926,9 @@ fn render_unified_line(
     line: &DiffLine,
     syntax: Option<&HighlightedLine>,
     inline: &[InlineRange],
-    row_index: usize,
+    _row_index: usize,
     width: usize,
+    theme: DiffTheme,
 ) -> Line<'static> {
     if width == 0 {
         return Line::default();
@@ -2978,19 +3944,16 @@ fn render_unified_line(
     let gutter_width = UNIFIED_GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
     let content_width = width.saturating_sub(indicator_width + gutter_width);
     let gutter = format!(
-        "{:>5} {:>5} {sign}",
-        unified_line_number(line.old_line, line.kind, row_index),
-        unified_line_number(line.new_line, line.kind, row_index)
+        "{:>5} {:>5} ",
+        unified_line_number(line.old_line, line.kind),
+        unified_line_number(line.new_line, line.kind)
     );
     let mut spans = Vec::new();
     if indicator_width > 0 {
-        spans.push(diff_indicator_span(line.kind));
+        spans.push(diff_indicator_span(line.kind, theme));
     }
     if gutter_width > 0 {
-        spans.push(Span::styled(
-            fit_padded(&gutter, gutter_width),
-            Style::default().fg(muted()).bg(row_bg(line.kind)),
-        ));
+        spans.extend(gutter_spans(&gutter, sign, gutter_width, line.kind, theme));
     }
     spans.extend(content_spans(
         &line.text,
@@ -2998,40 +3961,89 @@ fn render_unified_line(
         inline,
         line.kind,
         content_width,
+        theme,
     ));
     Line::from(spans)
 }
 
-fn unified_line_number(line: Option<usize>, kind: DiffLineKind, row_index: usize) -> String {
+fn unified_line_number(line: Option<usize>, _kind: DiffLineKind) -> String {
     match line {
         Some(line) => line.to_string(),
-        None if kind == DiffLineKind::Meta => String::new(),
-        None => empty_diff_fill(5, row_index),
+        None => String::new(),
     }
 }
 
-fn diff_indicator_span(kind: DiffLineKind) -> Span<'static> {
-    Span::styled(DIFF_INDICATOR, diff_indicator_style(kind))
+fn gutter_spans(
+    body: &str,
+    sign: &str,
+    width: usize,
+    kind: DiffLineKind,
+    theme: DiffTheme,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let body_style = Style::default()
+        .fg(line_gutter_fg(kind, theme))
+        .bg(line_gutter_bg(kind, theme));
+    if sign.trim().is_empty() || width == 1 {
+        return vec![Span::styled(
+            fit_padded(&format!("{body}{sign}"), width),
+            body_style,
+        )];
+    }
+
+    let sign_width = 1;
+    let body_width = width.saturating_sub(sign_width);
+    vec![
+        Span::styled(fit_padded(body, body_width), body_style),
+        Span::styled(fit(sign, sign_width), diff_sign_style(kind, theme)),
+    ]
 }
 
-fn diff_indicator_style(kind: DiffLineKind) -> Style {
+fn diff_sign_style(kind: DiffLineKind, theme: DiffTheme) -> Style {
+    let mut style = Style::default()
+        .fg(diff_indicator_fg(kind, theme))
+        .bg(line_gutter_bg(kind, theme));
+    if theme.diff.sign_style == DiffSignStyle::Bold
+        && matches!(kind, DiffLineKind::Addition | DiffLineKind::Deletion)
+    {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    style
+}
+
+fn diff_indicator_span(kind: DiffLineKind, theme: DiffTheme) -> Span<'static> {
+    Span::styled(DIFF_INDICATOR, diff_indicator_style(kind, theme))
+}
+
+fn diff_indicator_style(kind: DiffLineKind, theme: DiffTheme) -> Style {
     Style::default()
-        .fg(diff_indicator_fg(kind))
-        .bg(row_bg(kind))
+        .fg(diff_indicator_fg(kind, theme))
+        .bg(line_gutter_bg(kind, theme))
 }
 
-fn diff_indicator_fg(kind: DiffLineKind) -> Color {
+fn diff_indicator_fg(kind: DiffLineKind, theme: DiffTheme) -> Color {
     match kind {
-        DiffLineKind::Addition => addition_fg(),
-        DiffLineKind::Deletion => deletion_fg(),
-        DiffLineKind::Context | DiffLineKind::Meta => muted(),
+        DiffLineKind::Addition => theme.addition_fg,
+        DiffLineKind::Deletion => theme.deletion_fg,
+        DiffLineKind::Context | DiffLineKind::Meta => theme.muted,
     }
 }
 
-fn empty_diff_fill(width: usize, row_index: usize) -> String {
+fn base_bg(theme: DiffTheme) -> Color {
+    if theme.transparent_background {
+        Color::Reset
+    } else {
+        theme.background
+    }
+}
+
+fn empty_diff_fill_from(width: usize, row_index: usize, column_offset: usize) -> String {
     (0..width)
         .map(|column| {
-            if (column + row_index) % EMPTY_DIFF_FILL_SPACING == 0 {
+            if (column + column_offset + row_index) % EMPTY_DIFF_FILL_SPACING == 0 {
                 EMPTY_DIFF_FILL
             } else {
                 ' '
@@ -3046,6 +4058,7 @@ fn content_spans(
     inline: &[InlineRange],
     kind: DiffLineKind,
     width: usize,
+    theme: DiffTheme,
 ) -> Vec<Span<'static>> {
     if width == 0 {
         return Vec::new();
@@ -3054,21 +4067,28 @@ fn content_spans(
     let inline = valid_inline_ranges(text, inline);
     let syntax = syntax.filter(|syntax| syntax_line_matches_text(syntax, text));
     if syntax.is_none() && inline.is_empty() {
-        return vec![Span::styled(fit_padded(text, width), line_style(kind))];
+        return vec![Span::styled(
+            fit_padded(text, width),
+            line_style(kind, theme),
+        )];
     }
 
-    let mut writer = ContentSpanWriter::new(&inline, kind, width);
+    let mut writer = ContentSpanWriter::new(&inline, kind, width, theme);
 
     if let Some(syntax) = syntax {
         let mut byte_start = 0usize;
         for segment in &syntax.segments {
-            if !writer.push_segment(&segment.text, byte_start, syntax_style(segment.class, kind)) {
+            if !writer.push_segment(
+                &segment.text,
+                byte_start,
+                syntax_style(segment.class, kind, theme),
+            ) {
                 break;
             }
             byte_start += segment.text.len();
         }
     } else {
-        writer.push_segment(text, 0, line_style(kind));
+        writer.push_segment(text, 0, line_style(kind, theme));
     }
 
     writer.finish()
@@ -3099,16 +4119,18 @@ struct ContentSpanWriter<'a> {
     kind: DiffLineKind,
     width: usize,
     used: usize,
+    theme: DiffTheme,
 }
 
 impl<'a> ContentSpanWriter<'a> {
-    fn new(inline: &'a [InlineRange], kind: DiffLineKind, width: usize) -> Self {
+    fn new(inline: &'a [InlineRange], kind: DiffLineKind, width: usize, theme: DiffTheme) -> Self {
         Self {
             spans: Vec::new(),
             inline,
             kind,
             width,
             used: 0,
+            theme,
         }
     }
 
@@ -3144,7 +4166,7 @@ impl<'a> ContentSpanWriter<'a> {
                 segment_byte_start,
                 inline_start,
                 inline_end,
-                inline_style(style, self.kind),
+                inline_style(style, self.kind, self.theme),
             ) {
                 return false;
             }
@@ -3194,7 +4216,7 @@ impl<'a> ContentSpanWriter<'a> {
         if self.used < self.width {
             self.spans.push(Span::styled(
                 " ".repeat(self.width - self.used),
-                line_style(self.kind),
+                line_style(self.kind, self.theme),
             ));
         }
         self.spans
@@ -3212,38 +4234,45 @@ fn syntax_line_matches_text(syntax: &HighlightedLine, text: &str) -> bool {
     remaining.is_empty()
 }
 
-fn syntax_style(class: Option<SyntaxClass>, kind: DiffLineKind) -> Style {
-    let mut style = line_style(kind);
-    if let Some(color) = class.and_then(syntax_fg) {
+fn syntax_style(class: Option<SyntaxClass>, kind: DiffLineKind, theme: DiffTheme) -> Style {
+    let mut style = line_style(kind, theme);
+    if let Some(color) = class.and_then(|class| syntax_fg(class, theme)) {
         style = style.fg(color);
     }
     style
 }
 
-fn inline_style(style: Style, kind: DiffLineKind) -> Style {
+fn inline_style(style: Style, kind: DiffLineKind, theme: DiffTheme) -> Style {
+    if theme.transparent_background || theme.diff.inline_background == DiffBackground::None {
+        return match kind {
+            DiffLineKind::Addition | DiffLineKind::Deletion => style.add_modifier(Modifier::BOLD),
+            DiffLineKind::Context | DiffLineKind::Meta => style,
+        };
+    }
+
     match kind {
-        DiffLineKind::Addition => style.bg(addition_inline_bg()).add_modifier(Modifier::BOLD),
-        DiffLineKind::Deletion => style.bg(deletion_inline_bg()).add_modifier(Modifier::BOLD),
+        DiffLineKind::Addition => style
+            .bg(inline_bg(kind, theme))
+            .add_modifier(Modifier::BOLD),
+        DiffLineKind::Deletion => style
+            .bg(inline_bg(kind, theme))
+            .add_modifier(Modifier::BOLD),
         DiffLineKind::Context | DiffLineKind::Meta => style,
     }
 }
 
-fn syntax_fg(class: SyntaxClass) -> Option<Color> {
-    let color = match class {
-        SyntaxClass::Comment => muted(),
-        SyntaxClass::Keyword => Color::Rgb(198, 153, 230),
-        SyntaxClass::String => Color::Rgb(173, 219, 177),
-        SyntaxClass::Number | SyntaxClass::Constant => Color::Rgb(229, 192, 123),
-        SyntaxClass::Type | SyntaxClass::Constructor => Color::Rgb(102, 217, 239),
-        SyntaxClass::Function => Color::Rgb(130, 190, 255),
-        SyntaxClass::Property | SyntaxClass::Attribute => Color::Rgb(150, 200, 240),
-        SyntaxClass::Punctuation => muted(),
-        SyntaxClass::Operator => Color::Rgb(220, 170, 255),
-        SyntaxClass::Tag => Color::Rgb(240, 150, 150),
-        SyntaxClass::Module | SyntaxClass::Label => Color::Rgb(150, 180, 255),
-        SyntaxClass::Variable => return None,
-    };
-    Some(color)
+fn inline_bg(kind: DiffLineKind, theme: DiffTheme) -> Color {
+    match (theme.diff.inline_background, kind) {
+        (DiffBackground::Subtle, DiffLineKind::Addition) => theme.addition_bg,
+        (DiffBackground::Subtle, DiffLineKind::Deletion) => theme.deletion_bg,
+        (_, DiffLineKind::Addition) => theme.addition_inline_bg,
+        (_, DiffLineKind::Deletion) => theme.deletion_inline_bg,
+        _ => Color::Reset,
+    }
+}
+
+fn syntax_fg(class: SyntaxClass, theme: DiffTheme) -> Option<Color> {
+    theme.syntax.color(class)
 }
 
 fn render_split_line(
@@ -3258,6 +4287,7 @@ fn render_split_line(
     if width == 0 {
         return Line::default();
     }
+    let theme = app.theme;
 
     let (left_line, right_line) = {
         let lines = &app.changeset.files[file].hunks[hunk].lines;
@@ -3275,27 +4305,27 @@ fn render_split_line(
         .map(|index| app.inline_ranges(file, hunk, index))
         .unwrap_or_default();
 
-    let separator_width = usize::from(width > 1);
-    let left_width = width.saturating_sub(separator_width) / 2;
-    let right_width = width.saturating_sub(separator_width + left_width);
+    let left_width = width / 2;
+    let right_width = width.saturating_sub(left_width);
     let mut spans = split_cell_spans(
         left_line.as_ref(),
         left_syntax.as_ref(),
         &left_inline,
+        right_line.as_ref().map(|line| line.kind),
         SplitSide::Old,
         row_index,
         left_width,
+        theme,
     );
-    if separator_width > 0 {
-        spans.push(Span::styled("│", Style::default().fg(muted())));
-    }
     spans.extend(split_cell_spans(
         right_line.as_ref(),
         right_syntax.as_ref(),
         &right_inline,
+        left_line.as_ref().map(|line| line.kind),
         SplitSide::New,
         row_index,
         right_width,
+        theme,
     ));
     Line::from(spans)
 }
@@ -3310,19 +4340,38 @@ fn split_cell_spans(
     line: Option<&DiffLine>,
     syntax: Option<&HighlightedLine>,
     inline: &[InlineRange],
+    empty_kind: Option<DiffLineKind>,
     side: SplitSide,
     row_index: usize,
     width: usize,
+    theme: DiffTheme,
 ) -> Vec<Span<'static>> {
     if width == 0 {
         return Vec::new();
     }
 
     let Some(line) = line else {
-        return vec![Span::styled(
-            empty_diff_fill(width, row_index),
-            Style::default().fg(empty_diff_fg()),
-        )];
+        let empty_kind = empty_kind.unwrap_or(DiffLineKind::Context);
+        let indicator_width = 1.min(width);
+        let gutter_width = GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
+        let content_width = width.saturating_sub(indicator_width + gutter_width);
+        let mut spans = Vec::new();
+        if indicator_width > 0 {
+            spans.push(diff_indicator_span(empty_kind, theme));
+        }
+        if gutter_width > 0 {
+            spans.push(Span::styled(
+                " ".repeat(gutter_width),
+                Style::default().bg(line_gutter_bg(empty_kind, theme)),
+            ));
+        }
+        if content_width > 0 {
+            spans.push(Span::styled(
+                empty_diff_fill_from(content_width, row_index, indicator_width + gutter_width),
+                Style::default().fg(theme.empty_diff).bg(base_bg(theme)),
+            ));
+        }
+        return spans;
     };
 
     let indicator_width = 1.min(width);
@@ -3342,12 +4391,15 @@ fn split_cell_spans(
 
     let mut spans = Vec::new();
     if indicator_width > 0 {
-        spans.push(diff_indicator_span(line.kind));
+        spans.push(diff_indicator_span(line.kind, theme));
     }
     if gutter_width > 0 {
-        spans.push(Span::styled(
-            fit_padded(&format!("{line_number:>5} {sign}"), gutter_width),
-            Style::default().fg(muted()).bg(row_bg(line.kind)),
+        spans.extend(gutter_spans(
+            &format!("{line_number:>5} "),
+            sign,
+            gutter_width,
+            line.kind,
+            theme,
         ));
     }
     spans.extend(content_spans(
@@ -3356,25 +4408,36 @@ fn split_cell_spans(
         inline,
         line.kind,
         content_width,
+        theme,
     ));
     spans
 }
 
-fn row_bg(kind: DiffLineKind) -> Color {
-    match kind {
-        DiffLineKind::Addition => addition_bg(),
-        DiffLineKind::Deletion => deletion_bg(),
-        DiffLineKind::Meta => Color::Reset,
-        DiffLineKind::Context => Color::Reset,
+fn row_bg(kind: DiffLineKind, theme: DiffTheme) -> Color {
+    if theme.transparent_background {
+        return Color::Reset;
+    }
+
+    match (theme.diff.line_background, kind) {
+        (DiffBackground::None, _) => theme.background,
+        (DiffBackground::Subtle, DiffLineKind::Addition) => theme.addition_bg,
+        (DiffBackground::Subtle, DiffLineKind::Deletion) => theme.deletion_bg,
+        (DiffBackground::Strong, DiffLineKind::Addition) => theme.addition_inline_bg,
+        (DiffBackground::Strong, DiffLineKind::Deletion) => theme.deletion_inline_bg,
+        _ => theme.background,
     }
 }
 
-fn line_style(kind: DiffLineKind) -> Style {
+fn line_style(kind: DiffLineKind, theme: DiffTheme) -> Style {
     match kind {
-        DiffLineKind::Addition => Style::default().fg(addition_fg()).bg(addition_bg()),
-        DiffLineKind::Deletion => Style::default().fg(deletion_fg()).bg(deletion_bg()),
-        DiffLineKind::Meta => Style::default().fg(muted()),
-        DiffLineKind::Context => Style::default(),
+        DiffLineKind::Addition => Style::default()
+            .fg(theme.foreground)
+            .bg(row_bg(kind, theme)),
+        DiffLineKind::Deletion => Style::default()
+            .fg(theme.foreground)
+            .bg(row_bg(kind, theme)),
+        DiffLineKind::Meta => Style::default().fg(theme.muted).bg(base_bg(theme)),
+        DiffLineKind::Context => Style::default().fg(theme.foreground).bg(base_bg(theme)),
     }
 }
 
@@ -3562,7 +4625,14 @@ mod tests {
             }],
         };
 
-        let spans = content_spans("right", Some(&syntax), &[], DiffLineKind::Addition, 8);
+        let spans = content_spans(
+            "right",
+            Some(&syntax),
+            &[],
+            DiffLineKind::Addition,
+            8,
+            DiffTheme::default(),
+        );
         let text = spans
             .iter()
             .map(|span| span.content.as_ref())
@@ -3574,17 +4644,95 @@ mod tests {
 
     #[test]
     fn empty_diff_fill_draws_shifted_diagonal_pattern() {
-        assert_eq!(empty_diff_fill(8, 0), "╱  ╱  ╱ ");
-        assert_eq!(empty_diff_fill(8, 1), "  ╱  ╱  ");
-        assert_eq!(empty_diff_fill(8, 2), " ╱  ╱  ╱");
+        assert_eq!(empty_diff_fill_from(8, 0, 0), "╱  ╱  ╱ ");
+        assert_eq!(empty_diff_fill_from(8, 1, 0), "  ╱  ╱  ");
+        assert_eq!(empty_diff_fill_from(8, 2, 0), " ╱  ╱  ╱");
     }
 
     #[test]
-    fn split_empty_cells_use_hatched_fill() {
-        let spans = split_cell_spans(None, None, &[], SplitSide::Old, 1, 8);
+    fn split_empty_cells_keep_hunk_indicator_and_hatched_fill() {
+        let spans = split_cell_spans(
+            None,
+            None,
+            &[],
+            Some(DiffLineKind::Addition),
+            SplitSide::Old,
+            0,
+            12,
+            DiffTheme::default(),
+        );
 
-        assert_eq!(span_text(&spans), "  ╱  ╱  ");
-        assert_eq!(spans[0].style.fg, Some(empty_diff_fg()));
+        assert_eq!(span_text(&spans), "▌        ╱  ");
+        assert_eq!(spans[0].content.as_ref(), DIFF_INDICATOR);
+        assert_eq!(spans[0].style.fg, Some(DiffTheme::default().addition_fg));
+        assert_eq!(
+            spans[0].style.bg,
+            Some(DiffTheme::default().addition_gutter_bg)
+        );
+        assert_eq!(spans[1].content.as_ref(), "       ");
+        assert_eq!(
+            spans[1].style.bg,
+            Some(DiffTheme::default().addition_gutter_bg)
+        );
+        assert_eq!(spans[2].style.fg, Some(DiffTheme::default().empty_diff));
+    }
+
+    #[test]
+    fn line_gutters_use_theme_background() {
+        let theme = DiffTheme::default();
+        let line = DiffLine {
+            kind: DiffLineKind::Context,
+            old_line: Some(7),
+            new_line: Some(7),
+            text: "same".to_owned(),
+        };
+
+        let rendered = render_unified_line(&line, None, &[], 0, 24, theme);
+
+        assert_eq!(rendered.spans[0].style.fg, Some(theme.muted));
+        assert_eq!(rendered.spans[0].style.bg, Some(theme.gutter_bg));
+        assert_eq!(rendered.spans[1].style.fg, Some(theme.foreground));
+        assert_eq!(rendered.spans[1].style.bg, Some(theme.gutter_bg));
+    }
+
+    #[test]
+    fn changed_line_gutters_use_delta_colors_and_bold_signs() {
+        let theme = DiffTheme::default();
+        let line = DiffLine {
+            kind: DiffLineKind::Addition,
+            old_line: None,
+            new_line: Some(7),
+            text: "added".to_owned(),
+        };
+
+        let rendered = render_unified_line(&line, None, &[], 0, 24, theme);
+
+        assert_eq!(rendered.spans[0].style.bg, Some(theme.addition_gutter_bg));
+        assert_eq!(rendered.spans[1].style.fg, Some(theme.addition_fg));
+        assert_eq!(rendered.spans[1].style.bg, Some(theme.addition_gutter_bg));
+        assert_eq!(rendered.spans[2].content.as_ref(), "+");
+        assert_eq!(rendered.spans[2].style.fg, Some(theme.addition_fg));
+        assert_eq!(rendered.spans[2].style.bg, Some(theme.addition_gutter_bg));
+        assert!(
+            rendered.spans[2]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(rendered.spans[3].style.fg, Some(theme.foreground));
+        assert_eq!(rendered.spans[3].style.bg, Some(theme.addition_bg));
+    }
+
+    #[test]
+    fn split_view_uses_right_indicator_as_separator() {
+        let changeset = changeset_with_context_lines(1);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Split);
+
+        let rendered = render_split_line(&mut app, 0, 0, Some(0), Some(0), 0, 24);
+        let text = line_text(&rendered);
+
+        assert!(!text.contains('│'));
+        assert_eq!(text.chars().nth(12), Some('▌'));
     }
 
     #[test]
@@ -3596,11 +4744,154 @@ mod tests {
             text: "new".to_owned(),
         };
 
-        let rendered = render_unified_line(&line, None, &[], 0, 24);
+        let rendered = render_unified_line(&line, None, &[], 0, 24, DiffTheme::default());
 
         assert_eq!(rendered.spans[0].content.as_ref(), DIFF_INDICATOR);
-        assert_eq!(rendered.spans[0].style.fg, Some(addition_fg()));
-        assert!(line_text(&rendered).contains(EMPTY_DIFF_FILL));
+        assert_eq!(
+            rendered.spans[0].style.fg,
+            Some(DiffTheme::default().addition_fg)
+        );
+        assert!(!line_text(&rendered).contains(EMPTY_DIFF_FILL));
+    }
+
+    #[test]
+    fn ansi_theme_uses_terminal_palette_indices() {
+        let theme = diff_theme_from_config(&SyntaxThemeConfig {
+            source: SyntaxThemeSource::Ansi,
+            name: None,
+            path: None,
+        })
+        .expect("ansi theme should load");
+
+        assert_eq!(theme.addition_fg, Color::Indexed(2));
+        assert_eq!(
+            theme.syntax.color(SyntaxClass::Keyword),
+            Some(Color::Indexed(13))
+        );
+    }
+
+    #[test]
+    fn system_theme_preserves_terminal_base_and_uses_owned_diff_colors() {
+        let theme = builtin_diff_theme(Some("system")).expect("system theme should load");
+
+        assert_eq!(theme.foreground, Color::Reset);
+        assert_eq!(theme.background, Color::Reset);
+        assert_eq!(theme.file, Color::Reset);
+        assert_ne!(theme.addition_fg, Color::Indexed(2));
+        assert_ne!(theme.deletion_fg, Color::Indexed(1));
+        assert_eq!(row_bg(DiffLineKind::Addition, theme), theme.addition_bg);
+        assert_eq!(
+            inline_bg(DiffLineKind::Addition, theme),
+            theme.addition_inline_bg
+        );
+        assert_eq!(
+            line_gutter_bg(DiffLineKind::Addition, theme),
+            theme.addition_gutter_bg
+        );
+        assert_eq!(
+            theme.syntax.color(SyntaxClass::String),
+            SyntaxPalette::ansi().color(SyntaxClass::String)
+        );
+    }
+
+    #[test]
+    fn default_theme_alias_uses_system_theme() {
+        let theme = builtin_diff_theme(Some("default")).expect("default theme should load");
+
+        assert_eq!(theme, DiffTheme::system());
+    }
+
+    #[test]
+    fn color_overrides_layer_on_colorscheme() {
+        let theme = DiffTheme::system()
+            .with_color_overrides(&ColorOverrides {
+                bg: Some("#010203".to_owned()),
+                addition_bg: Some("#123456".to_owned()),
+                deletion_fg: Some("bright-red".to_owned()),
+                keyword: Some("ansi-13".to_owned()),
+                ..ColorOverrides::default()
+            })
+            .expect("color overrides should parse");
+
+        assert_eq!(theme.background, Color::Rgb(1, 2, 3));
+        assert_eq!(
+            row_bg(DiffLineKind::Addition, theme),
+            Color::Rgb(0x12, 0x34, 0x56)
+        );
+        assert_eq!(theme.deletion_fg, Color::LightRed);
+        assert_eq!(
+            theme.syntax.color(SyntaxClass::Keyword),
+            Some(Color::Indexed(13))
+        );
+    }
+
+    #[test]
+    fn packaged_popular_themes_are_available() {
+        for name in ["catppuccin-mocha", "gruvbox-dark", "tokyonight", "dracula"] {
+            let theme = builtin_diff_theme(Some(name)).expect("built-in theme should load");
+
+            assert_ne!(
+                theme.file,
+                Color::Reset,
+                "{name} should set file foreground"
+            );
+            assert!(
+                theme.syntax.color(SyntaxClass::Keyword).is_some(),
+                "{name} should set syntax keyword foreground"
+            );
+        }
+    }
+
+    #[test]
+    fn transparent_background_resets_diff_and_inline_backgrounds() {
+        let theme = DiffTheme::catppuccin_mocha().with_transparent_background(true);
+        let spans = content_spans(
+            "changed",
+            None,
+            &[InlineRange {
+                byte_start: 0,
+                byte_end: 7,
+            }],
+            DiffLineKind::Addition,
+            8,
+            theme,
+        );
+
+        assert_eq!(row_bg(DiffLineKind::Addition, theme), Color::Reset);
+        assert_eq!(spans[0].style.bg, Some(Color::Reset));
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn base16_theme_parser_accepts_yaml_or_toml_lines() {
+        let scheme = parse_base16_scheme(
+            r##"
+base00: "#000000"
+base01: "111111"
+base02: "222222"
+base03: "333333"
+base04 = "444444"
+base05 = "555555"
+base06 = "666666"
+base07 = "777777"
+base08 = "888888"
+base09 = "999999"
+base0A = "aaaaaa"
+base0B = "bbbbbb"
+base0C = "cccccc"
+base0D = "dddddd"
+base0E = "eeeeee"
+base0F = "ffffff"
+"##,
+        )
+        .expect("base16 scheme should parse");
+        let theme = DiffTheme::base16(scheme);
+
+        assert_eq!(theme.muted, Color::Rgb(51, 51, 51));
+        assert_eq!(
+            theme.syntax.color(SyntaxClass::String),
+            Some(Color::Rgb(187, 187, 187))
+        );
     }
 
     #[test]
@@ -3633,7 +4924,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_emphasis_marks_unpaired_changed_lines() {
+    fn inline_emphasis_leaves_unpaired_changed_lines_to_line_style() {
         let lines = vec![DiffLine {
             kind: DiffLineKind::Deletion,
             old_line: Some(1),
@@ -3643,7 +4934,7 @@ mod tests {
 
         let emphasis = compute_hunk_inline_emphasis(&lines);
 
-        assert_eq!(emphasis[0].ranges, full_line_inline_range(&lines[0].text));
+        assert!(emphasis[0].ranges.is_empty());
     }
 
     #[test]
@@ -3705,14 +4996,21 @@ mod tests {
             }],
             DiffLineKind::Addition,
             20,
+            DiffTheme::default(),
         );
         let number = spans
             .iter()
             .find(|span| span.content.as_ref() == "2")
             .expect("number span should be split out for inline emphasis");
 
-        assert_eq!(number.style.fg, syntax_fg(SyntaxClass::Number));
-        assert_eq!(number.style.bg, Some(addition_inline_bg()));
+        assert_eq!(
+            number.style.fg,
+            syntax_fg(SyntaxClass::Number, DiffTheme::default())
+        );
+        assert_eq!(
+            number.style.bg,
+            Some(DiffTheme::default().addition_inline_bg)
+        );
         assert!(number.style.add_modifier.contains(Modifier::BOLD));
     }
 
@@ -3840,8 +5138,9 @@ mod tests {
 
     #[test]
     fn oversized_hunks_fall_back_to_plain_diff_text() {
-        let text = "x".repeat(MAX_HIGHLIGHT_LINE_BYTES);
-        let line_count = (MAX_HIGHLIGHT_HUNK_BYTES / MAX_HIGHLIGHT_LINE_BYTES) + 2;
+        let limits = SyntaxLimits::default();
+        let text = "x".repeat(limits.max_line_bytes);
+        let line_count = (limits.max_source_bytes / limits.max_line_bytes) + 2;
         let lines = (0..line_count)
             .map(|index| DiffLine {
                 kind: DiffLineKind::Context,
@@ -3852,19 +5151,20 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            build_hunk_source(&lines, DiffSide::New).unwrap_err(),
+            build_hunk_source(&lines, DiffSide::New, limits).unwrap_err(),
             SyntaxSkipReason::TooLarge
         );
     }
 
     #[test]
     fn oversized_lines_disable_hunk_highlighting() {
+        let limits = SyntaxLimits::default();
         let lines = vec![
             DiffLine {
                 kind: DiffLineKind::Context,
                 old_line: Some(1),
                 new_line: Some(1),
-                text: "x".repeat(MAX_HIGHLIGHT_LINE_BYTES + 1),
+                text: "x".repeat(limits.max_line_bytes + 1),
             },
             DiffLine {
                 kind: DiffLineKind::Context,
@@ -3875,7 +5175,7 @@ mod tests {
         ];
 
         assert_eq!(
-            build_hunk_source(&lines, DiffSide::New).unwrap_err(),
+            build_hunk_source(&lines, DiffSide::New, limits).unwrap_err(),
             SyntaxSkipReason::TooLarge
         );
     }
@@ -3903,7 +5203,7 @@ mod tests {
             },
         ];
 
-        let source = build_hunk_source(&lines, DiffSide::New).unwrap();
+        let source = build_hunk_source(&lines, DiffSide::New, SyntaxLimits::default()).unwrap();
 
         assert_eq!(source.text, "let a = 1;\n");
         assert_eq!(source.line_map, vec![Some(0), None, Some(1)]);
@@ -3919,7 +5219,7 @@ mod tests {
             text: "let value = 1;".to_owned(),
         }];
 
-        let source = build_hunk_source(&lines, DiffSide::New).unwrap();
+        let source = build_hunk_source(&lines, DiffSide::New, SyntaxLimits::default()).unwrap();
 
         assert_eq!(source.text, "let value = 1;");
         assert_eq!(source.line_map, vec![Some(0)]);
@@ -3943,7 +5243,7 @@ mod tests {
             },
         ];
 
-        let source = build_hunk_source(&lines, DiffSide::New).unwrap();
+        let source = build_hunk_source(&lines, DiffSide::New, SyntaxLimits::default()).unwrap();
 
         assert_eq!(source.text, "\nlet value = 1;");
         assert_eq!(source.line_map, vec![Some(0), Some(1)]);
@@ -4208,6 +5508,7 @@ mod tests {
                 line_map: vec![Some(0)],
                 source_lines: 1,
             }),
+            limits: SyntaxLimits::default(),
         }
     }
 

@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 pub use hz_diff::{DiffOptions, DiffScope, DiffSource, PatchSource};
 pub use hz_syntax::{
     SyntaxAddResult, SyntaxAvailableFilter, SyntaxCleanResult, SyntaxDoctorReport,
-    SyntaxLanguageStatus, SyntaxRemoveResult, SyntaxUpdateResult,
+    SyntaxLanguageStatus, SyntaxLimits, SyntaxMode, SyntaxRemoveResult, SyntaxSettings,
+    SyntaxThemeConfig, SyntaxThemeSource, SyntaxUpdateResult,
 };
 pub use hz_worktree::{
     CreateWorktree, CreatedWorktree, FindWorktree, HandoffMode, HandoffWorktree, ListWorktrees,
@@ -202,6 +203,14 @@ pub fn syntax_cache_dir() -> HzResult<String> {
 
 pub fn syntax_config_path() -> HzResult<PathBuf> {
     hz_syntax::config_path()
+}
+
+pub fn syntax_settings_path() -> HzResult<PathBuf> {
+    hz_syntax::settings_path()
+}
+
+pub fn syntax_colorscheme_dir() -> HzResult<PathBuf> {
+    hz_syntax::colorscheme_dir()
 }
 
 pub fn syntax_doctor() -> HzResult<SyntaxDoctorReport> {

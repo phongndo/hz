@@ -23,8 +23,7 @@ Language management currently supports:
 - `hz ts update`, `hz ts doctor`, `hz ts clean`, `hz ts path`, and filtered
   `hz ts available` for diagnostics and cache maintenance.
 
-Open follow-up work remains in Phases 4 and 7 below: theme/config knobs and
-semantic experiments.
+Open follow-up work remains in future semantic experiments.
 
 ## Phase 0: MVP foundation
 
@@ -160,11 +159,17 @@ Deferred:
 
 ## Phase 4: theme and config support
 
-- Add user-local syntax config for performance and theme knobs.
-- Keep repo-local `.hz/hz.toml` out of parser download decisions.
-- Add configurable syntax theme names such as `terminal-dark`, `terminal-light`, and `minimal`.
-- Allow richer syntax modes (`builtin`, `all`) without removing installed parsers.
-- Keep color layering stable:
+Status: implemented.
+
+- [x] Add user-local syntax config for performance and theme knobs.
+- [x] Keep repo-local `.hz/hz.toml` out of parser download decisions.
+- [x] Add configurable syntax theme names such as `system`, `hz-dark`,
+  `hz-light`, `minimal`, `ansi`, `catppuccin-mocha`, `gruvbox-dark`,
+  `tokyonight`, `dracula`, and Base16 scheme files.
+- [x] Add opt-in transparent diff backgrounds for users who want the terminal
+  background to show through.
+- [x] Allow richer syntax modes (`builtin`, `all`) without removing installed parsers.
+- [x] Keep color layering stable:
   1. diff row background
   2. syntax foreground
   3. inline change emphasis
