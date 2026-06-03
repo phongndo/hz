@@ -126,6 +126,8 @@ complete -c hz -n "__fish_seen_subcommand_from diff" -l staged
 complete -c hz -n "__fish_seen_subcommand_from diff" -l unstaged
 complete -c hz -n "__fish_seen_subcommand_from diff" -l no-untracked
 complete -c hz -n "__fish_seen_subcommand_from diff" -l patch -r -F
+complete -c hz -n "__fish_seen_subcommand_from diff" -l no-watch
+complete -c hz -n "__fish_seen_subcommand_from diff" -l no-syntax
 complete -c hz -n "__fish_seen_subcommand_from diff" -s s -l stat
 complete -c hz -n "__fish_seen_subcommand_from ts tree-sitter" -s h -l help
 complete -c hz -n "__fish_seen_subcommand_from ts tree-sitter; and __fish_seen_subcommand_from available" -l installed

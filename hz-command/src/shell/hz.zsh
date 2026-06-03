@@ -246,7 +246,7 @@ _hz_complete_command_options() {
       compadd -- --target-version --install-dir -h --help
       ;;
     diff)
-      compadd -- -r --repo -b --base --staged --unstaged --no-untracked --patch -s --stat -h --help
+      compadd -- -r --repo -b --base --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help
       ;;
   esac
 }

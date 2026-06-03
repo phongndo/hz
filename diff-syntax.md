@@ -14,7 +14,7 @@
 
 Syntax highlighting is implemented and on by default for bundled core languages.
 The interactive renderer is still hunk-local, lazy, bounded, and non-downloading.
-`hz diff --no-syntax` / `hz --no-syntax` disables syntax for a run.
+`hz diff --no-syntax` disables syntax for a run.
 
 Language management currently supports:
 
@@ -55,7 +55,7 @@ Status: implemented.
 - Add clearer `hz ts doctor` checks for stale config, missing cache files, and load failures.
 - Add parser checksum records and verify user-cache parser libraries before loading.
 - Bundle a curated core language set for zero-config highlighting.
-- Add `hz diff --no-syntax` / `hz --no-syntax` escape hatch.
+- Add `hz diff --no-syntax` escape hatch.
 - Add TypeScript/TSX highlight query fallback using the bundled JavaScript query.
 
 ## Phase 2: benchmark and tune performance

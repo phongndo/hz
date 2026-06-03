@@ -573,6 +573,7 @@ pub struct SyntaxHighlighter {
     registry: LanguageRegistry,
     highlighter: Highlighter,
     configs: HashMap<String, HighlightConfiguration>,
+    trusted_languages: BTreeSet<String>,
 }
 
 impl Default for SyntaxHighlighter {
@@ -586,6 +587,7 @@ impl Default for SyntaxHighlighter {
             registry,
             highlighter: Highlighter::new(),
             configs: HashMap::new(),
+            trusted_languages: BTreeSet::new(),
         }
     }
 }
@@ -597,7 +599,7 @@ impl SyntaxHighlighter {
 
     pub fn highlight(&mut self, language: &str, source: &str) -> HzResult<HighlightedText> {
         let language = normalize_language_name(language.to_owned());
-        if !is_language_trusted(&language) {
+        if !self.ensure_language_trusted(&language) {
             return Err(HzError::Usage(format!(
                 "tree-sitter language '{language}' is not trusted; run `hz ts add {language}`"
             )));
@@ -613,6 +615,17 @@ impl SyntaxHighlighter {
             .highlight(config, source.as_bytes(), None, |_| None)
             .map_err(|error| HzError::Usage(format!("failed to highlight {language}: {error}")))?;
         highlighted_text_from_events(source, highlights)
+    }
+
+    fn ensure_language_trusted(&mut self, language: &str) -> bool {
+        if self.trusted_languages.contains(language) {
+            return true;
+        }
+        if !is_language_trusted(language) {
+            return false;
+        }
+        self.trusted_languages.insert(language.to_owned());
+        true
     }
 
     fn ensure_config(&mut self, language: &str) -> HzResult<()> {
@@ -696,10 +709,11 @@ pub fn installed_languages() -> Vec<String> {
 }
 
 pub fn language_statuses() -> HzResult<Vec<SyntaxLanguageStatus>> {
+    let settings = load_settings()?;
     let config = load_config()?;
-    let enabled = enabled_language_set_from_config(&config);
     let installed = installed_language_set();
     let trusted = trusted_language_set(&installed, &config);
+    let enabled = enabled_language_set_for_mode(settings.mode, &config, &trusted);
     let artifacts = parser_artifact_map(&config);
     let pack_version = language_pack_version();
     let mut languages = enabled
@@ -846,6 +860,7 @@ pub fn remove_languages(languages: &[String]) -> HzResult<SyntaxRemoveResult> {
     }
 
     let requested = normalize_language_names(languages);
+    reject_core_language_removal(&requested)?;
     let mut config = load_config()?;
     let mut enabled = language_vec_to_set(&config.languages);
     let mut removed = Vec::new();
@@ -1256,7 +1271,15 @@ fn non_zero_or_default(value: Option<usize>, default: usize) -> usize {
 }
 
 fn enabled_language_set() -> HzResult<BTreeSet<String>> {
-    Ok(enabled_language_set_from_config(&load_config()?))
+    let settings = load_settings()?;
+    let config = load_config()?;
+    let installed = installed_language_set();
+    let trusted = trusted_language_set(&installed, &config);
+    Ok(enabled_language_set_for_mode(
+        settings.mode,
+        &config,
+        &trusted,
+    ))
 }
 
 fn enabled_language_set_for_mode(
@@ -1297,6 +1320,22 @@ fn core_enabled_language_set() -> BTreeSet<String> {
         .map(|language| normalize_language_name((*language).to_owned()))
         .filter(|language| tree_sitter_language_pack::has_parser(language))
         .collect()
+}
+
+fn reject_core_language_removal(requested: &BTreeSet<String>) -> HzResult<()> {
+    let core = core_enabled_language_set();
+    let blocked = requested
+        .intersection(&core)
+        .cloned()
+        .collect::<Vec<String>>();
+    if blocked.is_empty() {
+        return Ok(());
+    }
+
+    Err(HzError::Usage(format!(
+        "cannot remove core syntax languages: {}; use `hz diff --no-syntax` to disable syntax for a run",
+        blocked.join(", ")
+    )))
 }
 
 fn local_parser_language_set() -> BTreeSet<String> {
@@ -1742,6 +1781,7 @@ mod tests {
             .expect("typescript should use javascript query fallback");
 
         assert!(!highlighted.lines[0].segments.is_empty());
+        assert!(highlighter.trusted_languages.contains("typescript"));
     }
 
     #[test]
@@ -1763,6 +1803,18 @@ mod tests {
         assert!(!core.contains("asm"));
         assert!(!core.contains("tablegen"));
         assert!(!core.contains("nix"));
+    }
+
+    #[test]
+    fn removing_core_languages_is_rejected() {
+        let requested = BTreeSet::from(["rust".to_owned(), "ruby".to_owned()]);
+
+        let error = reject_core_language_removal(&requested)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("cannot remove core syntax languages: rust"));
+        assert!(!error.contains("ruby"));
     }
 
     #[test]

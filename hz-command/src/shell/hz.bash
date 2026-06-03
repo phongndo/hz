@@ -144,7 +144,7 @@ _hz_complete_command_args() {
       [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir -h --help" "$current"
       ;;
     diff)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -b --base --staged --unstaged --no-untracked --patch -s --stat -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -b --base --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help" "$current"
       ;;
   esac
 }
@@ -185,7 +185,7 @@ _hz_completion() {
       _hz_reply "$_hz_worktree_commands" "$current"
       return
     fi
-    _hz_complete_ts_args "${COMP_WORDS[2]}" "$current"
+    _hz_complete_command_args "${COMP_WORDS[2]}" "$current"
     return
   fi
 
@@ -194,7 +194,7 @@ _hz_completion() {
       _hz_reply "$_hz_ts_commands" "$current"
       return
     fi
-    _hz_complete_command_args "${COMP_WORDS[2]}" "$current"
+    _hz_complete_ts_args "${COMP_WORDS[2]}" "$current"
     return
   fi
 

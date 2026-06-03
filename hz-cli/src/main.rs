@@ -55,9 +55,6 @@ const RELEASE_REPO: &str = "phongndo/hz";
     styles = help_styles()
 )]
 struct Cli {
-    /// Disable syntax highlighting in the interactive diff viewer.
-    #[arg(long = "no-syntax", global = true)]
-    no_syntax: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -312,6 +309,9 @@ struct DiffArgs {
     /// Disable live reload in the interactive diff viewer.
     #[arg(long = "no-watch")]
     no_watch: bool,
+    /// Disable syntax highlighting in the interactive diff viewer.
+    #[arg(long = "no-syntax")]
+    no_syntax: bool,
     #[arg(short = 's', long)]
     stat: bool,
 }
@@ -344,7 +344,6 @@ fn main() -> ExitCode {
 
 fn run() -> HzResult<()> {
     let cli = Cli::parse();
-    let syntax_enabled = !cli.no_syntax;
 
     match cli.command {
         None => {
@@ -373,6 +372,7 @@ fn run() -> HzResult<()> {
         Some(Command::Diff(args)) => {
             let stat = args.stat;
             let live_updates = !args.no_watch;
+            let syntax_enabled = !args.no_syntax;
             let options = diff_options(args)?;
             if io::stdout().is_terminal() && !stat {
                 hz_tui::run_diff_with_live_updates_and_syntax(options, live_updates, syntax_enabled)
@@ -3161,17 +3161,20 @@ mod tests {
             "-s",
         ])
         .unwrap();
-        assert!(cli.no_syntax);
         match cli.command {
             Some(Command::Diff(args)) => {
                 assert_eq!(args.repo, Some(PathBuf::from("/repo")));
                 assert!(args.unstaged);
                 assert!(args.no_untracked);
                 assert!(args.no_watch);
+                assert!(args.no_syntax);
                 assert!(args.stat);
             }
             command => panic!("expected diff command, got {command:?}"),
         }
+
+        assert!(Cli::try_parse_from(["hz", "ts", "add", "ruby", "--no-syntax"]).is_err());
+        assert!(Cli::try_parse_from(["hz", "--no-syntax", "ts", "add", "ruby"]).is_err());
 
         let cli = Cli::try_parse_from(["hz", "diff", "-b", "main"]).unwrap();
         match cli.command {

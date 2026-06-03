@@ -998,6 +998,8 @@ mod tests {
         assert!(script.contains("--staged"));
         assert!(script.contains("--unstaged"));
         assert!(script.contains("--no-untracked"));
+        assert!(script.contains("--no-watch"));
+        assert!(script.contains("--no-syntax"));
         assert!(hzlocal_completion.contains("_hz_complete_command_options cd"));
         assert!(!hzlocal_completion.contains("_hz_complete_command_positionals cd"));
     }
@@ -1025,12 +1027,28 @@ mod tests {
         assert!(script.contains("-l staged"));
         assert!(script.contains("-l unstaged"));
         assert!(script.contains("-l no-untracked"));
+        assert!(script.contains("-l no-watch"));
+        assert!(script.contains("-l no-syntax"));
         assert!(!script.contains("tui"));
     }
 
     #[test]
     fn bash_integration_registers_completion() {
         let script = shell_integration(Shell::Bash);
+        let worktree_completion = script
+            .split("if [[ \"$cmd\" == \"worktree\" || \"$cmd\" == \"wt\" ]]; then")
+            .nth(1)
+            .and_then(|completion| completion.split("if [[ \"$cmd\" == \"ts\"").next())
+            .expect("worktree completion branch should exist");
+        let ts_completion = script
+            .split("if [[ \"$cmd\" == \"ts\" || \"$cmd\" == \"tree-sitter\" ]]; then")
+            .nth(1)
+            .and_then(|completion| {
+                completion
+                    .split("_hz_complete_command_args \"$cmd\"")
+                    .next()
+            })
+            .expect("tree-sitter completion branch should exist");
 
         assert!(script.contains("complete -F _hz_completion hz"));
         assert!(script.contains("_hz_dynamic_reply worktree-targets"));
@@ -1049,6 +1067,13 @@ mod tests {
         assert!(script.contains("--staged"));
         assert!(script.contains("--unstaged"));
         assert!(script.contains("--no-untracked"));
+        assert!(script.contains("--no-watch"));
+        assert!(script.contains("--no-syntax"));
+        assert!(
+            worktree_completion
+                .contains("_hz_complete_command_args \"${COMP_WORDS[2]}\" \"$current\"")
+        );
+        assert!(ts_completion.contains("_hz_complete_ts_args \"${COMP_WORDS[2]}\" \"$current\""));
         assert!(!script.contains("tui"));
     }
 
