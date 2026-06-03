@@ -15,8 +15,6 @@
 Syntax highlighting is implemented and on by default for bundled core languages.
 The interactive renderer is still hunk-local, lazy, bounded, and non-downloading.
 `hz diff --no-syntax` / `hz --no-syntax` disables syntax for a run.
-Inline diff emphasis is implemented for changed tokens/words in split and
-unified layouts, independently of syntax highlighting.
 
 Language management currently supports:
 
@@ -195,15 +193,6 @@ Status: implemented.
 - [x] Layer inline emphasis over syntax foreground and diff backgrounds.
 - [x] Keep split and unified layouts visually consistent.
 - [x] Cap expensive inline diff work for very long lines.
-
-## Phase 7: semantic diff experiments
-
-Only start this after syntax highlighting is stable and benchmarked.
-
-- Use Tree-sitter ASTs to identify moved/renamed syntax nodes.
-- Experiment with syntax-aware hunk summaries.
-- Explore language-specific structure navigation inside diffs.
-- Keep semantic diff optional; plain Git patch semantics remain the source of truth.
 
 ## Non-goals for now
 
