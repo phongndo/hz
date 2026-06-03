@@ -1,10 +1,12 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     ffi::OsStr,
+    fs,
     hash::{Hash, Hasher},
     io,
     panic::{self, AssertUnwindSafe},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
+    process::Command,
     sync::{
         Arc, Condvar, Mutex,
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -23,7 +25,9 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use hz_core::{HzError, HzResult};
-use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffSource, DiffStats, FileStatus};
+use hz_diff::{
+    Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, DiffStats, FileStatus,
+};
 use hz_syntax::{HighlightedLine, SyntaxClass, SyntaxHighlighter, SyntaxLanguageSet};
 use notify::{RecursiveMode, Watcher};
 use ratatui::{
@@ -450,16 +454,29 @@ struct SyntaxPosition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SyntaxSourceKind {
-    HunkSide,
+    HunkSide { hunk: usize },
+    FullFile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SyntaxSourceId {
+    generation: u64,
+    file: usize,
+    side: DiffSide,
+    kind: SyntaxSourceKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct SyntaxKey {
-    position: SyntaxPosition,
-    source_kind: SyntaxSourceKind,
-    source_hash: u64,
+    source: SyntaxSourceId,
     language_hash: u64,
     theme_id: u64,
+}
+
+impl SyntaxKey {
+    fn generation(self) -> u64 {
+        self.source.generation
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,18 +492,17 @@ enum SyntaxSkipReason {
 
 #[derive(Debug, Clone)]
 struct HighlightedSide {
-    lines: Vec<Option<HighlightedLine>>,
+    lines: Vec<HighlightedLine>,
 }
 
 impl HighlightedSide {
     fn memory_bytes(&self) -> usize {
         self.lines
             .iter()
-            .filter_map(Option::as_ref)
             .flat_map(|line| line.segments.iter())
             .map(|segment| segment.text.len())
             .sum::<usize>()
-            .saturating_add(self.lines.len() * std::mem::size_of::<Option<HighlightedLine>>())
+            .saturating_add(self.lines.len() * std::mem::size_of::<HighlightedLine>())
     }
 }
 
@@ -635,7 +651,7 @@ impl SyntaxWorkerQueue {
         if state.closed {
             return Err(SyntaxQueueError::Closed);
         }
-        if job.key.position.generation != state.generation {
+        if job.key.generation() != state.generation {
             return Err(SyntaxQueueError::Stale);
         }
         if self.inner.capacity == 0 {
@@ -690,10 +706,10 @@ impl SyntaxWorkerQueue {
         state.generation = generation;
         state
             .visible
-            .retain(|job| job.key.position.generation == generation);
+            .retain(|job| job.key.generation() == generation);
         state
             .prefetch
-            .retain(|job| job.key.position.generation == generation);
+            .retain(|job| job.key.generation() == generation);
         self.inner.ready.notify_all();
     }
 
@@ -709,7 +725,7 @@ impl SyntaxWorkerQueue {
                 .pop_front()
                 .or_else(|| state.prefetch.pop_front());
             if let Some(job) = job {
-                if job.key.position.generation == state.generation {
+                if job.key.generation() == state.generation {
                     return Some(job);
                 }
                 continue;
@@ -760,7 +776,10 @@ struct SyntaxRuntime {
     cache: LruCache<SyntaxKey, HighlightedSide>,
     pending: HashSet<SyntaxKey>,
     position_keys: HashMap<SyntaxPosition, SyntaxKey>,
+    line_maps: HashMap<SyntaxPosition, Vec<Option<usize>>>,
     skipped: HashMap<SyntaxPosition, SyntaxSkipReason>,
+    unavailable_full_files: HashSet<SyntaxKey>,
+    failed: HashSet<SyntaxKey>,
     stats: SyntaxBenchmarkReport,
     worker: Option<thread::JoinHandle<()>>,
 }
@@ -784,7 +803,10 @@ impl SyntaxRuntime {
             cache: LruCache::new(MAX_HIGHLIGHT_CACHE_ENTRIES),
             pending: HashSet::new(),
             position_keys: HashMap::new(),
+            line_maps: HashMap::new(),
             skipped: HashMap::new(),
+            unavailable_full_files: HashSet::new(),
+            failed: HashSet::new(),
             stats: SyntaxBenchmarkReport::default(),
             worker: Some(worker),
         }))
@@ -808,7 +830,10 @@ impl SyntaxRuntime {
             cache: LruCache::new(MAX_HIGHLIGHT_CACHE_ENTRIES),
             pending: HashSet::new(),
             position_keys: HashMap::new(),
+            line_maps: HashMap::new(),
             skipped: HashMap::new(),
+            unavailable_full_files: HashSet::new(),
+            failed: HashSet::new(),
             stats: SyntaxBenchmarkReport::default(),
             worker: Some(worker),
         })
@@ -818,12 +843,16 @@ impl SyntaxRuntime {
         self.cache.clear();
         self.pending.clear();
         self.position_keys.clear();
+        self.line_maps.clear();
         self.skipped.clear();
+        self.unavailable_full_files.clear();
+        self.failed.clear();
         self.queue.set_generation(generation);
     }
 
     fn queue_hunk(
         &mut self,
+        options: &DiffOptions,
         changeset: &Changeset,
         generation: u64,
         file: usize,
@@ -869,6 +898,48 @@ impl SyntaxRuntime {
             self.skip(position, SyntaxSkipReason::InvalidPosition);
             return;
         };
+
+        if let Some(source) = full_file_source(&changeset.repo, options, file_diff, side) {
+            let key = SyntaxKey {
+                source: SyntaxSourceId {
+                    generation,
+                    file,
+                    side,
+                    kind: SyntaxSourceKind::FullFile,
+                },
+                language_hash: hash_text(&language),
+                theme_id: SYNTAX_THEME_ID,
+            };
+
+            if !self.unavailable_full_files.contains(&key) {
+                if self.failed.contains(&key) {
+                    self.skip(position, SyntaxSkipReason::HighlightError);
+                    return;
+                }
+
+                let line_map = match build_full_file_line_map(&hunk_diff.lines, side) {
+                    Ok(line_map) => line_map,
+                    Err(reason) => {
+                        self.skip(position, reason);
+                        return;
+                    }
+                };
+
+                self.position_keys.insert(position, key);
+                self.line_maps.insert(position, line_map);
+                if self.queue_job(
+                    key,
+                    language,
+                    SyntaxJobSource::FullFile(source),
+                    priority,
+                    position,
+                ) {
+                    return;
+                }
+                return;
+            }
+        }
+
         let source = match build_hunk_source(&hunk_diff.lines, side) {
             Ok(source) => source,
             Err(reason) => {
@@ -878,25 +949,51 @@ impl SyntaxRuntime {
         };
 
         let key = SyntaxKey {
-            position,
-            source_kind: SyntaxSourceKind::HunkSide,
-            source_hash: hash_text(&source.text),
+            source: SyntaxSourceId {
+                generation,
+                file,
+                side,
+                kind: SyntaxSourceKind::HunkSide { hunk },
+            },
             language_hash: hash_text(&language),
             theme_id: SYNTAX_THEME_ID,
         };
         self.position_keys.insert(position, key);
-        if self.cache.contains_key(&key) {
+        self.line_maps.insert(position, source.line_map.clone());
+        if self.failed.contains(&key) {
+            self.skip(position, SyntaxSkipReason::HighlightError);
             return;
+        }
+
+        self.queue_job(
+            key,
+            language,
+            SyntaxJobSource::Hunk(source),
+            priority,
+            position,
+        );
+    }
+
+    fn queue_job(
+        &mut self,
+        key: SyntaxKey,
+        language: String,
+        source: SyntaxJobSource,
+        priority: SyntaxPriority,
+        position: SyntaxPosition,
+    ) -> bool {
+        if self.cache.contains_key(&key) {
+            return true;
         }
         if self.pending.contains(&key) {
             if priority == SyntaxPriority::Visible {
                 self.queue.promote(key);
             }
-            return;
+            return true;
         }
 
-        let source_bytes = source.text.len() as u64;
-        let source_lines = source.line_map.len() as u64;
+        let source_bytes = source.known_bytes();
+        let source_lines = source.known_lines();
 
         let job = SyntaxJob {
             key,
@@ -912,17 +1009,24 @@ impl SyntaxRuntime {
                 }
                 self.stats.jobs_queued = self.stats.jobs_queued.saturating_add(1);
                 self.stats.queue_depth_peak = self.stats.queue_depth_peak.max(push.depth);
-                self.stats.source_bytes_queued =
-                    self.stats.source_bytes_queued.saturating_add(source_bytes);
-                self.stats.source_lines_queued =
-                    self.stats.source_lines_queued.saturating_add(source_lines);
+                if let Some(source_bytes) = source_bytes {
+                    self.stats.source_bytes_queued =
+                        self.stats.source_bytes_queued.saturating_add(source_bytes);
+                }
+                if let Some(source_lines) = source_lines {
+                    self.stats.source_lines_queued =
+                        self.stats.source_lines_queued.saturating_add(source_lines);
+                }
                 self.pending.insert(key);
+                true
             }
             Err(SyntaxQueueError::Full | SyntaxQueueError::Stale) => {
                 self.stats.jobs_rejected = self.stats.jobs_rejected.saturating_add(1);
+                false
             }
             Err(SyntaxQueueError::Closed) => {
                 self.skip(position, SyntaxSkipReason::QueueClosed);
+                false
             }
         }
     }
@@ -940,15 +1044,23 @@ impl SyntaxRuntime {
                 break;
             };
             self.pending.remove(&result.key);
-            if result.key.position.generation != generation {
+            if result.key.generation() != generation {
                 self.stats.stale_results = self.stats.stale_results.saturating_add(1);
                 continue;
             }
 
             match result.side {
-                Ok(side) => {
-                    self.cache.insert(result.key, side);
+                Ok(success) => {
+                    self.cache.insert(result.key, success.side);
                     self.stats.jobs_completed = self.stats.jobs_completed.saturating_add(1);
+                    if let Some(source_bytes) = success.source_bytes {
+                        self.stats.source_bytes_queued =
+                            self.stats.source_bytes_queued.saturating_add(source_bytes);
+                    }
+                    if let Some(source_lines) = success.source_lines {
+                        self.stats.source_lines_queued =
+                            self.stats.source_lines_queued.saturating_add(source_lines);
+                    }
                     self.stats.cache_entries_peak =
                         self.stats.cache_entries_peak.max(self.cache.len());
                     self.stats.estimated_memory_peak_bytes = self
@@ -957,9 +1069,18 @@ impl SyntaxRuntime {
                         .max(self.estimated_memory_bytes() as u64);
                     changed = true;
                 }
-                Err(()) => {
-                    self.skipped
-                        .insert(result.key.position, SyntaxSkipReason::HighlightError);
+                Err(SyntaxJobFailure::Unavailable) => {
+                    self.handle_unavailable_source(result.key);
+                    self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
+                    changed = true;
+                }
+                Err(SyntaxJobFailure::HighlightError) => {
+                    self.failed.insert(result.key);
+                    let positions = self.positions_for_key(result.key);
+                    for position in positions {
+                        self.skipped
+                            .insert(position, SyntaxSkipReason::HighlightError);
+                    }
                     self.stats.jobs_failed = self.stats.jobs_failed.saturating_add(1);
                 }
             }
@@ -967,14 +1088,42 @@ impl SyntaxRuntime {
         changed
     }
 
+    fn handle_unavailable_source(&mut self, key: SyntaxKey) {
+        if matches!(key.source.kind, SyntaxSourceKind::FullFile) {
+            self.unavailable_full_files.insert(key);
+        } else {
+            let positions = self.positions_for_key(key);
+            for position in positions {
+                self.skipped.insert(position, SyntaxSkipReason::NoSource);
+            }
+        }
+
+        let positions = self.positions_for_key(key);
+        for position in positions {
+            self.position_keys.remove(&position);
+            self.line_maps.remove(&position);
+        }
+    }
+
+    fn positions_for_key(&self, key: SyntaxKey) -> Vec<SyntaxPosition> {
+        self.position_keys
+            .iter()
+            .filter_map(|(position, position_key)| (*position_key == key).then_some(*position))
+            .collect()
+    }
+
     fn line(&mut self, position: SyntaxPosition, line: usize) -> Option<HighlightedLine> {
-        let highlighted = self
-            .position_keys
-            .get(&position)
-            .and_then(|key| self.cache.get(key))
-            .and_then(|side| side.lines.get(line))
-            .and_then(Option::as_ref)
-            .cloned();
+        let highlighted = self.position_keys.get(&position).copied().and_then(|key| {
+            let source_line = self
+                .line_maps
+                .get(&position)
+                .and_then(|line_map| line_map.get(line))
+                .and_then(|source_line| *source_line)?;
+            self.cache
+                .get(&key)
+                .and_then(|side| side.lines.get(source_line))
+                .cloned()
+        });
         if highlighted.is_some() {
             self.stats.cache_hits = self.stats.cache_hits.saturating_add(1);
         } else {
@@ -1009,46 +1158,118 @@ impl Drop for SyntaxRuntime {
 struct SyntaxJob {
     key: SyntaxKey,
     language: String,
-    source: HunkSource,
+    source: SyntaxJobSource,
 }
 
 #[derive(Debug)]
 struct SyntaxResult {
     key: SyntaxKey,
-    side: Result<HighlightedSide, ()>,
+    side: Result<SyntaxSuccess, SyntaxJobFailure>,
+}
+
+#[derive(Debug)]
+struct SyntaxSuccess {
+    side: HighlightedSide,
+    source_bytes: Option<u64>,
+    source_lines: Option<u64>,
+}
+
+#[derive(Debug)]
+enum SyntaxJobFailure {
+    Unavailable,
+    HighlightError,
 }
 
 #[derive(Debug)]
 struct HunkSource {
     text: String,
-    line_map: Vec<usize>,
-    line_count: usize,
+    line_map: Vec<Option<usize>>,
+    source_lines: usize,
+}
+
+#[derive(Debug)]
+enum SyntaxJobSource {
+    Hunk(HunkSource),
+    FullFile(FullFileSource),
+}
+
+impl SyntaxJobSource {
+    fn known_bytes(&self) -> Option<u64> {
+        match self {
+            Self::Hunk(source) => Some(source.text.len() as u64),
+            Self::FullFile(_) => None,
+        }
+    }
+
+    fn known_lines(&self) -> Option<u64> {
+        match self {
+            Self::Hunk(source) => Some(source.source_lines as u64),
+            Self::FullFile(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FullFileSource {
+    repo: PathBuf,
+    kind: FullFileSourceKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FullFileSourceKind {
+    Worktree {
+        path: String,
+    },
+    GitRevision {
+        rev: String,
+        path: String,
+    },
+    GitIndex {
+        path: String,
+    },
+    GitMergeBase {
+        base: String,
+        head: String,
+        path: String,
+    },
 }
 
 fn run_syntax_worker(queue: SyntaxWorkerQueue, result_tx: Sender<SyntaxResult>) {
     let mut highlighter = SyntaxHighlighter::new();
     while let Some(job) = queue.pop() {
         let side = panic::catch_unwind(AssertUnwindSafe(|| {
+            let (source, source_bytes, source_lines) = load_job_source(job.source)?;
             highlighter
-                .highlight(&job.language, &job.source.text)
-                .map(|highlighted| highlighted_side(job.source, highlighted.lines))
-                .map_err(|_| ())
+                .highlight(&job.language, &source)
+                .map(|highlighted| SyntaxSuccess {
+                    side: HighlightedSide {
+                        lines: highlighted.lines,
+                    },
+                    source_bytes,
+                    source_lines,
+                })
+                .map_err(|_| SyntaxJobFailure::HighlightError)
         }))
-        .unwrap_or(Err(()));
+        .unwrap_or(Err(SyntaxJobFailure::HighlightError));
         if result_tx.send(SyntaxResult { key: job.key, side }).is_err() {
             break;
         }
     }
 }
 
-fn highlighted_side(source: HunkSource, lines: Vec<HighlightedLine>) -> HighlightedSide {
-    let mut mapped = vec![None; source.line_count];
-    for (source_line, diff_line) in lines.into_iter().zip(source.line_map) {
-        if let Some(slot) = mapped.get_mut(diff_line) {
-            *slot = Some(source_line);
+fn load_job_source(
+    source: SyntaxJobSource,
+) -> Result<(String, Option<u64>, Option<u64>), SyntaxJobFailure> {
+    match source {
+        SyntaxJobSource::Hunk(source) => Ok((source.text, None, None)),
+        SyntaxJobSource::FullFile(source) => {
+            let text = load_full_file_source(&source).map_err(|_| SyntaxJobFailure::Unavailable)?;
+            validate_highlight_source(&text).map_err(|_| SyntaxJobFailure::Unavailable)?;
+            let source_bytes = text.len() as u64;
+            let source_lines = source_line_count(&text) as u64;
+            Ok((text, Some(source_bytes), Some(source_lines)))
         }
     }
-    HighlightedSide { lines: mapped }
 }
 
 fn syntax_path(file: &hz_diff::DiffFile, side: DiffSide) -> Option<&str> {
@@ -1060,7 +1281,8 @@ fn syntax_path(file: &hz_diff::DiffFile, side: DiffSide) -> Option<&str> {
 
 fn build_hunk_source(lines: &[DiffLine], side: DiffSide) -> Result<HunkSource, SyntaxSkipReason> {
     let mut text = String::new();
-    let mut line_map = Vec::new();
+    let mut line_map = vec![None; lines.len()];
+    let mut source_lines = 0;
 
     for (index, line) in lines.iter().enumerate() {
         if !line_belongs_to_side(line.kind, side) {
@@ -1069,25 +1291,228 @@ fn build_hunk_source(lines: &[DiffLine], side: DiffSide) -> Result<HunkSource, S
         if line.text.len() > MAX_HIGHLIGHT_LINE_BYTES {
             return Err(SyntaxSkipReason::TooLarge);
         }
-        if !text.is_empty() {
+        if source_lines > 0 {
             text.push('\n');
         }
         text.push_str(&line.text);
         if text.len() > MAX_HIGHLIGHT_HUNK_BYTES {
             return Err(SyntaxSkipReason::TooLarge);
         }
-        line_map.push(index);
+        line_map[index] = Some(source_lines);
+        source_lines += 1;
     }
 
-    if line_map.is_empty() {
+    if source_lines == 0 {
         return Err(SyntaxSkipReason::NoSource);
     }
 
     Ok(HunkSource {
         text,
         line_map,
-        line_count: lines.len(),
+        source_lines,
     })
+}
+
+fn build_full_file_line_map(
+    lines: &[DiffLine],
+    side: DiffSide,
+) -> Result<Vec<Option<usize>>, SyntaxSkipReason> {
+    let mut line_map = vec![None; lines.len()];
+    let mut source_lines = 0;
+
+    for (index, line) in lines.iter().enumerate() {
+        if !line_belongs_to_side(line.kind, side) {
+            continue;
+        }
+
+        let Some(line_number) = diff_line_number(line, side) else {
+            continue;
+        };
+        let Some(source_line) = line_number.checked_sub(1) else {
+            continue;
+        };
+        line_map[index] = Some(source_line);
+        source_lines += 1;
+    }
+
+    if source_lines == 0 {
+        return Err(SyntaxSkipReason::NoSource);
+    }
+
+    Ok(line_map)
+}
+
+fn diff_line_number(line: &DiffLine, side: DiffSide) -> Option<usize> {
+    match side {
+        DiffSide::Old => line.old_line,
+        DiffSide::New => line.new_line,
+    }
+}
+
+fn full_file_source(
+    repo: &Path,
+    options: &DiffOptions,
+    file: &hz_diff::DiffFile,
+    side: DiffSide,
+) -> Option<FullFileSource> {
+    if matches!(options.source, DiffSource::Patch(_)) {
+        return None;
+    }
+    if !repo.is_dir() {
+        return None;
+    }
+
+    let path = file_path_for_side(file, side)?.to_owned();
+    let kind = match (&options.source, options.scope, side) {
+        (DiffSource::Worktree, DiffScope::All, DiffSide::Old) => FullFileSourceKind::GitRevision {
+            rev: "HEAD".to_owned(),
+            path,
+        },
+        (DiffSource::Worktree, DiffScope::All, DiffSide::New) => {
+            FullFileSourceKind::Worktree { path }
+        }
+        (DiffSource::Worktree, DiffScope::Staged, DiffSide::Old) => {
+            FullFileSourceKind::GitRevision {
+                rev: "HEAD".to_owned(),
+                path,
+            }
+        }
+        (DiffSource::Worktree, DiffScope::Staged, DiffSide::New) => {
+            FullFileSourceKind::GitIndex { path }
+        }
+        (DiffSource::Worktree, DiffScope::Unstaged, DiffSide::Old) => {
+            FullFileSourceKind::GitIndex { path }
+        }
+        (DiffSource::Worktree, DiffScope::Unstaged, DiffSide::New) => {
+            FullFileSourceKind::Worktree { path }
+        }
+        (DiffSource::Base(base), DiffScope::All, DiffSide::Old) => {
+            FullFileSourceKind::GitMergeBase {
+                base: base.clone(),
+                head: "HEAD".to_owned(),
+                path,
+            }
+        }
+        (DiffSource::Base(_), DiffScope::All, DiffSide::New) => FullFileSourceKind::GitRevision {
+            rev: "HEAD".to_owned(),
+            path,
+        },
+        (DiffSource::Range { left, .. }, DiffScope::All, DiffSide::Old) => {
+            FullFileSourceKind::GitRevision {
+                rev: left.clone(),
+                path,
+            }
+        }
+        (DiffSource::Range { right, .. }, DiffScope::All, DiffSide::New) => {
+            FullFileSourceKind::GitRevision {
+                rev: right.clone(),
+                path,
+            }
+        }
+        _ => return None,
+    };
+
+    Some(FullFileSource {
+        repo: repo.to_owned(),
+        kind,
+    })
+}
+
+fn file_path_for_side(file: &hz_diff::DiffFile, side: DiffSide) -> Option<&str> {
+    match side {
+        DiffSide::Old => file.old_path.as_deref(),
+        DiffSide::New => file.new_path.as_deref(),
+    }
+}
+
+fn load_full_file_source(source: &FullFileSource) -> Result<String, SyntaxSkipReason> {
+    let bytes = match &source.kind {
+        FullFileSourceKind::Worktree { path } => read_worktree_file(&source.repo, path)?,
+        FullFileSourceKind::GitRevision { rev, path } => {
+            git_blob(&source.repo, &format!("{rev}:{path}"))?
+        }
+        FullFileSourceKind::GitIndex { path } => git_blob(&source.repo, &format!(":{path}"))?,
+        FullFileSourceKind::GitMergeBase { base, head, path } => {
+            let rev = git_merge_base(&source.repo, base, head)?;
+            git_blob(&source.repo, &format!("{rev}:{path}"))?
+        }
+    };
+
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn read_worktree_file(repo: &Path, path: &str) -> Result<Vec<u8>, SyntaxSkipReason> {
+    let path = safe_repo_join(repo, path).ok_or(SyntaxSkipReason::NoPath)?;
+    let metadata = fs::symlink_metadata(&path).map_err(|_| SyntaxSkipReason::NoSource)?;
+    if !metadata.file_type().is_file() {
+        return Err(SyntaxSkipReason::NoSource);
+    }
+    fs::read(path).map_err(|_| SyntaxSkipReason::NoSource)
+}
+
+fn safe_repo_join(repo: &Path, path: &str) -> Option<PathBuf> {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return None;
+    }
+
+    let mut joined = repo.to_owned();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => joined.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(joined)
+}
+
+fn git_blob(repo: &Path, object: &str) -> Result<Vec<u8>, SyntaxSkipReason> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["show", "--no-ext-diff", "--no-color", object])
+        .output()
+        .map_err(|_| SyntaxSkipReason::NoSource)?;
+    if !output.status.success() {
+        return Err(SyntaxSkipReason::NoSource);
+    }
+    Ok(output.stdout)
+}
+
+fn git_merge_base(repo: &Path, base: &str, head: &str) -> Result<String, SyntaxSkipReason> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["merge-base", base, head])
+        .output()
+        .map_err(|_| SyntaxSkipReason::NoSource)?;
+    if !output.status.success() {
+        return Err(SyntaxSkipReason::NoSource);
+    }
+
+    let rev = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if rev.is_empty() {
+        return Err(SyntaxSkipReason::NoSource);
+    }
+    Ok(rev)
+}
+
+fn validate_highlight_source(source: &str) -> Result<(), SyntaxSkipReason> {
+    if source.len() > MAX_HIGHLIGHT_HUNK_BYTES {
+        return Err(SyntaxSkipReason::TooLarge);
+    }
+    if source
+        .lines()
+        .any(|line| line.len() > MAX_HIGHLIGHT_LINE_BYTES)
+    {
+        return Err(SyntaxSkipReason::TooLarge);
+    }
+    Ok(())
+}
+
+fn source_line_count(source: &str) -> usize {
+    source.lines().count().max(1)
 }
 
 fn hash_text(text: &str) -> u64 {
@@ -1965,7 +2390,15 @@ impl DiffApp {
             return;
         }
         if let Some(syntax) = self.syntax.as_mut() {
-            syntax.queue_hunk(&self.changeset, self.generation, file, hunk, side, priority);
+            syntax.queue_hunk(
+                &self.options,
+                &self.changeset,
+                self.generation,
+                file,
+                hunk,
+                side,
+                priority,
+            );
         }
     }
 
@@ -2293,6 +2726,9 @@ fn content_spans(
     let Some(syntax) = syntax else {
         return vec![Span::styled(fit_padded(text, width), line_style(kind))];
     };
+    if !syntax_line_matches_text(syntax, text) {
+        return vec![Span::styled(fit_padded(text, width), line_style(kind))];
+    }
 
     let mut spans = Vec::new();
     let mut used = 0;
@@ -2313,6 +2749,17 @@ fn content_spans(
     }
 
     spans
+}
+
+fn syntax_line_matches_text(syntax: &HighlightedLine, text: &str) -> bool {
+    let mut remaining = text;
+    for segment in &syntax.segments {
+        if !remaining.starts_with(&segment.text) {
+            return false;
+        }
+        remaining = &remaining[segment.text.len()..];
+    }
+    remaining.is_empty()
 }
 
 fn syntax_style(class: Option<SyntaxClass>, kind: DiffLineKind) -> Style {
@@ -2618,6 +3065,27 @@ mod tests {
     }
 
     #[test]
+    fn content_spans_fall_back_when_syntax_text_mismatches_diff_text() {
+        let syntax = HighlightedLine {
+            segments: vec![hz_syntax::SyntaxSegment {
+                byte_start: 0,
+                byte_end: 5,
+                text: "wrong".to_owned(),
+                class: Some(SyntaxClass::Keyword),
+            }],
+        };
+
+        let spans = content_spans("right", Some(&syntax), DiffLineKind::Addition, 8);
+        let text = spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(text, "right   ");
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
     fn mouse_scroll_starts_precise_then_accelerates_sustained_bursts() {
         let start = Instant::now();
         let mut scroll = MouseScroll::default();
@@ -2807,8 +3275,8 @@ mod tests {
         let source = build_hunk_source(&lines, DiffSide::New).unwrap();
 
         assert_eq!(source.text, "let a = 1;\n");
-        assert_eq!(source.line_map, vec![0, 2]);
-        assert_eq!(source.line_count, 3);
+        assert_eq!(source.line_map, vec![Some(0), None, Some(1)]);
+        assert_eq!(source.source_lines, 2);
     }
 
     #[test]
@@ -2823,8 +3291,220 @@ mod tests {
         let source = build_hunk_source(&lines, DiffSide::New).unwrap();
 
         assert_eq!(source.text, "let value = 1;");
-        assert_eq!(source.line_map, vec![0]);
-        assert_eq!(source.line_count, 1);
+        assert_eq!(source.line_map, vec![Some(0)]);
+        assert_eq!(source.source_lines, 1);
+    }
+
+    #[test]
+    fn hunk_source_preserves_leading_empty_lines() {
+        let lines = vec![
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(1),
+                text: String::new(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(2),
+                text: "let value = 1;".to_owned(),
+            },
+        ];
+
+        let source = build_hunk_source(&lines, DiffSide::New).unwrap();
+
+        assert_eq!(source.text, "\nlet value = 1;");
+        assert_eq!(source.line_map, vec![Some(0), Some(1)]);
+        assert_eq!(source.source_lines, 2);
+    }
+
+    #[test]
+    fn full_file_line_map_uses_absolute_line_numbers() {
+        let lines = vec![
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(10),
+                new_line: None,
+                text: "old".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(11),
+                text: "new".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Context,
+                old_line: Some(12),
+                new_line: Some(12),
+                text: "same".to_owned(),
+            },
+        ];
+
+        assert_eq!(
+            build_full_file_line_map(&lines, DiffSide::Old).unwrap(),
+            vec![Some(9), None, Some(11)]
+        );
+        assert_eq!(
+            build_full_file_line_map(&lines, DiffSide::New).unwrap(),
+            vec![None, Some(10), Some(11)]
+        );
+    }
+
+    #[test]
+    fn full_file_sources_cover_diff_modes_and_statuses() {
+        let repo = std::env::temp_dir();
+        let file = hz_diff::DiffFile {
+            old_path: Some("old.rs".to_owned()),
+            new_path: Some("new.rs".to_owned()),
+            status: hz_diff::FileStatus::Renamed,
+            hunks: Vec::new(),
+            additions: 0,
+            deletions: 0,
+            is_binary: false,
+        };
+
+        assert_eq!(
+            full_file_source(&repo, &DiffOptions::default(), &file, DiffSide::Old)
+                .unwrap()
+                .kind,
+            FullFileSourceKind::GitRevision {
+                rev: "HEAD".to_owned(),
+                path: "old.rs".to_owned(),
+            }
+        );
+        assert_eq!(
+            full_file_source(&repo, &DiffOptions::default(), &file, DiffSide::New)
+                .unwrap()
+                .kind,
+            FullFileSourceKind::Worktree {
+                path: "new.rs".to_owned(),
+            }
+        );
+
+        let staged = DiffOptions {
+            scope: DiffScope::Staged,
+            ..DiffOptions::default()
+        };
+        assert_eq!(
+            full_file_source(&repo, &staged, &file, DiffSide::New)
+                .unwrap()
+                .kind,
+            FullFileSourceKind::GitIndex {
+                path: "new.rs".to_owned(),
+            }
+        );
+
+        let unstaged = DiffOptions {
+            scope: DiffScope::Unstaged,
+            ..DiffOptions::default()
+        };
+        assert_eq!(
+            full_file_source(&repo, &unstaged, &file, DiffSide::Old)
+                .unwrap()
+                .kind,
+            FullFileSourceKind::GitIndex {
+                path: "old.rs".to_owned(),
+            }
+        );
+
+        let base = DiffOptions {
+            source: DiffSource::Base("main".to_owned()),
+            ..DiffOptions::default()
+        };
+        assert_eq!(
+            full_file_source(&repo, &base, &file, DiffSide::Old)
+                .unwrap()
+                .kind,
+            FullFileSourceKind::GitMergeBase {
+                base: "main".to_owned(),
+                head: "HEAD".to_owned(),
+                path: "old.rs".to_owned(),
+            }
+        );
+
+        let range = DiffOptions {
+            source: DiffSource::Range {
+                left: "left".to_owned(),
+                right: "right".to_owned(),
+            },
+            ..DiffOptions::default()
+        };
+        assert_eq!(
+            full_file_source(&repo, &range, &file, DiffSide::New)
+                .unwrap()
+                .kind,
+            FullFileSourceKind::GitRevision {
+                rev: "right".to_owned(),
+                path: "new.rs".to_owned(),
+            }
+        );
+
+        let patch = DiffOptions {
+            source: DiffSource::Patch(hz_diff::PatchSource::Stdin(Arc::from(""))),
+            ..DiffOptions::default()
+        };
+        assert!(full_file_source(&repo, &patch, &file, DiffSide::New).is_none());
+
+        let deleted = hz_diff::DiffFile {
+            new_path: None,
+            status: hz_diff::FileStatus::Deleted,
+            ..file.clone()
+        };
+        assert!(
+            full_file_source(&repo, &DiffOptions::default(), &deleted, DiffSide::New).is_none()
+        );
+    }
+
+    #[test]
+    fn full_file_source_loads_worktree_index_and_revision_contents() {
+        let repo = temp_test_dir("full-file-source");
+        fs::create_dir_all(&repo).expect("repo directory should be created");
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "Test"]);
+
+        fs::write(repo.join("file.rs"), "fn old() {}\n").expect("old file should be written");
+        git(&repo, &["add", "file.rs"]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+
+        fs::write(repo.join("file.rs"), "fn new() {}\n").expect("new file should be written");
+        assert_eq!(
+            load_full_file_source(&FullFileSource {
+                repo: repo.clone(),
+                kind: FullFileSourceKind::GitRevision {
+                    rev: "HEAD".to_owned(),
+                    path: "file.rs".to_owned(),
+                },
+            })
+            .unwrap(),
+            "fn old() {}\n"
+        );
+        assert_eq!(
+            load_full_file_source(&FullFileSource {
+                repo: repo.clone(),
+                kind: FullFileSourceKind::Worktree {
+                    path: "file.rs".to_owned(),
+                },
+            })
+            .unwrap(),
+            "fn new() {}\n"
+        );
+
+        git(&repo, &["add", "file.rs"]);
+        assert_eq!(
+            load_full_file_source(&FullFileSource {
+                repo: repo.clone(),
+                kind: FullFileSourceKind::GitIndex {
+                    path: "file.rs".to_owned(),
+                },
+            })
+            .unwrap(),
+            "fn new() {}\n"
+        );
+
+        fs::remove_dir_all(repo).expect("repo directory should be removed");
     }
 
     #[test]
@@ -2877,14 +3557,12 @@ mod tests {
 
     fn syntax_key_with_generation(generation: u64, file: usize) -> SyntaxKey {
         SyntaxKey {
-            position: SyntaxPosition {
+            source: SyntaxSourceId {
                 generation,
                 file,
-                hunk: 0,
                 side: DiffSide::New,
+                kind: SyntaxSourceKind::HunkSide { hunk: 0 },
             },
-            source_kind: SyntaxSourceKind::HunkSide,
-            source_hash: file as u64,
             language_hash: 1,
             theme_id: SYNTAX_THEME_ID,
         }
@@ -2894,11 +3572,34 @@ mod tests {
         SyntaxJob {
             key,
             language: "rust".to_owned(),
-            source: HunkSource {
+            source: SyntaxJobSource::Hunk(HunkSource {
                 text: "fn main() {}".to_owned(),
-                line_map: vec![0],
-                line_count: 1,
-            },
+                line_map: vec![Some(0)],
+                source_lines: 1,
+            }),
         }
+    }
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hz-tui-{name}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ))
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

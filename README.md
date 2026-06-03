@@ -244,8 +244,11 @@ checksums before loading user-cache parser libraries. Use `--no-syntax` to force
 plain diff text, and `hz ts rm <language>`, `hz ts ls`, `hz ts doctor`, or
 `hz ts clean` to maintain the parser cache. `hz ts update <language>` refreshes
 cached parsers, and `hz ts available --installed` / `--enabled` filters the
-language list. Highlighting is lazy, hunk-local, cached, and falls back to plain
-diff text for missing languages, missing queries, or very large hunks/lines.
+language list. Repo-backed diffs highlight full old/new file sides and map spans
+back to diff lines; patch input and unavailable file contents fall back to
+hunk-local highlighting. Highlighting stays lazy and cached, and falls back to
+plain diff text for missing languages, missing queries, or very large
+hunks/lines.
 
 ### Repo lifecycle
 

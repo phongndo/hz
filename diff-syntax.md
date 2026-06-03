@@ -23,8 +23,8 @@ Language management currently supports:
 - `hz ts update`, `hz ts doctor`, `hz ts clean`, `hz ts path`, and filtered
   `hz ts available` for diagnostics and cache maintenance.
 
-Open follow-up work remains in Phases 4–7 below: theme/config knobs,
-full-file highlighting, inline emphasis, and semantic experiments.
+Open follow-up work remains in Phases 4, 6, and 7 below: theme/config knobs,
+inline emphasis, and semantic experiments.
 
 ## Phase 0: MVP foundation
 
@@ -172,13 +172,17 @@ Deferred:
 
 ## Phase 5: full-file highlighting for correctness
 
-Current hunk-local highlighting is fast and patch-compatible, but can be wrong when multiline parser state starts before a hunk.
+Status: implemented.
 
-- For repo-backed diffs, load full old/new file contents.
-- Highlight whole old/new sides and map styled spans back to diff lines.
-- Keep hunk-local highlighting for patch input and unavailable file contents.
-- Handle worktree, staged, unstaged, base, range, untracked, renamed, and deleted files explicitly.
-- Reuse full-file highlighted spans across hunks in the same file.
+Repo-backed diffs now highlight full file sides so multiline parser state before
+a hunk is available. Hunk-local highlighting remains the fallback for patch
+input and unavailable full-file contents.
+
+- [x] For repo-backed diffs, load full old/new file contents.
+- [x] Highlight whole old/new sides and map styled spans back to diff lines.
+- [x] Keep hunk-local highlighting for patch input and unavailable file contents.
+- [x] Handle worktree, staged, unstaged, base, range, untracked, renamed, and deleted files explicitly.
+- [x] Reuse full-file highlighted spans across hunks in the same file.
 
 ## Phase 6: inline diff emphasis
 
