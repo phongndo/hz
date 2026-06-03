@@ -4311,21 +4311,25 @@ fn render_split_line(
         left_line.as_ref(),
         left_syntax.as_ref(),
         &left_inline,
-        right_line.as_ref().map(|line| line.kind),
-        SplitSide::Old,
-        row_index,
-        left_width,
-        theme,
+        SplitCellRender {
+            empty_kind: right_line.as_ref().map(|line| line.kind),
+            side: SplitSide::Old,
+            row_index,
+            width: left_width,
+            theme,
+        },
     );
     spans.extend(split_cell_spans(
         right_line.as_ref(),
         right_syntax.as_ref(),
         &right_inline,
-        left_line.as_ref().map(|line| line.kind),
-        SplitSide::New,
-        row_index,
-        right_width,
-        theme,
+        SplitCellRender {
+            empty_kind: left_line.as_ref().map(|line| line.kind),
+            side: SplitSide::New,
+            row_index,
+            width: right_width,
+            theme,
+        },
     ));
     Line::from(spans)
 }
@@ -4336,16 +4340,29 @@ enum SplitSide {
     New,
 }
 
-fn split_cell_spans(
-    line: Option<&DiffLine>,
-    syntax: Option<&HighlightedLine>,
-    inline: &[InlineRange],
+#[derive(Debug, Clone, Copy)]
+struct SplitCellRender {
     empty_kind: Option<DiffLineKind>,
     side: SplitSide,
     row_index: usize,
     width: usize,
     theme: DiffTheme,
+}
+
+fn split_cell_spans(
+    line: Option<&DiffLine>,
+    syntax: Option<&HighlightedLine>,
+    inline: &[InlineRange],
+    render: SplitCellRender,
 ) -> Vec<Span<'static>> {
+    let SplitCellRender {
+        empty_kind,
+        side,
+        row_index,
+        width,
+        theme,
+    } = render;
+
     if width == 0 {
         return Vec::new();
     }
@@ -4655,11 +4672,13 @@ mod tests {
             None,
             None,
             &[],
-            Some(DiffLineKind::Addition),
-            SplitSide::Old,
-            0,
-            12,
-            DiffTheme::default(),
+            SplitCellRender {
+                empty_kind: Some(DiffLineKind::Addition),
+                side: SplitSide::Old,
+                row_index: 0,
+                width: 12,
+                theme: DiffTheme::default(),
+            },
         );
 
         assert_eq!(span_text(&spans), "▌        ╱  ");
