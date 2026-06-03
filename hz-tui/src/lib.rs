@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     ffi::OsStr,
     io,
     path::{Path, PathBuf},
@@ -18,6 +19,7 @@ use crossterm::{
 };
 use hz_core::{HzError, HzResult};
 use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffSource, DiffStats, FileStatus};
+use hz_syntax::{HighlightedLine, SyntaxClass, SyntaxHighlighter, SyntaxLanguageSet};
 use notify::{RecursiveMode, Watcher};
 use ratatui::{
     Frame, Terminal,
@@ -42,6 +44,9 @@ const MIN_SPLIT_WIDTH: u16 = 120;
 const GUTTER_WIDTH: usize = 7;
 const UNIFIED_GUTTER_WIDTH: usize = 13;
 const NOTICE_TTL: Duration = Duration::from_millis(1_500);
+const MAX_HIGHLIGHT_HUNK_BYTES: usize = 128 * 1024;
+const MAX_HIGHLIGHT_LINE_BYTES: usize = 8 * 1024;
+const MAX_HIGHLIGHT_CACHE_ENTRIES: usize = 256;
 
 fn muted() -> Color {
     Color::Rgb(125, 135, 148)
@@ -208,6 +213,264 @@ enum LiveDiffCommand {
 #[derive(Debug)]
 enum LiveDiffReload {
     Loaded(HzResult<Changeset>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum DiffSide {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SyntaxKey {
+    generation: u64,
+    file: usize,
+    hunk: usize,
+    side: DiffSide,
+}
+
+#[derive(Debug, Clone)]
+struct HighlightedSide {
+    lines: Vec<Option<HighlightedLine>>,
+}
+
+#[derive(Debug)]
+struct SyntaxRuntime {
+    languages: SyntaxLanguageSet,
+    command_tx: Sender<SyntaxCommand>,
+    result_rx: Receiver<SyntaxResult>,
+    _worker: thread::JoinHandle<()>,
+    cache: HashMap<SyntaxKey, HighlightedSide>,
+    pending: HashSet<SyntaxKey>,
+    skipped: HashSet<SyntaxKey>,
+}
+
+impl SyntaxRuntime {
+    fn start() -> HzResult<Option<Self>> {
+        let languages = SyntaxLanguageSet::load()?;
+        if languages.is_empty() {
+            return Ok(None);
+        }
+
+        let (command_tx, command_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = thread::spawn(move || run_syntax_worker(command_rx, result_tx));
+
+        Ok(Some(Self {
+            languages,
+            command_tx,
+            result_rx,
+            _worker: worker,
+            cache: HashMap::new(),
+            pending: HashSet::new(),
+            skipped: HashSet::new(),
+        }))
+    }
+
+    fn clear(&mut self) {
+        self.cache.clear();
+        self.pending.clear();
+        self.skipped.clear();
+    }
+
+    fn queue_hunk(
+        &mut self,
+        changeset: &Changeset,
+        generation: u64,
+        file: usize,
+        hunk: usize,
+        side: DiffSide,
+    ) {
+        let key = SyntaxKey {
+            generation,
+            file,
+            hunk,
+            side,
+        };
+        if self.cache.contains_key(&key)
+            || self.pending.contains(&key)
+            || self.skipped.contains(&key)
+        {
+            return;
+        }
+
+        let Some(file_diff) = changeset.files.get(file) else {
+            self.skipped.insert(key);
+            return;
+        };
+        let Some(path) = syntax_path(file_diff, side) else {
+            self.skipped.insert(key);
+            return;
+        };
+        let Some(language) = self.languages.language_for_path(path) else {
+            self.skipped.insert(key);
+            return;
+        };
+        let Some(hunk_diff) = file_diff.hunks.get(hunk) else {
+            self.skipped.insert(key);
+            return;
+        };
+        let Some(source) = build_hunk_source(&hunk_diff.lines, side) else {
+            self.skipped.insert(key);
+            return;
+        };
+
+        let job = SyntaxJob {
+            key,
+            language,
+            source,
+        };
+        if self.command_tx.send(SyntaxCommand::Highlight(job)).is_ok() {
+            self.pending.insert(key);
+        } else {
+            self.skipped.insert(key);
+        }
+    }
+
+    fn drain(&mut self, generation: u64) -> bool {
+        let mut changed = false;
+        while let Ok(result) = self.result_rx.try_recv() {
+            self.pending.remove(&result.key);
+            if result.key.generation != generation {
+                continue;
+            }
+
+            match result.side {
+                Ok(side) => {
+                    if self.cache.len() >= MAX_HIGHLIGHT_CACHE_ENTRIES
+                        && let Some(key) = self.cache.keys().next().copied()
+                    {
+                        self.cache.remove(&key);
+                    }
+                    self.cache.insert(result.key, side);
+                    changed = true;
+                }
+                Err(()) => {
+                    self.skipped.insert(result.key);
+                }
+            }
+        }
+        changed
+    }
+
+    fn line(&self, key: SyntaxKey, line: usize) -> Option<&HighlightedLine> {
+        self.cache
+            .get(&key)
+            .and_then(|side| side.lines.get(line))
+            .and_then(Option::as_ref)
+    }
+}
+
+impl Drop for SyntaxRuntime {
+    fn drop(&mut self) {
+        let _ = self.command_tx.send(SyntaxCommand::Stop);
+    }
+}
+
+#[derive(Debug)]
+enum SyntaxCommand {
+    Highlight(SyntaxJob),
+    Stop,
+}
+
+#[derive(Debug)]
+struct SyntaxJob {
+    key: SyntaxKey,
+    language: String,
+    source: HunkSource,
+}
+
+#[derive(Debug)]
+struct SyntaxResult {
+    key: SyntaxKey,
+    side: Result<HighlightedSide, ()>,
+}
+
+#[derive(Debug)]
+struct HunkSource {
+    text: String,
+    line_map: Vec<usize>,
+    line_count: usize,
+}
+
+fn run_syntax_worker(command_rx: Receiver<SyntaxCommand>, result_tx: Sender<SyntaxResult>) {
+    let mut highlighter = SyntaxHighlighter::new();
+    while let Ok(command) = command_rx.recv() {
+        let SyntaxCommand::Highlight(job) = command else {
+            break;
+        };
+
+        let side = highlighter
+            .highlight(&job.language, &job.source.text)
+            .map(|highlighted| highlighted_side(job.source, highlighted.lines))
+            .map_err(|_| ());
+        if result_tx.send(SyntaxResult { key: job.key, side }).is_err() {
+            break;
+        }
+    }
+}
+
+fn highlighted_side(source: HunkSource, lines: Vec<HighlightedLine>) -> HighlightedSide {
+    let mut mapped = vec![None; source.line_count];
+    for (source_line, diff_line) in lines.into_iter().zip(source.line_map) {
+        if let Some(slot) = mapped.get_mut(diff_line) {
+            *slot = Some(source_line);
+        }
+    }
+    HighlightedSide { lines: mapped }
+}
+
+fn syntax_path(file: &hz_diff::DiffFile, side: DiffSide) -> Option<&str> {
+    match side {
+        DiffSide::Old => file.old_path.as_deref().or(file.new_path.as_deref()),
+        DiffSide::New => file.new_path.as_deref().or(file.old_path.as_deref()),
+    }
+}
+
+fn build_hunk_source(lines: &[DiffLine], side: DiffSide) -> Option<HunkSource> {
+    let mut text = String::new();
+    let mut line_map = Vec::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        if !line_belongs_to_side(line.kind, side) || line.text.len() > MAX_HIGHLIGHT_LINE_BYTES {
+            continue;
+        }
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&line.text);
+        if text.len() > MAX_HIGHLIGHT_HUNK_BYTES {
+            return None;
+        }
+        line_map.push(index);
+    }
+
+    (!line_map.is_empty()).then_some(HunkSource {
+        text,
+        line_map,
+        line_count: lines.len(),
+    })
+}
+
+fn line_belongs_to_side(kind: DiffLineKind, side: DiffSide) -> bool {
+    matches!(
+        (side, kind),
+        (
+            DiffSide::Old,
+            DiffLineKind::Context | DiffLineKind::Deletion
+        ) | (
+            DiffSide::New,
+            DiffLineKind::Context | DiffLineKind::Addition
+        )
+    )
+}
+
+fn unified_syntax_side(kind: DiffLineKind) -> Option<DiffSide> {
+    match kind {
+        DiffLineKind::Deletion => Some(DiffSide::Old),
+        DiffLineKind::Addition | DiffLineKind::Context => Some(DiffSide::New),
+        DiffLineKind::Meta => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -633,6 +896,7 @@ fn run_loop(
     loop {
         app.expire_notice(Instant::now());
         drain_live_reloads(app, live_reload_rx);
+        app.drain_syntax();
         if app.dirty {
             terminal.draw(|frame| draw(frame, app))?;
             app.dirty = false;
@@ -787,6 +1051,8 @@ struct DiffApp {
     selected_file: usize,
     mouse_scroll: MouseScroll,
     notice: Option<Notice>,
+    syntax: Option<SyntaxRuntime>,
+    generation: u64,
     dirty: bool,
 }
 
@@ -794,6 +1060,16 @@ impl DiffApp {
     fn new(options: DiffOptions, changeset: Changeset, layout: DiffLayoutMode) -> Self {
         let model = UiModel::new(&changeset, layout);
         let stats = changeset.stats();
+        let (syntax, notice) = match SyntaxRuntime::start() {
+            Ok(syntax) => (syntax, None),
+            Err(error) => (
+                None,
+                Some(Notice {
+                    text: format!("syntax disabled: {error}"),
+                    expires_at: Instant::now() + NOTICE_TTL,
+                }),
+            ),
+        };
         Self {
             options,
             changeset,
@@ -804,7 +1080,9 @@ impl DiffApp {
             viewport_rows: 1,
             selected_file: 0,
             mouse_scroll: MouseScroll::default(),
-            notice: None,
+            notice,
+            syntax,
+            generation: 0,
             dirty: true,
         }
     }
@@ -908,6 +1186,77 @@ impl DiffApp {
         self.set_scroll(self.scroll);
     }
 
+    fn prepare_syntax_for_row(&mut self, row: UiRow) {
+        match row {
+            UiRow::UnifiedLine { file, hunk, line } => {
+                let Some(diff_line) = self
+                    .changeset
+                    .files
+                    .get(file)
+                    .and_then(|file_diff| file_diff.hunks.get(hunk))
+                    .and_then(|hunk_diff| hunk_diff.lines.get(line))
+                else {
+                    return;
+                };
+                if let Some(side) = unified_syntax_side(diff_line.kind) {
+                    self.queue_syntax_hunk(file, hunk, side);
+                }
+            }
+            UiRow::SplitLine {
+                file,
+                hunk,
+                left,
+                right,
+            } => {
+                if left.is_some() {
+                    self.queue_syntax_hunk(file, hunk, DiffSide::Old);
+                }
+                if right.is_some() {
+                    self.queue_syntax_hunk(file, hunk, DiffSide::New);
+                }
+            }
+            UiRow::FileHeader(_)
+            | UiRow::BinaryFile(_)
+            | UiRow::Collapsed { .. }
+            | UiRow::HunkHeader { .. }
+            | UiRow::MetaLine { .. } => {}
+        }
+    }
+
+    fn queue_syntax_hunk(&mut self, file: usize, hunk: usize, side: DiffSide) {
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.queue_hunk(&self.changeset, self.generation, file, hunk, side);
+        }
+    }
+
+    fn drain_syntax(&mut self) {
+        if let Some(syntax) = self.syntax.as_mut()
+            && syntax.drain(self.generation)
+        {
+            self.dirty = true;
+        }
+    }
+
+    fn syntax_line(
+        &self,
+        file: usize,
+        hunk: usize,
+        line: usize,
+        side: DiffSide,
+    ) -> Option<&HighlightedLine> {
+        self.syntax.as_ref().and_then(|syntax| {
+            syntax.line(
+                SyntaxKey {
+                    generation: self.generation,
+                    file,
+                    hunk,
+                    side,
+                },
+                line,
+            )
+        })
+    }
+
     fn move_file(&mut self, delta: isize) {
         if self.changeset.files.is_empty() {
             return;
@@ -1002,6 +1351,10 @@ impl DiffApp {
 
         self.stats = changeset.stats();
         self.changeset = changeset;
+        self.generation = self.generation.wrapping_add(1);
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.clear();
+        }
         self.model = UiModel::new(&self.changeset, self.layout);
         self.selected_file = selected_file.min(self.changeset.files.len().saturating_sub(1));
         let scroll = self
@@ -1061,7 +1414,7 @@ fn draw_header(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn draw_diff(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
+fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
     if app.model.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -1074,10 +1427,14 @@ fn draw_diff(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
     }
 
     let visible_rows = area.height as usize;
-    let lines: Vec<Line> = (0..visible_rows)
-        .filter_map(|offset| app.model.row(app.scroll + offset))
-        .map(|row| render_row(app, row, area.width as usize))
-        .collect();
+    let mut lines = Vec::with_capacity(visible_rows);
+    for offset in 0..visible_rows {
+        let Some(row) = app.model.row(app.scroll + offset) else {
+            continue;
+        };
+        app.prepare_syntax_for_row(row);
+        lines.push(render_row(app, row, area.width as usize));
+    }
 
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
@@ -1122,24 +1479,31 @@ fn render_row(app: &DiffApp, row: UiRow, width: usize) -> Line<'static> {
                 Style::default().fg(Color::Rgb(205, 130, 170)),
             ))
         }
-        UiRow::UnifiedLine { file, hunk, line } | UiRow::MetaLine { file, hunk, line } => {
-            render_unified_line(&app.changeset.files[file].hunks[hunk].lines[line], width)
+        UiRow::UnifiedLine { file, hunk, line } => {
+            let diff_line = &app.changeset.files[file].hunks[hunk].lines[line];
+            let syntax = unified_syntax_side(diff_line.kind)
+                .and_then(|side| app.syntax_line(file, hunk, line, side));
+            render_unified_line(diff_line, syntax, width)
         }
+        UiRow::MetaLine { file, hunk, line } => render_unified_line(
+            &app.changeset.files[file].hunks[hunk].lines[line],
+            None,
+            width,
+        ),
         UiRow::SplitLine {
             file,
             hunk,
             left,
             right,
-        } => render_split_line(
-            &app.changeset.files[file].hunks[hunk].lines,
-            left,
-            right,
-            width,
-        ),
+        } => render_split_line(app, file, hunk, left, right, width),
     }
 }
 
-fn render_unified_line(line: &DiffLine, width: usize) -> Line<'static> {
+fn render_unified_line(
+    line: &DiffLine,
+    syntax: Option<&HighlightedLine>,
+    width: usize,
+) -> Line<'static> {
     if width == 0 {
         return Line::default();
     }
@@ -1161,18 +1525,79 @@ fn render_unified_line(line: &DiffLine, width: usize) -> Line<'static> {
             .map(|line| line.to_string())
             .unwrap_or_default()
     );
-    let style = line_style(line.kind);
-    Line::from(vec![
-        Span::styled(
-            fit_padded(&gutter, gutter_width),
-            Style::default().fg(muted()).bg(row_bg(line.kind)),
-        ),
-        Span::styled(fit_padded(&line.text, content_width), style),
-    ])
+    let mut spans = vec![Span::styled(
+        fit_padded(&gutter, gutter_width),
+        Style::default().fg(muted()).bg(row_bg(line.kind)),
+    )];
+    spans.extend(content_spans(&line.text, syntax, line.kind, content_width));
+    Line::from(spans)
+}
+
+fn content_spans(
+    text: &str,
+    syntax: Option<&HighlightedLine>,
+    kind: DiffLineKind,
+    width: usize,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let Some(syntax) = syntax else {
+        return vec![Span::styled(fit_padded(text, width), line_style(kind))];
+    };
+
+    let mut spans = Vec::new();
+    let mut used = 0;
+    for segment in &syntax.segments {
+        if used >= width {
+            break;
+        }
+        let fitted = fit(&segment.text, width - used);
+        if fitted.is_empty() {
+            break;
+        }
+        used += UnicodeWidthStr::width(fitted.as_str());
+        spans.push(Span::styled(fitted, syntax_style(segment.class, kind)));
+    }
+
+    if used < width {
+        spans.push(Span::styled(" ".repeat(width - used), line_style(kind)));
+    }
+
+    spans
+}
+
+fn syntax_style(class: Option<SyntaxClass>, kind: DiffLineKind) -> Style {
+    let mut style = line_style(kind);
+    if let Some(color) = class.and_then(syntax_fg) {
+        style = style.fg(color);
+    }
+    style
+}
+
+fn syntax_fg(class: SyntaxClass) -> Option<Color> {
+    let color = match class {
+        SyntaxClass::Comment => muted(),
+        SyntaxClass::Keyword => Color::Rgb(198, 153, 230),
+        SyntaxClass::String => Color::Rgb(173, 219, 177),
+        SyntaxClass::Number | SyntaxClass::Constant => Color::Rgb(229, 192, 123),
+        SyntaxClass::Type | SyntaxClass::Constructor => Color::Rgb(102, 217, 239),
+        SyntaxClass::Function => Color::Rgb(130, 190, 255),
+        SyntaxClass::Property | SyntaxClass::Attribute => Color::Rgb(150, 200, 240),
+        SyntaxClass::Punctuation => muted(),
+        SyntaxClass::Operator => Color::Rgb(220, 170, 255),
+        SyntaxClass::Tag => Color::Rgb(240, 150, 150),
+        SyntaxClass::Module | SyntaxClass::Label => Color::Rgb(150, 180, 255),
+        SyntaxClass::Variable => return None,
+    };
+    Some(color)
 }
 
 fn render_split_line(
-    lines: &[DiffLine],
+    app: &DiffApp,
+    file: usize,
+    hunk: usize,
     left: Option<usize>,
     right: Option<usize>,
     width: usize,
@@ -1184,8 +1609,10 @@ fn render_split_line(
     let separator_width = usize::from(width > 1);
     let left_width = width.saturating_sub(separator_width) / 2;
     let right_width = width.saturating_sub(separator_width + left_width);
+    let lines = &app.changeset.files[file].hunks[hunk].lines;
     let mut spans = split_cell_spans(
         left.and_then(|index| lines.get(index)),
+        left.and_then(|index| app.syntax_line(file, hunk, index, DiffSide::Old)),
         SplitSide::Old,
         left_width,
     );
@@ -1194,6 +1621,7 @@ fn render_split_line(
     }
     spans.extend(split_cell_spans(
         right.and_then(|index| lines.get(index)),
+        right.and_then(|index| app.syntax_line(file, hunk, index, DiffSide::New)),
         SplitSide::New,
         right_width,
     ));
@@ -1206,7 +1634,12 @@ enum SplitSide {
     New,
 }
 
-fn split_cell_spans(line: Option<&DiffLine>, side: SplitSide, width: usize) -> Vec<Span<'static>> {
+fn split_cell_spans(
+    line: Option<&DiffLine>,
+    syntax: Option<&HighlightedLine>,
+    side: SplitSide,
+    width: usize,
+) -> Vec<Span<'static>> {
     if width == 0 {
         return Vec::new();
     }
@@ -1229,13 +1662,12 @@ fn split_cell_spans(line: Option<&DiffLine>, side: SplitSide, width: usize) -> V
         _ => " ",
     };
 
-    vec![
-        Span::styled(
-            fit_padded(&format!("{line_number:>5} {sign}"), gutter_width),
-            Style::default().fg(muted()).bg(row_bg(line.kind)),
-        ),
-        Span::styled(fit_padded(&line.text, content_width), line_style(line.kind)),
-    ]
+    let mut spans = vec![Span::styled(
+        fit_padded(&format!("{line_number:>5} {sign}"), gutter_width),
+        Style::default().fg(muted()).bg(row_bg(line.kind)),
+    )];
+    spans.extend(content_spans(&line.text, syntax, line.kind, content_width));
+    spans
 }
 
 fn row_bg(kind: DiffLineKind) -> Color {

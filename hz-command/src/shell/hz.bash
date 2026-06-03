@@ -68,8 +68,9 @@ hzlocal() {
   hz cd local "$@"
 }
 
-_hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell update diff worktree wt"
+_hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt"
 _hz_worktree_commands="new path cd list ls remove rm handoff"
+_hz_ts_commands="add rm remove list available clean path doctor"
 _hz_shells="zsh bash fish"
 
 _hz_reply() {
@@ -148,6 +149,17 @@ _hz_complete_command_args() {
   esac
 }
 
+_hz_complete_ts_args() {
+  local subcmd="$1"
+  local current="$2"
+
+  case "$subcmd" in
+    add|rm|remove|list|available|clean|path|doctor)
+      [[ "$current" == -* ]] && _hz_reply "-h --help" "$current"
+      ;;
+  esac
+}
+
 _hz_completion() {
   local current="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=()
@@ -165,6 +177,15 @@ _hz_completion() {
   if [[ "$cmd" == "worktree" || "$cmd" == "wt" ]]; then
     if [[ "$COMP_CWORD" -eq 2 ]]; then
       _hz_reply "$_hz_worktree_commands" "$current"
+      return
+    fi
+    _hz_complete_ts_args "${COMP_WORDS[2]}" "$current"
+    return
+  fi
+
+  if [[ "$cmd" == "ts" || "$cmd" == "tree-sitter" ]]; then
+    if [[ "$COMP_CWORD" -eq 2 ]]; then
+      _hz_reply "$_hz_ts_commands" "$current"
       return
     fi
     _hz_complete_command_args "${COMP_WORDS[2]}" "$current"

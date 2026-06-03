@@ -10,6 +10,9 @@ use hz_core::{HzError, HzResult};
 use serde::{Deserialize, Serialize};
 
 pub use hz_diff::{DiffOptions, DiffScope, DiffSource, PatchSource};
+pub use hz_syntax::{
+    SyntaxAddResult, SyntaxDoctorReport, SyntaxLanguageStatus, SyntaxRemoveResult,
+};
 pub use hz_worktree::{
     CreateWorktree, CreatedWorktree, FindWorktree, HandoffMode, HandoffWorktree, ListWorktrees,
     LocalWorktree, LocalWorktreeInfo, PathWorktree, RemoveWorktree, WorktreeEntry, WorktreeHandoff,
@@ -166,6 +169,38 @@ pub fn run_lifecycle_for_entry(
 
 pub fn diff(input: DiffOptions) -> HzResult<String> {
     hz_diff::render(input)
+}
+
+pub fn syntax_add(languages: &[String]) -> HzResult<SyntaxAddResult> {
+    hz_syntax::add_languages(languages)
+}
+
+pub fn syntax_remove(languages: &[String]) -> HzResult<SyntaxRemoveResult> {
+    hz_syntax::remove_languages(languages)
+}
+
+pub fn syntax_statuses() -> HzResult<Vec<SyntaxLanguageStatus>> {
+    hz_syntax::language_statuses()
+}
+
+pub fn syntax_available_languages() -> HzResult<Vec<String>> {
+    hz_syntax::available_languages()
+}
+
+pub fn syntax_clean_cache() -> HzResult<()> {
+    hz_syntax::clean_cache()
+}
+
+pub fn syntax_cache_dir() -> HzResult<String> {
+    hz_syntax::cache_dir()
+}
+
+pub fn syntax_config_path() -> HzResult<PathBuf> {
+    hz_syntax::config_path()
+}
+
+pub fn syntax_doctor() -> HzResult<SyntaxDoctorReport> {
+    hz_syntax::doctor()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -936,6 +971,8 @@ mod tests {
         assert!(script.contains("'install:install shell integration'"));
         assert!(script.contains("'update:update hz from GitHub releases'"));
         assert!(script.contains("'diff:review a git diff'"));
+        assert!(script.contains("'ts:manage diff syntax highlighting languages'"));
+        assert!(script.contains("'add:install and enable syntax highlighting languages'"));
         assert!(!script.contains("tui:open the terminal UI"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
@@ -957,6 +994,8 @@ mod tests {
         assert!(script.contains("command hz __complete removable-worktrees"));
         assert!(script.contains("complete -c hz -n \"__fish_seen_subcommand_from rm remove\""));
         assert!(script.contains("init install setup cleanup shell update"));
+        assert!(script.contains("ts tree-sitter"));
+        assert!(script.contains("__hz_needs_ts_subcommand"));
         assert!(script.contains("-l no-setup"));
         assert!(script.contains("-l no-cleanup"));
         assert!(script.contains("-l max-detached"));
@@ -976,6 +1015,8 @@ mod tests {
         assert!(script.contains("_hz_dynamic_reply worktree-targets"));
         assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
         assert!(script.contains("init install setup cleanup shell update"));
+        assert!(script.contains("ts tree-sitter"));
+        assert!(script.contains("_hz_complete_ts_args"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));

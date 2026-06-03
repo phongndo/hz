@@ -11,6 +11,7 @@ crossterm.workspace = true
 hz-core.workspace = true
 hz-diff.workspace = true
 hz-git.workspace = true
+hz-syntax.workspace = true
 notify.workspace = true
 ratatui.workspace = true
 unicode-width.workspace = true

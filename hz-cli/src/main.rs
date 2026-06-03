@@ -38,7 +38,8 @@ examples:
   hz setup feature/ui
   hz cleanup feature/ui
   hz cd feature/ui
-  hz handoff feature/ui";
+  hz handoff feature/ui
+  hz ts add rust mlir llvm";
 
 const INSTALL_SCRIPT: &str = include_str!("../../scripts/install.sh");
 const RELEASE_REPO: &str = "phongndo/hz";
@@ -104,8 +105,41 @@ examples:
     Update(UpdateArgs),
     #[command(about = "Review a Git diff")]
     Diff(DiffArgs),
+    #[command(
+        name = "ts",
+        alias = "tree-sitter",
+        about = "Manage diff syntax highlighting languages"
+    )]
+    TreeSitter {
+        #[command(subcommand)]
+        command: TreeSitterCommand,
+    },
     #[command(name = "__complete", hide = true)]
     Complete(CompleteArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum TreeSitterCommand {
+    #[command(about = "Install and enable syntax highlighting languages")]
+    Add(TreeSitterLanguagesArgs),
+    #[command(alias = "remove", about = "Remove syntax highlighting languages")]
+    Rm(TreeSitterLanguagesArgs),
+    #[command(about = "List installed and enabled syntax highlighting languages")]
+    List,
+    #[command(about = "List downloadable syntax highlighting languages")]
+    Available,
+    #[command(about = "Remove cached tree-sitter parser libraries")]
+    Clean,
+    #[command(about = "Print tree-sitter cache and config paths")]
+    Path,
+    #[command(about = "Validate enabled syntax highlighting languages")]
+    Doctor,
+}
+
+#[derive(Debug, Args)]
+struct TreeSitterLanguagesArgs {
+    #[arg(value_name = "LANG", required = true)]
+    languages: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -323,8 +357,50 @@ fn run() -> HzResult<()> {
                 Ok(())
             }
         }
+        Some(Command::TreeSitter { command }) => tree_sitter(command),
         Some(Command::Complete(args)) => complete(args),
     }
+}
+
+fn tree_sitter(command: TreeSitterCommand) -> HzResult<()> {
+    match command {
+        TreeSitterCommand::Add(args) => {
+            let result = hz_command::syntax_add(&args.languages)?;
+            print_tree_sitter_add_result(&result);
+        }
+        TreeSitterCommand::Rm(args) => {
+            let result = hz_command::syntax_remove(&args.languages)?;
+            print_tree_sitter_remove_result(&result);
+        }
+        TreeSitterCommand::List => {
+            print_tree_sitter_statuses(&hz_command::syntax_statuses()?);
+        }
+        TreeSitterCommand::Available => {
+            for language in hz_command::syntax_available_languages()? {
+                println!("{language}");
+            }
+        }
+        TreeSitterCommand::Clean => {
+            hz_command::syntax_clean_cache()?;
+            println!("cleaned tree-sitter parser cache");
+        }
+        TreeSitterCommand::Path => {
+            println!("cache  {}", hz_command::syntax_cache_dir()?);
+            println!("config {}", hz_command::syntax_config_path()?.display());
+        }
+        TreeSitterCommand::Doctor => {
+            let report = hz_command::syntax_doctor()?;
+            print_tree_sitter_statuses(&report.statuses);
+            if report.issues.is_empty() {
+                println!("ok");
+            } else {
+                for issue in report.issues {
+                    println!("warning {}: {}", issue.language, issue.message);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn diff_options(args: DiffArgs) -> HzResult<hz_command::DiffOptions> {
@@ -398,6 +474,48 @@ fn patch_source(path: PathBuf) -> HzResult<hz_command::DiffSource> {
     Ok(hz_command::DiffSource::Patch(
         hz_command::PatchSource::File(path),
     ))
+}
+
+fn print_tree_sitter_add_result(result: &hz_command::SyntaxAddResult) {
+    for language in &result.added {
+        println!("+ enabled {language}");
+    }
+    for language in &result.already_enabled {
+        println!("= enabled {language}");
+    }
+    for language in &result.without_highlights {
+        println!("warning {language}: no bundled highlights query; diff will render plain text");
+    }
+}
+
+fn print_tree_sitter_remove_result(result: &hz_command::SyntaxRemoveResult) {
+    for language in &result.removed {
+        println!("- removed {language}");
+    }
+    for language in &result.missing {
+        println!("= not enabled {language}");
+    }
+}
+
+fn print_tree_sitter_statuses(statuses: &[hz_command::SyntaxLanguageStatus]) {
+    if statuses.is_empty() {
+        println!("no tree-sitter languages enabled");
+        return;
+    }
+
+    for status in statuses {
+        println!(
+            "{:<20} enabled={} installed={} highlights={}",
+            status.language,
+            yes_no(status.enabled),
+            yes_no(status.installed),
+            yes_no(status.has_highlights)
+        );
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
@@ -2702,6 +2820,25 @@ mod tests {
         assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "main"]).is_err());
         assert!(Cli::try_parse_from(["hz", "diff", "--staged", "--base", "main"]).is_err());
         assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "--base", "main"]).is_err());
+    }
+
+    #[test]
+    fn tree_sitter_commands_accept_language_args() {
+        let cli = Cli::try_parse_from(["hz", "ts", "add", "rust", "mlir", "llvm"]).unwrap();
+        match cli.command {
+            Some(Command::TreeSitter {
+                command: TreeSitterCommand::Add(args),
+            }) => assert_eq!(args.languages, ["rust", "mlir", "llvm"]),
+            command => panic!("expected tree-sitter add command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "tree-sitter", "rm", "rust"]).unwrap();
+        match cli.command {
+            Some(Command::TreeSitter {
+                command: TreeSitterCommand::Rm(args),
+            }) => assert_eq!(args.languages, ["rust"]),
+            command => panic!("expected tree-sitter rm command, got {command:?}"),
+        }
     }
 
     #[test]

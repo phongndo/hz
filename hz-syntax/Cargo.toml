@@ -1,5 +1,5 @@
 [package]
-name = "hz-command"
+name = "hz-syntax"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,9 +8,7 @@ repository.workspace = true
 
 [dependencies]
 hz-core.workspace = true
-hz-diff.workspace = true
-hz-git.workspace = true
-hz-syntax.workspace = true
-hz-worktree.workspace = true
 serde.workspace = true
-toml.workspace = true
+serde_json.workspace = true
+tree-sitter-highlight.workspace = true
+tree-sitter-language-pack.workspace = true
