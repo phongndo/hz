@@ -223,8 +223,10 @@ cat changes.diff | hz diff --patch -
 hz diff --no-watch
 hz diff --no-syntax
 hz diff --stat
-hz ts add rust mlir llvm asm nasm
-hz ts rm rust
+hz ts add ruby elixir
+hz ts update --all
+hz ts available --installed
+hz ts rm ruby
 ```
 
 The default view is all working tree changes against `HEAD`, including
@@ -235,14 +237,15 @@ Working tree diffs live-reload as files or Git state change; use `--no-watch` to
 disable filesystem watching. Use `s` to toggle split/unified, `j/k` to scroll,
 `n/p` for files, `]/[` for hunks, `r` to reload, and `q` to quit.
 
-Syntax highlighting is Tree-sitter based. Common/compiler languages are bundled
-for zero-config highlighting; `hz ts add <language>` installs extra languages.
+Syntax highlighting is Tree-sitter based. Common languages are bundled for
+zero-config highlighting; `hz ts add <language>` installs extra languages.
 `hz diff` never downloads parsers while rendering and verifies recorded parser
 checksums before loading user-cache parser libraries. Use `--no-syntax` to force
 plain diff text, and `hz ts rm <language>`, `hz ts ls`, `hz ts doctor`, or
-`hz ts clean` to maintain the parser cache. Highlighting is lazy, hunk-local,
-cached, and falls back to plain diff text for missing languages, missing queries,
-or very large hunks/lines.
+`hz ts clean` to maintain the parser cache. `hz ts update <language>` refreshes
+cached parsers, and `hz ts available --installed` / `--enabled` filters the
+language list. Highlighting is lazy, hunk-local, cached, and falls back to plain
+diff text for missing languages, missing queries, or very large hunks/lines.
 
 ### Repo lifecycle
 

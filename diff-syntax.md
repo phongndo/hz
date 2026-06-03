@@ -3,7 +3,7 @@
 `hz diff` syntax highlighting should stay fast, explicit, and safe:
 
 - `hz diff` never downloads parsers while rendering.
-- Common/compiler languages are bundled for zero-config highlighting.
+- Common languages are bundled for zero-config highlighting.
 - Users add extra languages with `hz ts add <language>` and remove them with `hz ts rm <language>`.
 - User-cache parser libraries require matching checksum records before loading.
 - Missing parsers, missing highlight queries, oversized hunks, and oversized lines fall back to plain diff text.
@@ -20,10 +20,11 @@ Language management currently supports:
 
 - `hz ts add <language>` / `hz ts rm <language>` for extra user-cache parsers.
 - `hz ts ls` (`hz ts list`) as a compact table with aligned `language`, `status`, `source`, and `version` columns.
-- `hz ts doctor`, `hz ts clean`, `hz ts path`, and `hz ts available` for diagnostics and cache maintenance.
+- `hz ts update`, `hz ts doctor`, `hz ts clean`, `hz ts path`, and filtered
+  `hz ts available` for diagnostics and cache maintenance.
 
-Open follow-up work remains in Phases 3–7 below: richer filters/update/group commands,
-theme/config knobs, full-file highlighting, inline emphasis, and semantic experiments.
+Open follow-up work remains in Phases 4–7 below: theme/config knobs,
+full-file highlighting, inline emphasis, and semantic experiments.
 
 ## Phase 0: MVP foundation
 
@@ -134,7 +135,7 @@ Completed items:
 
 ## Phase 3: polish language management
 
-Status: partially implemented.
+Status: implemented, except language groups were intentionally skipped.
 
 Implemented:
 
@@ -142,17 +143,19 @@ Implemented:
 - `hz ts ls` alias for `hz ts list`.
 - Full `status` header with centered status glyphs/labels in both `hz ts ls` and `hz ls`.
 - `source` and `version` columns for bundled and cached parser visibility.
+- `hz ts available --installed` and `hz ts available --enabled` filters.
+- `hz ts update <language>` and `hz ts update --all` for refreshing cached parsers.
+- Common aliases for user inputs such as `c++`, `cc`, `cxx`, `shell`, `sh`,
+  `js`, `ts`, basenames like `Makefile`/`CMakeLists.txt`/`BUILD.bazel`, and extensions.
+- Niche compiler/infra languages (`llvm`, `mlir`, `asm`, `tablegen`) and `nix`
+  are no longer pre-enabled core languages; users can still enable them explicitly
+  with `hz ts add <language>`.
 
-Remaining:
+Deferred:
 
-- Add `hz ts available --installed` and `hz ts available --enabled` filters.
-- Add `hz ts update <language>` and `hz ts update --all`.
-- Add language groups:
-  - `compiler`: `llvm`, `mlir`, `asm`, `nasm`, `tablegen`, `cmake`, `ninja`
-  - `systems`: `rust`, `c`, `cpp`, `go`, `zig`, `bash`, `make`, `cmake`
-  - `web`: `javascript`, `typescript`, `tsx`, `jsx`, `html`, `css`, `json`, `yaml`, `toml`
-- Add `hz ts add --group <name>`.
-- Add aliases for common user inputs like `c++`, `shell`, `sh`, basenames, and extensions.
+- Language groups / `hz ts add --group <name>` are not implemented. If bulk
+  enablement is needed later, decide whether to expose groups or a broader
+  explicit mode after reviewing startup/render impact.
 - Consider a `hz ts doctor --repair` mode for stale enabled languages.
 
 ## Phase 4: theme and config support

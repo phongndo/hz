@@ -25,41 +25,47 @@ const CORE_LANGUAGES: &[&str] = &[
     "javascript",
     "tsx",
     "zig",
-    "llvm",
-    "mlir",
     "cmake",
-    "nix",
     "bash",
     "toml",
     "json",
     "yaml",
     "markdown",
-    "asm",
-    "tablegen",
 ];
 
 const LANGUAGE_ALIASES: &[(&str, &str)] = &[
     ("bazel", "starlark"),
     ("c++", "cpp"),
+    ("cc", "cpp"),
     ("c#", "csharp"),
+    ("cxx", "cpp"),
     ("gradle", "groovy"),
     ("ignorefile", "gitignore"),
+    ("js", "javascript"),
     ("lisp", "commonlisp"),
+    ("node", "javascript"),
+    ("python3", "python"),
     ("makefile", "make"),
     ("shell", "bash"),
     ("sh", "bash"),
+    ("ts", "typescript"),
 ];
 
 const BASENAME_LANGUAGES: &[(&str, &str)] = &[
     ("build", "starlark"),
+    ("build.bazel", "starlark"),
     ("workspace", "starlark"),
+    ("workspace.bazel", "starlark"),
+    ("module.bazel", "starlark"),
     ("dockerfile", "dockerfile"),
     ("makefile", "make"),
     ("gnumakefile", "make"),
+    ("bsdmakefile", "make"),
     ("cmakelists.txt", "cmake"),
     (".bazelrc", "starlark"),
     (".clang-format", "yaml"),
     (".clang-tidy", "yaml"),
+    (".dockerignore", "gitignore"),
     (".gitignore", "gitignore"),
 ];
 
@@ -202,6 +208,23 @@ pub struct SyntaxLanguageStatus {
 pub struct SyntaxAddResult {
     pub added: Vec<String>,
     pub already_enabled: Vec<String>,
+    pub without_highlights: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SyntaxAvailableFilter {
+    #[default]
+    All,
+    Installed,
+    Enabled,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyntaxUpdateResult {
+    pub updated: Vec<String>,
+    pub bundled: Vec<String>,
+    pub not_installed: Vec<String>,
+    pub unavailable: Vec<String>,
     pub without_highlights: Vec<String>,
 }
 
@@ -356,9 +379,16 @@ pub fn cache_dir() -> HzResult<String> {
         .map_err(|error| HzError::Usage(format!("failed to resolve tree-sitter cache: {error}")))
 }
 
-pub fn available_languages() -> HzResult<Vec<String>> {
-    tree_sitter_language_pack::manifest_languages()
-        .map_err(|error| HzError::Usage(format!("failed to list tree-sitter languages: {error}")))
+pub fn available_languages(filter: SyntaxAvailableFilter) -> HzResult<Vec<String>> {
+    match filter {
+        SyntaxAvailableFilter::All => {
+            tree_sitter_language_pack::manifest_languages().map_err(|error| {
+                HzError::Usage(format!("failed to list tree-sitter languages: {error}"))
+            })
+        }
+        SyntaxAvailableFilter::Installed => Ok(local_parser_language_set().into_iter().collect()),
+        SyntaxAvailableFilter::Enabled => enabled_languages(),
+    }
 }
 
 pub fn enabled_languages() -> HzResult<Vec<String>> {
@@ -452,6 +482,66 @@ pub fn add_languages(languages: &[String]) -> HzResult<SyntaxAddResult> {
         already_enabled,
         without_highlights,
     })
+}
+
+pub fn update_languages(languages: &[String], all: bool) -> HzResult<SyntaxUpdateResult> {
+    if all && !languages.is_empty() {
+        return Err(HzError::Usage(
+            "use `hz ts update --all` without language names".to_owned(),
+        ));
+    }
+    if !all && languages.is_empty() {
+        return Err(HzError::Usage(
+            "provide at least one language or use --all".to_owned(),
+        ));
+    }
+
+    let mut config = load_config()?;
+    let configured = language_vec_to_set(&config.languages);
+    let installed = installed_language_set();
+    let requested = if all {
+        update_all_language_set(&config, &installed)
+    } else {
+        normalize_language_names(languages)
+    };
+    let mut result = SyntaxUpdateResult::default();
+
+    for language in requested {
+        if !tree_sitter_language_pack::has_language(&language) {
+            if all {
+                result.unavailable.push(language);
+                continue;
+            }
+            return Err(HzError::Usage(format!(
+                "tree-sitter language '{language}' is not known"
+            )));
+        }
+
+        if !has_highlights(&language) {
+            result.without_highlights.push(language.clone());
+        }
+
+        if tree_sitter_language_pack::has_parser(&language) {
+            result.bundled.push(language);
+            continue;
+        }
+
+        if !installed.contains(&language) && !configured.contains(&language) {
+            result.not_installed.push(language);
+            continue;
+        }
+
+        remove_cached_language(&language)?;
+        let artifact = install_language(&language)?;
+        upsert_parser_artifact(&mut config, &language, artifact);
+        result.updated.push(language);
+    }
+
+    if !result.updated.is_empty() {
+        save_config(&config)?;
+    }
+
+    Ok(result)
 }
 
 pub fn remove_languages(languages: &[String]) -> HzResult<SyntaxRemoveResult> {
@@ -774,6 +864,29 @@ fn core_enabled_language_set() -> BTreeSet<String> {
         .collect()
 }
 
+fn local_parser_language_set() -> BTreeSet<String> {
+    let installed = installed_language_set();
+    let mut languages = installed.clone();
+    languages.extend(
+        tree_sitter_language_pack::available_languages()
+            .into_iter()
+            .map(normalize_language_name)
+            .filter(|language| {
+                tree_sitter_language_pack::has_parser(language) || installed.contains(language)
+            }),
+    );
+    languages
+}
+
+fn update_all_language_set(
+    config: &StoredSyntaxConfig,
+    installed: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut languages = language_vec_to_set(&config.languages);
+    languages.extend(installed.iter().cloned());
+    languages
+}
+
 fn installed_language_set() -> BTreeSet<String> {
     tree_sitter_language_pack::downloaded_languages()
         .into_iter()
@@ -824,9 +937,19 @@ fn normalize_language_names(languages: &[String]) -> BTreeSet<String> {
 }
 
 fn normalize_language_name(language: String) -> String {
-    let language = language.trim().trim_start_matches('.').to_ascii_lowercase();
-    let language = language_alias(&language).unwrap_or(language.as_str());
-    tree_sitter_language_pack::detect_language_from_extension(&language)
+    let language = language.trim().to_ascii_lowercase();
+    if language.is_empty() {
+        return String::new();
+    }
+    if let Some(language) = detect_language_from_basename(&language) {
+        return language.to_owned();
+    }
+    if let Some(language) = tree_sitter_language_pack::detect_language_from_path(&language) {
+        return language.to_owned();
+    }
+    let language = language.trim_start_matches('.');
+    let language = language_alias(language).unwrap_or(language);
+    tree_sitter_language_pack::detect_language_from_extension(language)
         .unwrap_or(language)
         .to_owned()
 }
@@ -1084,6 +1207,25 @@ mod tests {
         assert_eq!(normalize_language_name("rust".to_owned()), "rust");
         assert_eq!(normalize_language_name("shell".to_owned()), "bash");
         assert_eq!(normalize_language_name("c++".to_owned()), "cpp");
+        assert_eq!(normalize_language_name("cc".to_owned()), "cpp");
+        assert_eq!(normalize_language_name("cxx".to_owned()), "cpp");
+        assert_eq!(normalize_language_name("js".to_owned()), "javascript");
+        assert_eq!(normalize_language_name("ts".to_owned()), "typescript");
+        assert_eq!(normalize_language_name("src/lib.rs".to_owned()), "rust");
+    }
+
+    #[test]
+    fn maps_common_basenames_to_language_names() {
+        assert_eq!(normalize_language_name("Makefile".to_owned()), "make");
+        assert_eq!(
+            normalize_language_name("CMakeLists.txt".to_owned()),
+            "cmake"
+        );
+        assert_eq!(
+            normalize_language_name("BUILD.bazel".to_owned()),
+            "starlark"
+        );
+        assert_eq!(normalize_language_name(".clang-format".to_owned()), "yaml");
     }
 
     #[test]
@@ -1175,6 +1317,33 @@ mod tests {
                 "core language should be statically bundled: {language}"
             );
         }
+    }
+
+    #[test]
+    fn niche_languages_are_not_core_enabled() {
+        let core = core_enabled_language_set();
+
+        assert!(!core.contains("llvm"));
+        assert!(!core.contains("mlir"));
+        assert!(!core.contains("asm"));
+        assert!(!core.contains("tablegen"));
+        assert!(!core.contains("nix"));
+    }
+
+    #[test]
+    fn update_all_targets_configured_and_cached_languages() {
+        let config = StoredSyntaxConfig {
+            languages: vec!["ruby".to_owned(), "shell".to_owned()],
+            parsers: Vec::new(),
+        };
+        let installed = BTreeSet::from(["elixir".to_owned()]);
+
+        let languages = update_all_language_set(&config, &installed);
+
+        assert_eq!(
+            languages,
+            BTreeSet::from(["bash".to_owned(), "elixir".to_owned(), "ruby".to_owned()])
+        );
     }
 
     #[test]

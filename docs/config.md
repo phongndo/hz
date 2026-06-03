@@ -143,12 +143,14 @@ Supported color names are `black`, `red`, `green`, `yellow`, `blue`,
 ## Syntax highlighting
 
 `hz diff` syntax highlighting is configured outside repo-local `.hz/hz.toml`
-because extra parser downloads are a user-local cache concern. Core languages
+because extra parser downloads are a user-local cache concern. Common languages
 are bundled; use these commands for extra languages and cache diagnostics:
 
 ```sh
-hz ts add rust mlir llvm asm nasm
-hz ts rm rust
+hz ts add ruby elixir
+hz ts update --all
+hz ts available --installed
+hz ts rm ruby
 hz ts ls
 hz ts doctor
 hz ts clean

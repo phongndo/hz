@@ -70,7 +70,7 @@ hzlocal() {
 
 _hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt"
 _hz_worktree_commands="new path cd list ls remove rm handoff"
-_hz_ts_commands="add rm remove list available clean path doctor"
+_hz_ts_commands="add update rm remove list available clean path doctor"
 _hz_shells="zsh bash fish"
 
 _hz_reply() {
@@ -154,7 +154,13 @@ _hz_complete_ts_args() {
   local current="$2"
 
   case "$subcmd" in
-    add|rm|remove|list|available|clean|path|doctor)
+    available)
+      [[ "$current" == -* ]] && _hz_reply "--installed --enabled -h --help" "$current"
+      ;;
+    update)
+      [[ "$current" == -* ]] && _hz_reply "--all -h --help" "$current"
+      ;;
+    add|rm|remove|list|clean|path|doctor)
       [[ "$current" == -* ]] && _hz_reply "-h --help" "$current"
       ;;
   esac

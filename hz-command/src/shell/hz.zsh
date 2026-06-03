@@ -131,10 +131,11 @@ _hz_complete_ts_subcommand() {
   local -a commands
   commands=(
     'add:install and enable syntax highlighting languages'
+    'update:update cached syntax highlighting parsers'
     'rm:remove syntax highlighting languages'
     'remove:remove syntax highlighting languages'
     'list:list syntax highlighting languages'
-    'available:list downloadable syntax highlighting languages'
+    'available:list syntax highlighting languages'
     'clean:remove cached parser libraries'
     'path:print tree-sitter cache and config paths'
     'doctor:validate enabled syntax highlighting languages'
@@ -255,7 +256,13 @@ _hz_complete_ts_args() {
 
   if [[ "$PREFIX" == -* ]]; then
     case "$subcmd" in
-      add|rm|remove|list|available|clean|path|doctor)
+      available)
+        compadd -- --installed --enabled -h --help
+        ;;
+      update)
+        compadd -- --all -h --help
+        ;;
+      add|rm|remove|list|clean|path|doctor)
         compadd -- -h --help
         ;;
     esac
@@ -263,7 +270,7 @@ _hz_complete_ts_args() {
   fi
 
   case "$subcmd" in
-    add|rm|remove)
+    add|update|rm|remove)
       _message 'language'
       ;;
   esac

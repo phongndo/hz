@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 pub use hz_diff::{DiffOptions, DiffScope, DiffSource, PatchSource};
 pub use hz_syntax::{
-    SyntaxAddResult, SyntaxCleanResult, SyntaxDoctorReport, SyntaxLanguageStatus,
-    SyntaxRemoveResult,
+    SyntaxAddResult, SyntaxAvailableFilter, SyntaxCleanResult, SyntaxDoctorReport,
+    SyntaxLanguageStatus, SyntaxRemoveResult, SyntaxUpdateResult,
 };
 pub use hz_worktree::{
     CreateWorktree, CreatedWorktree, FindWorktree, HandoffMode, HandoffWorktree, ListWorktrees,
@@ -176,6 +176,10 @@ pub fn syntax_add(languages: &[String]) -> HzResult<SyntaxAddResult> {
     hz_syntax::add_languages(languages)
 }
 
+pub fn syntax_update(languages: &[String], all: bool) -> HzResult<SyntaxUpdateResult> {
+    hz_syntax::update_languages(languages, all)
+}
+
 pub fn syntax_remove(languages: &[String]) -> HzResult<SyntaxRemoveResult> {
     hz_syntax::remove_languages(languages)
 }
@@ -184,8 +188,8 @@ pub fn syntax_statuses() -> HzResult<Vec<SyntaxLanguageStatus>> {
     hz_syntax::language_statuses()
 }
 
-pub fn syntax_available_languages() -> HzResult<Vec<String>> {
-    hz_syntax::available_languages()
+pub fn syntax_available_languages(filter: SyntaxAvailableFilter) -> HzResult<Vec<String>> {
+    hz_syntax::available_languages(filter)
 }
 
 pub fn syntax_clean_cache() -> HzResult<SyntaxCleanResult> {
@@ -974,6 +978,9 @@ mod tests {
         assert!(script.contains("'diff:review a git diff'"));
         assert!(script.contains("'ts:manage diff syntax highlighting languages'"));
         assert!(script.contains("'add:install and enable syntax highlighting languages'"));
+        assert!(script.contains("'update:update cached syntax highlighting parsers'"));
+        assert!(script.contains("--installed --enabled"));
+        assert!(script.contains("--all -h --help"));
         assert!(!script.contains("tui:open the terminal UI"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
@@ -997,6 +1004,10 @@ mod tests {
         assert!(script.contains("init install setup cleanup shell update"));
         assert!(script.contains("ts tree-sitter"));
         assert!(script.contains("__hz_needs_ts_subcommand"));
+        assert!(script.contains("add update rm remove list available clean path doctor"));
+        assert!(script.contains("-l installed"));
+        assert!(script.contains("-l enabled"));
+        assert!(script.contains("-l all"));
         assert!(script.contains("-l no-setup"));
         assert!(script.contains("-l no-cleanup"));
         assert!(script.contains("-l max-detached"));
@@ -1018,6 +1029,9 @@ mod tests {
         assert!(script.contains("init install setup cleanup shell update"));
         assert!(script.contains("ts tree-sitter"));
         assert!(script.contains("_hz_complete_ts_args"));
+        assert!(script.contains("add update rm remove list available clean path doctor"));
+        assert!(script.contains("--installed --enabled"));
+        assert!(script.contains("--all -h --help"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
