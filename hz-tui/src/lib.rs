@@ -52,6 +52,9 @@ const MOUSE_SCROLL_REFERENCE_INTERVAL_MS: f64 = 100.0;
 const MIN_SPLIT_WIDTH: u16 = 120;
 const GUTTER_WIDTH: usize = 7;
 const UNIFIED_GUTTER_WIDTH: usize = 13;
+const DIFF_INDICATOR: &str = "▌";
+const EMPTY_DIFF_FILL: char = '╱';
+const EMPTY_DIFF_FILL_SPACING: usize = 3;
 const NOTICE_TTL: Duration = Duration::from_millis(1_500);
 const MAX_HIGHLIGHT_HUNK_BYTES: usize = 128 * 1024;
 const MAX_HIGHLIGHT_LINE_BYTES: usize = 8 * 1024;
@@ -148,6 +151,10 @@ fn addition_inline_bg() -> Color {
 
 fn deletion_inline_bg() -> Color {
     Color::Rgb(105, 41, 52)
+}
+
+fn empty_diff_fg() -> Color {
+    Color::Rgb(38, 45, 54)
 }
 
 pub fn run() -> HzResult<()> {
@@ -286,7 +293,7 @@ fn render_viewport_for_benchmark(app: &mut DiffApp, width: usize) {
         let Some(row) = app.model.row(app.scroll + offset) else {
             continue;
         };
-        let _ = render_row(app, row, width);
+        let _ = render_row(app, app.scroll + offset, row, width);
     }
 }
 
@@ -2879,13 +2886,18 @@ fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
         let Some(row) = app.model.row(app.scroll + offset) else {
             continue;
         };
-        lines.push(render_row(app, row, area.width as usize));
+        lines.push(render_row(
+            app,
+            app.scroll + offset,
+            row,
+            area.width as usize,
+        ));
     }
 
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
-fn render_row(app: &mut DiffApp, row: UiRow, width: usize) -> Line<'static> {
+fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> Line<'static> {
     match row {
         UiRow::FileHeader(file_index) => {
             let file = &app.changeset.files[file_index];
@@ -2930,18 +2942,18 @@ fn render_row(app: &mut DiffApp, row: UiRow, width: usize) -> Line<'static> {
             let syntax = unified_syntax_side(diff_line.kind)
                 .and_then(|side| app.syntax_line(file, hunk, line, side));
             let inline = app.inline_ranges(file, hunk, line);
-            render_unified_line(&diff_line, syntax.as_ref(), &inline, width)
+            render_unified_line(&diff_line, syntax.as_ref(), &inline, row_index, width)
         }
         UiRow::MetaLine { file, hunk, line } => {
             let diff_line = app.changeset.files[file].hunks[hunk].lines[line].clone();
-            render_unified_line(&diff_line, None, &[], width)
+            render_unified_line(&diff_line, None, &[], row_index, width)
         }
         UiRow::SplitLine {
             file,
             hunk,
             left,
             right,
-        } => render_split_line(app, file, hunk, left, right, width),
+        } => render_split_line(app, file, hunk, left, right, row_index, width),
     }
 }
 
@@ -2949,6 +2961,7 @@ fn render_unified_line(
     line: &DiffLine,
     syntax: Option<&HighlightedLine>,
     inline: &[InlineRange],
+    row_index: usize,
     width: usize,
 ) -> Line<'static> {
     if width == 0 {
@@ -2961,21 +2974,24 @@ fn render_unified_line(
         DiffLineKind::Deletion => "-",
         DiffLineKind::Meta => " ",
     };
-    let gutter_width = UNIFIED_GUTTER_WIDTH.min(width);
-    let content_width = width.saturating_sub(gutter_width);
+    let indicator_width = 1.min(width);
+    let gutter_width = UNIFIED_GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
+    let content_width = width.saturating_sub(indicator_width + gutter_width);
     let gutter = format!(
         "{:>5} {:>5} {sign}",
-        line.old_line
-            .map(|line| line.to_string())
-            .unwrap_or_default(),
-        line.new_line
-            .map(|line| line.to_string())
-            .unwrap_or_default()
+        unified_line_number(line.old_line, line.kind, row_index),
+        unified_line_number(line.new_line, line.kind, row_index)
     );
-    let mut spans = vec![Span::styled(
-        fit_padded(&gutter, gutter_width),
-        Style::default().fg(muted()).bg(row_bg(line.kind)),
-    )];
+    let mut spans = Vec::new();
+    if indicator_width > 0 {
+        spans.push(diff_indicator_span(line.kind));
+    }
+    if gutter_width > 0 {
+        spans.push(Span::styled(
+            fit_padded(&gutter, gutter_width),
+            Style::default().fg(muted()).bg(row_bg(line.kind)),
+        ));
+    }
     spans.extend(content_spans(
         &line.text,
         syntax,
@@ -2984,6 +3000,44 @@ fn render_unified_line(
         content_width,
     ));
     Line::from(spans)
+}
+
+fn unified_line_number(line: Option<usize>, kind: DiffLineKind, row_index: usize) -> String {
+    match line {
+        Some(line) => line.to_string(),
+        None if kind == DiffLineKind::Meta => String::new(),
+        None => empty_diff_fill(5, row_index),
+    }
+}
+
+fn diff_indicator_span(kind: DiffLineKind) -> Span<'static> {
+    Span::styled(DIFF_INDICATOR, diff_indicator_style(kind))
+}
+
+fn diff_indicator_style(kind: DiffLineKind) -> Style {
+    Style::default()
+        .fg(diff_indicator_fg(kind))
+        .bg(row_bg(kind))
+}
+
+fn diff_indicator_fg(kind: DiffLineKind) -> Color {
+    match kind {
+        DiffLineKind::Addition => addition_fg(),
+        DiffLineKind::Deletion => deletion_fg(),
+        DiffLineKind::Context | DiffLineKind::Meta => muted(),
+    }
+}
+
+fn empty_diff_fill(width: usize, row_index: usize) -> String {
+    (0..width)
+        .map(|column| {
+            if (column + row_index) % EMPTY_DIFF_FILL_SPACING == 0 {
+                EMPTY_DIFF_FILL
+            } else {
+                ' '
+            }
+        })
+        .collect()
 }
 
 fn content_spans(
@@ -3198,6 +3252,7 @@ fn render_split_line(
     hunk: usize,
     left: Option<usize>,
     right: Option<usize>,
+    row_index: usize,
     width: usize,
 ) -> Line<'static> {
     if width == 0 {
@@ -3228,6 +3283,7 @@ fn render_split_line(
         left_syntax.as_ref(),
         &left_inline,
         SplitSide::Old,
+        row_index,
         left_width,
     );
     if separator_width > 0 {
@@ -3238,6 +3294,7 @@ fn render_split_line(
         right_syntax.as_ref(),
         &right_inline,
         SplitSide::New,
+        row_index,
         right_width,
     ));
     Line::from(spans)
@@ -3254,6 +3311,7 @@ fn split_cell_spans(
     syntax: Option<&HighlightedLine>,
     inline: &[InlineRange],
     side: SplitSide,
+    row_index: usize,
     width: usize,
 ) -> Vec<Span<'static>> {
     if width == 0 {
@@ -3261,11 +3319,15 @@ fn split_cell_spans(
     }
 
     let Some(line) = line else {
-        return vec![Span::raw(" ".repeat(width))];
+        return vec![Span::styled(
+            empty_diff_fill(width, row_index),
+            Style::default().fg(empty_diff_fg()),
+        )];
     };
 
-    let gutter_width = GUTTER_WIDTH.min(width);
-    let content_width = width.saturating_sub(gutter_width);
+    let indicator_width = 1.min(width);
+    let gutter_width = GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
+    let content_width = width.saturating_sub(indicator_width + gutter_width);
     let line_number = match side {
         SplitSide::Old => line.old_line,
         SplitSide::New => line.new_line,
@@ -3278,10 +3340,16 @@ fn split_cell_spans(
         _ => " ",
     };
 
-    let mut spans = vec![Span::styled(
-        fit_padded(&format!("{line_number:>5} {sign}"), gutter_width),
-        Style::default().fg(muted()).bg(row_bg(line.kind)),
-    )];
+    let mut spans = Vec::new();
+    if indicator_width > 0 {
+        spans.push(diff_indicator_span(line.kind));
+    }
+    if gutter_width > 0 {
+        spans.push(Span::styled(
+            fit_padded(&format!("{line_number:>5} {sign}"), gutter_width),
+            Style::default().fg(muted()).bg(row_bg(line.kind)),
+        ));
+    }
     spans.extend(content_spans(
         &line.text,
         syntax,
@@ -3502,6 +3570,37 @@ mod tests {
 
         assert_eq!(text, "right   ");
         assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn empty_diff_fill_draws_shifted_diagonal_pattern() {
+        assert_eq!(empty_diff_fill(8, 0), "╱  ╱  ╱ ");
+        assert_eq!(empty_diff_fill(8, 1), "  ╱  ╱  ");
+        assert_eq!(empty_diff_fill(8, 2), " ╱  ╱  ╱");
+    }
+
+    #[test]
+    fn split_empty_cells_use_hatched_fill() {
+        let spans = split_cell_spans(None, None, &[], SplitSide::Old, 1, 8);
+
+        assert_eq!(span_text(&spans), "  ╱  ╱  ");
+        assert_eq!(spans[0].style.fg, Some(empty_diff_fg()));
+    }
+
+    #[test]
+    fn diff_lines_start_with_change_indicator() {
+        let line = DiffLine {
+            kind: DiffLineKind::Addition,
+            old_line: None,
+            new_line: Some(3),
+            text: "new".to_owned(),
+        };
+
+        let rendered = render_unified_line(&line, None, &[], 0, 24);
+
+        assert_eq!(rendered.spans[0].content.as_ref(), DIFF_INDICATOR);
+        assert_eq!(rendered.spans[0].style.fg, Some(addition_fg()));
+        assert!(line_text(&rendered).contains(EMPTY_DIFF_FILL));
     }
 
     #[test]
@@ -4117,6 +4216,14 @@ mod tests {
             .iter()
             .map(|range| text[range.byte_start..range.byte_end].to_owned())
             .collect()
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        span_text(&line.spans)
+    }
+
+    fn span_text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|span| span.content.as_ref()).collect()
     }
 
     fn temp_test_dir(name: &str) -> PathBuf {
