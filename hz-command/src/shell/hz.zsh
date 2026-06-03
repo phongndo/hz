@@ -102,6 +102,8 @@ _hz_complete_main() {
     'shell:print shell integration'
     'update:update hz from GitHub releases'
     'diff:review a git diff'
+    'ts:manage diff syntax highlighting languages'
+    'tree-sitter:manage diff syntax highlighting languages'
     'worktree:worktree commands'
     'wt:worktree commands'
   )
@@ -123,6 +125,23 @@ _hz_complete_worktree_subcommand() {
   )
 
   _describe -t commands 'hz worktree command' commands
+}
+
+_hz_complete_ts_subcommand() {
+  local -a commands
+  commands=(
+    'add:install and enable syntax highlighting languages'
+    'update:update cached syntax highlighting parsers'
+    'rm:remove syntax highlighting languages'
+    'remove:remove syntax highlighting languages'
+    'list:list syntax highlighting languages'
+    'available:list syntax highlighting languages'
+    'clean:remove cached parser libraries'
+    'path:print tree-sitter cache and syntax config paths'
+    'doctor:validate enabled syntax highlighting languages'
+  )
+
+  _describe -t commands 'hz ts command' commands
 }
 
 _hz_complete_shells() {
@@ -227,7 +246,32 @@ _hz_complete_command_options() {
       compadd -- --target-version --install-dir -h --help
       ;;
     diff)
-      compadd -- -r --repo -b --base --staged --unstaged --no-untracked --patch -s --stat -h --help
+      compadd -- -r --repo -b --base --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help
+      ;;
+  esac
+}
+
+_hz_complete_ts_args() {
+  local subcmd="$1"
+
+  if [[ "$PREFIX" == -* ]]; then
+    case "$subcmd" in
+      available)
+        compadd -- --installed --enabled -h --help
+        ;;
+      update)
+        compadd -- --all -h --help
+        ;;
+      add|rm|remove|list|clean|path|doctor)
+        compadd -- -h --help
+        ;;
+    esac
+    return
+  fi
+
+  case "$subcmd" in
+    add|update|rm|remove)
+      _message 'language'
       ;;
   esac
 }
@@ -290,6 +334,18 @@ _hz_completion() {
     shift 2 words
     (( CURRENT -= 2 ))
     _hz_complete_command_args "$subcmd"
+    return
+  fi
+
+  if [[ "$cmd" == "ts" || "$cmd" == "tree-sitter" ]]; then
+    if (( CURRENT == 3 )); then
+      _hz_complete_ts_subcommand
+      return
+    fi
+    local subcmd="${words[3]}"
+    shift 2 words
+    (( CURRENT -= 2 ))
+    _hz_complete_ts_args "$subcmd"
     return
   fi
 

@@ -68,8 +68,9 @@ hzlocal() {
   hz cd local "$@"
 }
 
-_hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell update diff worktree wt"
+_hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt"
 _hz_worktree_commands="new path cd list ls remove rm handoff"
+_hz_ts_commands="add update rm remove list available clean path doctor"
 _hz_shells="zsh bash fish"
 
 _hz_reply() {
@@ -143,7 +144,24 @@ _hz_complete_command_args() {
       [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir -h --help" "$current"
       ;;
     diff)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -b --base --staged --unstaged --no-untracked --patch -s --stat -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -b --base --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help" "$current"
+      ;;
+  esac
+}
+
+_hz_complete_ts_args() {
+  local subcmd="$1"
+  local current="$2"
+
+  case "$subcmd" in
+    available)
+      [[ "$current" == -* ]] && _hz_reply "--installed --enabled -h --help" "$current"
+      ;;
+    update)
+      [[ "$current" == -* ]] && _hz_reply "--all -h --help" "$current"
+      ;;
+    add|rm|remove|list|clean|path|doctor)
+      [[ "$current" == -* ]] && _hz_reply "-h --help" "$current"
       ;;
   esac
 }
@@ -168,6 +186,15 @@ _hz_completion() {
       return
     fi
     _hz_complete_command_args "${COMP_WORDS[2]}" "$current"
+    return
+  fi
+
+  if [[ "$cmd" == "ts" || "$cmd" == "tree-sitter" ]]; then
+    if [[ "$COMP_CWORD" -eq 2 ]]; then
+      _hz_reply "$_hz_ts_commands" "$current"
+      return
+    fi
+    _hz_complete_ts_args "${COMP_WORDS[2]}" "$current"
     return
   fi
 

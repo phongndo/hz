@@ -38,7 +38,8 @@ examples:
   hz setup feature/ui
   hz cleanup feature/ui
   hz cd feature/ui
-  hz handoff feature/ui";
+  hz handoff feature/ui
+  hz ts add ruby elixir";
 
 const INSTALL_SCRIPT: &str = include_str!("../../scripts/install.sh");
 const RELEASE_REPO: &str = "phongndo/hz";
@@ -104,8 +105,62 @@ examples:
     Update(UpdateArgs),
     #[command(about = "Review a Git diff")]
     Diff(DiffArgs),
+    #[command(
+        name = "ts",
+        alias = "tree-sitter",
+        about = "Manage diff syntax highlighting languages"
+    )]
+    TreeSitter {
+        #[command(subcommand)]
+        command: TreeSitterCommand,
+    },
     #[command(name = "__complete", hide = true)]
     Complete(CompleteArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum TreeSitterCommand {
+    #[command(about = "Install and enable syntax highlighting languages")]
+    Add(TreeSitterLanguagesArgs),
+    #[command(about = "Update cached syntax highlighting parsers")]
+    Update(TreeSitterUpdateArgs),
+    #[command(alias = "remove", about = "Remove syntax highlighting languages")]
+    Rm(TreeSitterLanguagesArgs),
+    #[command(
+        visible_alias = "ls",
+        about = "List installed and enabled syntax highlighting languages"
+    )]
+    List,
+    #[command(about = "List syntax highlighting languages")]
+    Available(TreeSitterAvailableArgs),
+    #[command(about = "Remove cached tree-sitter parser libraries")]
+    Clean,
+    #[command(about = "Print tree-sitter cache and syntax config paths")]
+    Path,
+    #[command(about = "Validate enabled syntax highlighting languages")]
+    Doctor,
+}
+
+#[derive(Debug, Args)]
+struct TreeSitterLanguagesArgs {
+    #[arg(value_name = "LANG", required = true)]
+    languages: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct TreeSitterUpdateArgs {
+    #[arg(value_name = "LANG", required_unless_present = "all")]
+    languages: Vec<String>,
+    #[arg(long, conflicts_with = "languages")]
+    all: bool,
+}
+
+#[derive(Debug, Args)]
+struct TreeSitterAvailableArgs {
+    #[arg(long, conflicts_with = "enabled")]
+    installed: bool,
+    #[arg(long, conflicts_with = "installed")]
+    enabled: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -254,6 +309,9 @@ struct DiffArgs {
     /// Disable live reload in the interactive diff viewer.
     #[arg(long = "no-watch")]
     no_watch: bool,
+    /// Disable syntax highlighting in the interactive diff viewer.
+    #[arg(long = "no-syntax")]
+    no_syntax: bool,
     #[arg(short = 's', long)]
     stat: bool,
 }
@@ -314,16 +372,95 @@ fn run() -> HzResult<()> {
         Some(Command::Diff(args)) => {
             let stat = args.stat;
             let live_updates = !args.no_watch;
+            let syntax_enabled = !args.no_syntax;
             let options = diff_options(args)?;
             if io::stdout().is_terminal() && !stat {
-                hz_tui::run_diff_with_live_updates(options, live_updates)
+                hz_tui::run_diff_with_live_updates_and_syntax(options, live_updates, syntax_enabled)
             } else {
                 let output = hz_command::diff(options)?;
                 print!("{output}");
                 Ok(())
             }
         }
+        Some(Command::TreeSitter { command }) => tree_sitter(command),
         Some(Command::Complete(args)) => complete(args),
+    }
+}
+
+fn tree_sitter(command: TreeSitterCommand) -> HzResult<()> {
+    match command {
+        TreeSitterCommand::Add(args) => {
+            let result = hz_command::syntax_add(&args.languages)?;
+            print_tree_sitter_add_result(&result);
+        }
+        TreeSitterCommand::Update(args) => {
+            let result = hz_command::syntax_update(&args.languages, args.all)?;
+            print_tree_sitter_update_result(&result);
+        }
+        TreeSitterCommand::Rm(args) => {
+            let result = hz_command::syntax_remove(&args.languages)?;
+            print_tree_sitter_remove_result(&result);
+        }
+        TreeSitterCommand::List => {
+            print_tree_sitter_statuses(&hz_command::syntax_statuses()?, false);
+        }
+        TreeSitterCommand::Available(args) => {
+            for language in
+                hz_command::syntax_available_languages(tree_sitter_available_filter(&args))?
+            {
+                println!("{language}");
+            }
+        }
+        TreeSitterCommand::Clean => {
+            let result = hz_command::syntax_clean_cache()?;
+            println!(
+                "removed {} parser artifacts and {} checksum records",
+                result.parser_artifacts_removed, result.artifact_records_removed
+            );
+            println!(
+                "kept {} enabled-language config entries",
+                result.enabled_languages_kept
+            );
+        }
+        TreeSitterCommand::Path => {
+            println!("cache       {}", hz_command::syntax_cache_dir()?);
+            println!(
+                "registry    {}",
+                hz_command::syntax_config_path()?.display()
+            );
+            println!(
+                "config      {}",
+                hz_command::syntax_settings_path()?.display()
+            );
+            println!(
+                "colorscheme {}",
+                hz_command::syntax_colorscheme_dir()?.display()
+            );
+        }
+        TreeSitterCommand::Doctor => {
+            let report = hz_command::syntax_doctor()?;
+            print_tree_sitter_statuses(&report.statuses, true);
+            if report.issues.is_empty() {
+                println!("ok");
+            } else {
+                for issue in report.issues {
+                    println!("warning {}: {}", issue.language, issue.message);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn tree_sitter_available_filter(
+    args: &TreeSitterAvailableArgs,
+) -> hz_command::SyntaxAvailableFilter {
+    if args.installed {
+        hz_command::SyntaxAvailableFilter::Installed
+    } else if args.enabled {
+        hz_command::SyntaxAvailableFilter::Enabled
+    } else {
+        hz_command::SyntaxAvailableFilter::All
     }
 }
 
@@ -398,6 +535,245 @@ fn patch_source(path: PathBuf) -> HzResult<hz_command::DiffSource> {
     Ok(hz_command::DiffSource::Patch(
         hz_command::PatchSource::File(path),
     ))
+}
+
+fn print_tree_sitter_add_result(result: &hz_command::SyntaxAddResult) {
+    for language in &result.added {
+        println!("+ enabled {language}");
+    }
+    for language in &result.already_enabled {
+        println!("= enabled {language}");
+    }
+    for language in &result.without_highlights {
+        println!("warning {language}: no bundled highlights query; diff will render plain text");
+    }
+}
+
+fn print_tree_sitter_update_result(result: &hz_command::SyntaxUpdateResult) {
+    if result.updated.is_empty()
+        && result.bundled.is_empty()
+        && result.not_installed.is_empty()
+        && result.unavailable.is_empty()
+    {
+        println!("no parser caches to update");
+    }
+    for language in &result.updated {
+        println!("~ updated parser cache {language}");
+    }
+    for language in &result.bundled {
+        println!("= bundled parser {language}");
+    }
+    for language in &result.not_installed {
+        println!("= not installed {language}");
+    }
+    for language in &result.unavailable {
+        println!("warning {language}: language is not known");
+    }
+    for language in &result.without_highlights {
+        println!("warning {language}: no bundled highlights query; diff will render plain text");
+    }
+}
+
+fn print_tree_sitter_remove_result(result: &hz_command::SyntaxRemoveResult) {
+    for language in &result.removed {
+        println!("- disabled {language} in config");
+    }
+    for language in &result.missing {
+        println!("= not enabled in config {language}");
+    }
+    for language in &result.cache_deleted {
+        println!("- deleted parser cache {language}");
+    }
+    for language in &result.cache_missing {
+        println!("= no parser cache {language}");
+    }
+}
+
+fn print_tree_sitter_statuses(statuses: &[hz_command::SyntaxLanguageStatus], detail: bool) {
+    if statuses.is_empty() {
+        println!("no tree-sitter languages enabled");
+        return;
+    }
+
+    let terminal = io::stdout().is_terminal();
+    let glyphs = list_glyphs(terminal && !ascii_output_requested());
+    print!(
+        "{}",
+        render_tree_sitter_statuses(
+            statuses,
+            terminal,
+            glyphs,
+            terminal.then(terminal_width).flatten(),
+        )
+    );
+
+    if !detail {
+        return;
+    }
+
+    for status in statuses {
+        if let Some(artifact) = &status.artifact {
+            println!(
+                "  {} parser={} sha256={} source={} installed_at={}",
+                status.language,
+                artifact.path.display(),
+                short_sha(&artifact.sha256),
+                artifact.source,
+                artifact.installed_at_unix
+            );
+        }
+    }
+}
+
+fn render_tree_sitter_statuses(
+    statuses: &[hz_command::SyntaxLanguageStatus],
+    color: bool,
+    glyphs: ListGlyphs,
+    terminal_width: Option<usize>,
+) -> String {
+    let headers = ["language", "status", "source", "version"];
+    let rows = statuses
+        .iter()
+        .map(|status| {
+            [
+                status.language.clone(),
+                syntax_status_label(status, glyphs).to_owned(),
+                syntax_source_label(status).to_owned(),
+                syntax_version_label(status).to_owned(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let min_widths = [6, 4, 3, 1];
+    let mut widths = headers
+        .iter()
+        .enumerate()
+        .map(|(index, header)| {
+            rows.iter()
+                .map(|row| display_width(&row[index]))
+                .chain([display_width(header), min_widths[index]])
+                .max()
+                .expect("width candidates should not be empty")
+        })
+        .collect::<Vec<_>>();
+
+    shrink_tree_sitter_columns(&mut widths, min_widths, terminal_width);
+
+    let mut output = String::new();
+    for (index, header) in headers.iter().enumerate() {
+        if index > 0 {
+            output.push(' ');
+        }
+        output.push_str(&styled_cell(header, widths[index], StyleColor::Cyan, color));
+    }
+    output.push('\n');
+
+    for (status, row) in statuses.iter().zip(rows) {
+        for (index, value) in row.iter().enumerate() {
+            if index > 0 {
+                output.push(' ');
+            }
+            let value = truncate_middle(value, widths[index], glyphs);
+            let color_for_cell = match index {
+                0 => StyleColor::Magenta,
+                1 => syntax_status_color(status),
+                _ => StyleColor::White,
+            };
+            if index == 1 {
+                output.push_str(&styled_centered_cell(
+                    &value,
+                    widths[index],
+                    color_for_cell,
+                    color,
+                ));
+            } else {
+                output.push_str(&styled_cell(&value, widths[index], color_for_cell, color));
+            }
+        }
+        output.push('\n');
+    }
+
+    output
+}
+
+fn shrink_tree_sitter_columns(
+    widths: &mut [usize],
+    min_widths: [usize; 4],
+    terminal_width: Option<usize>,
+) {
+    let Some(terminal_width) = terminal_width else {
+        return;
+    };
+    while list_row_width(widths) > terminal_width {
+        let Some(index) = widths
+            .iter()
+            .enumerate()
+            .filter(|(index, width)| **width > min_widths[*index])
+            .max_by_key(|(_, width)| **width)
+            .map(|(index, _)| index)
+        else {
+            break;
+        };
+        widths[index] -= 1;
+    }
+}
+
+fn syntax_status_label(
+    status: &hz_command::SyntaxLanguageStatus,
+    glyphs: ListGlyphs,
+) -> &'static str {
+    match syntax_status_kind(status) {
+        SyntaxStatusKind::Ready => glyphs.clean,
+        SyntaxStatusKind::Warning => glyphs.dirty,
+        SyntaxStatusKind::Error => glyphs.unknown,
+        SyntaxStatusKind::Disabled => "-",
+    }
+}
+
+fn syntax_status_color(status: &hz_command::SyntaxLanguageStatus) -> StyleColor {
+    match syntax_status_kind(status) {
+        SyntaxStatusKind::Ready => StyleColor::Green,
+        SyntaxStatusKind::Warning => StyleColor::Yellow,
+        SyntaxStatusKind::Error => StyleColor::Red,
+        SyntaxStatusKind::Disabled => StyleColor::White,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyntaxStatusKind {
+    Ready,
+    Warning,
+    Error,
+    Disabled,
+}
+
+fn syntax_status_kind(status: &hz_command::SyntaxLanguageStatus) -> SyntaxStatusKind {
+    if !status.enabled {
+        SyntaxStatusKind::Disabled
+    } else if !status.installed || !status.trusted {
+        SyntaxStatusKind::Error
+    } else if !status.has_highlights {
+        SyntaxStatusKind::Warning
+    } else {
+        SyntaxStatusKind::Ready
+    }
+}
+
+fn syntax_source_label(status: &hz_command::SyntaxLanguageStatus) -> &'static str {
+    if status.source.as_deref() == Some("bundled") {
+        "bundled"
+    } else if status.artifact.is_some() {
+        "cache"
+    } else {
+        "-"
+    }
+}
+
+fn syntax_version_label(status: &hz_command::SyntaxLanguageStatus) -> &str {
+    status.version.as_deref().unwrap_or("-")
+}
+
+fn short_sha(sha: &str) -> &str {
+    sha.get(..12).unwrap_or(sha)
 }
 
 fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
@@ -888,7 +1264,7 @@ fn list_column_header(column: hz_command::ListColumn) -> &'static str {
         hz_command::ListColumn::Target => "target",
         hz_command::ListColumn::Branch => "branch",
         hz_command::ListColumn::Handle => "handle",
-        hz_command::ListColumn::Status => "st",
+        hz_command::ListColumn::Status => "status",
         hz_command::ListColumn::Base => "base",
         hz_command::ListColumn::Modified => "modified",
         hz_command::ListColumn::Path => "path",
@@ -898,7 +1274,7 @@ fn list_column_header(column: hz_command::ListColumn) -> &'static str {
 fn list_column_min_width(column: hz_command::ListColumn) -> usize {
     match column {
         hz_command::ListColumn::Marker => 1,
-        hz_command::ListColumn::Status => 2,
+        hz_command::ListColumn::Status => 4,
         hz_command::ListColumn::Base => 4,
         hz_command::ListColumn::Modified => 1,
         hz_command::ListColumn::Path => 4,
@@ -954,7 +1330,7 @@ fn styled_list_cell(
             worktree_marker_color(row, colors),
             color,
         ),
-        hz_command::ListColumn::Status => styled_cell(
+        hz_command::ListColumn::Status => styled_centered_cell(
             &value,
             width,
             worktree_status_color(row.status, colors),
@@ -1398,11 +1774,22 @@ fn styled_cell(value: &str, width: usize, color: StyleColor, enabled: bool) -> S
     styled(&plain_cell(value, width), color, enabled)
 }
 
+fn styled_centered_cell(value: &str, width: usize, color: StyleColor, enabled: bool) -> String {
+    styled(&plain_centered_cell(value, width), color, enabled)
+}
+
 fn plain_cell(value: &str, width: usize) -> String {
     format!(
         "{value}{}",
         " ".repeat(width.saturating_sub(display_width(value)))
     )
+}
+
+fn plain_centered_cell(value: &str, width: usize) -> String {
+    let padding = width.saturating_sub(display_width(value));
+    let left = padding / 2;
+    let right = padding - left;
+    format!("{}{}{}", " ".repeat(left), value, " ".repeat(right))
 }
 
 fn truncate_middle(value: &str, width: usize, glyphs: ListGlyphs) -> String {
@@ -1907,6 +2294,80 @@ mod tests {
     }
 
     #[test]
+    fn tree_sitter_list_output_uses_compact_table() {
+        let output = render_tree_sitter_statuses(
+            &[
+                hz_command::SyntaxLanguageStatus {
+                    language: "rust".to_owned(),
+                    enabled: true,
+                    installed: true,
+                    trusted: true,
+                    has_highlights: true,
+                    version: Some("1.9.0-rc.17".to_owned()),
+                    artifact: None,
+                    source: Some("bundled".to_owned()),
+                },
+                hz_command::SyntaxLanguageStatus {
+                    language: "typescript".to_owned(),
+                    enabled: true,
+                    installed: true,
+                    trusted: true,
+                    has_highlights: false,
+                    version: Some("1.9.0-rc.17".to_owned()),
+                    artifact: None,
+                    source: Some("bundled".to_owned()),
+                },
+            ],
+            false,
+            list_glyphs(false),
+            None,
+        );
+
+        assert!(output.contains("language"));
+        assert!(output.contains("status"));
+        assert!(output.contains("version"));
+        let headers = output
+            .lines()
+            .next()
+            .expect("header should render")
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        assert_eq!(headers[1], "status");
+        assert!(output.contains("rust"));
+        assert!(output.contains("ok"));
+        assert!(output.contains("1.9.0-rc.17"));
+        assert!(!output.contains("note"));
+        assert!(!output.contains("no query"));
+        assert!(!output.contains("enabled=yes"));
+    }
+
+    #[test]
+    fn tree_sitter_list_output_centers_unicode_status() {
+        let output = render_tree_sitter_statuses(
+            &[hz_command::SyntaxLanguageStatus {
+                language: "rust".to_owned(),
+                enabled: true,
+                installed: true,
+                trusted: true,
+                has_highlights: true,
+                version: Some("1.9.0-rc.17".to_owned()),
+                artifact: None,
+                source: Some("bundled".to_owned()),
+            }],
+            false,
+            list_glyphs(true),
+            None,
+        );
+
+        let rust_line = output
+            .lines()
+            .find(|line| line.starts_with("rust"))
+            .expect("rust status row should render");
+
+        assert!(rust_line.contains("  ✓   "));
+    }
+
+    #[test]
     fn list_output_uses_handle_when_branch_is_missing() {
         let output = render_worktree_list(&[hz_command::WorktreeEntry {
             id: "entry-id".to_owned(),
@@ -1965,7 +2426,7 @@ mod tests {
             status: hz_command::WorktreeStatus::Unknown,
         }]);
 
-        assert!(output.starts_with("  target st modified path"));
+        assert!(output.starts_with("  target status modified path"));
     }
 
     #[test]
@@ -2033,12 +2494,48 @@ mod tests {
             },
         ]);
 
-        assert!(output.contains("st"));
+        let headers = output
+            .lines()
+            .next()
+            .expect("header should render")
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        assert_eq!(headers[0], "target");
+        assert_eq!(headers[1], "status");
         assert!(output.contains("modified"));
         assert!(output.contains("!"));
         assert!(output.contains("ok"));
         assert!(output.contains(&format_modified_at(dirty_at)));
         assert!(output.contains(&format_modified_at(created_at)));
+    }
+
+    #[test]
+    fn list_output_centers_unicode_status() {
+        let output = render_worktree_rows_with_options(
+            &[WorktreeListRow {
+                target: "feature/ui".to_owned(),
+                branch: Some("feature/ui".to_owned()),
+                handle: Some("f7a7".to_owned()),
+                base: None,
+                status: hz_command::WorktreeStatus::Clean,
+                modified_at_unix: 0,
+                path: PathBuf::from("/worktrees/entry"),
+                local: false,
+                current: false,
+            }],
+            false,
+            list_glyphs(true),
+            None,
+            WorktreeListOptions {
+                headers: hz_command::ListHeaders::Always,
+                columns: vec![hz_command::ListColumn::Status],
+                ..WorktreeListOptions::default()
+            },
+        );
+
+        let status = output.lines().nth(1).expect("status row should render");
+
+        assert_eq!(status, "  ✓   ");
     }
 
     #[test]
@@ -2138,7 +2635,7 @@ mod tests {
         );
 
         assert!(output.contains("\x1b[34mfeature/ui"));
-        assert!(output.contains("\x1b[36mok"));
+        assert!(output.contains("\x1b[36m  ok"));
     }
 
     #[test]
@@ -2660,6 +3157,7 @@ mod tests {
             "--unstaged",
             "--no-untracked",
             "--no-watch",
+            "--no-syntax",
             "-s",
         ])
         .unwrap();
@@ -2669,10 +3167,14 @@ mod tests {
                 assert!(args.unstaged);
                 assert!(args.no_untracked);
                 assert!(args.no_watch);
+                assert!(args.no_syntax);
                 assert!(args.stat);
             }
             command => panic!("expected diff command, got {command:?}"),
         }
+
+        assert!(Cli::try_parse_from(["hz", "ts", "add", "ruby", "--no-syntax"]).is_err());
+        assert!(Cli::try_parse_from(["hz", "--no-syntax", "ts", "add", "ruby"]).is_err());
 
         let cli = Cli::try_parse_from(["hz", "diff", "-b", "main"]).unwrap();
         match cli.command {
@@ -2702,6 +3204,83 @@ mod tests {
         assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "main"]).is_err());
         assert!(Cli::try_parse_from(["hz", "diff", "--staged", "--base", "main"]).is_err());
         assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "--base", "main"]).is_err());
+    }
+
+    #[test]
+    fn tree_sitter_commands_accept_language_args() {
+        let cli = Cli::try_parse_from(["hz", "ts", "add", "rust", "ruby", "elixir"]).unwrap();
+        match cli.command {
+            Some(Command::TreeSitter {
+                command: TreeSitterCommand::Add(args),
+            }) => assert_eq!(args.languages, ["rust", "ruby", "elixir"]),
+            command => panic!("expected tree-sitter add command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "ts", "update", "rust", "ruby"]).unwrap();
+        match cli.command {
+            Some(Command::TreeSitter {
+                command: TreeSitterCommand::Update(args),
+            }) => {
+                assert_eq!(args.languages, ["rust", "ruby"]);
+                assert!(!args.all);
+            }
+            command => panic!("expected tree-sitter update command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "ts", "update", "--all"]).unwrap();
+        match cli.command {
+            Some(Command::TreeSitter {
+                command: TreeSitterCommand::Update(args),
+            }) => {
+                assert!(args.languages.is_empty());
+                assert!(args.all);
+            }
+            command => panic!("expected tree-sitter update --all command, got {command:?}"),
+        }
+
+        assert!(Cli::try_parse_from(["hz", "ts", "update", "--all", "rust"]).is_err());
+
+        let cli = Cli::try_parse_from(["hz", "tree-sitter", "rm", "rust"]).unwrap();
+        match cli.command {
+            Some(Command::TreeSitter {
+                command: TreeSitterCommand::Rm(args),
+            }) => assert_eq!(args.languages, ["rust"]),
+            command => panic!("expected tree-sitter rm command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "ts", "ls"]).unwrap();
+        match cli.command {
+            Some(Command::TreeSitter {
+                command: TreeSitterCommand::List,
+            }) => {}
+            command => panic!("expected tree-sitter list command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "ts", "available", "--installed"]).unwrap();
+        match cli.command {
+            Some(Command::TreeSitter {
+                command: TreeSitterCommand::Available(args),
+            }) => {
+                assert!(args.installed);
+                assert!(!args.enabled);
+            }
+            command => panic!("expected tree-sitter available command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "ts", "available", "--enabled"]).unwrap();
+        match cli.command {
+            Some(Command::TreeSitter {
+                command: TreeSitterCommand::Available(args),
+            }) => {
+                assert!(!args.installed);
+                assert!(args.enabled);
+            }
+            command => panic!("expected tree-sitter available command, got {command:?}"),
+        }
+
+        assert!(
+            Cli::try_parse_from(["hz", "ts", "available", "--installed", "--enabled"]).is_err()
+        );
     }
 
     #[test]

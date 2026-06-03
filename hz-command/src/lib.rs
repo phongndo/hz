@@ -10,6 +10,11 @@ use hz_core::{HzError, HzResult};
 use serde::{Deserialize, Serialize};
 
 pub use hz_diff::{DiffOptions, DiffScope, DiffSource, PatchSource};
+pub use hz_syntax::{
+    SyntaxAddResult, SyntaxAvailableFilter, SyntaxCleanResult, SyntaxDoctorReport,
+    SyntaxLanguageStatus, SyntaxLimits, SyntaxMode, SyntaxRemoveResult, SyntaxSettings,
+    SyntaxThemeConfig, SyntaxThemeSource, SyntaxUpdateResult,
+};
 pub use hz_worktree::{
     CreateWorktree, CreatedWorktree, FindWorktree, HandoffMode, HandoffWorktree, ListWorktrees,
     LocalWorktree, LocalWorktreeInfo, PathWorktree, RemoveWorktree, WorktreeEntry, WorktreeHandoff,
@@ -166,6 +171,50 @@ pub fn run_lifecycle_for_entry(
 
 pub fn diff(input: DiffOptions) -> HzResult<String> {
     hz_diff::render(input)
+}
+
+pub fn syntax_add(languages: &[String]) -> HzResult<SyntaxAddResult> {
+    hz_syntax::add_languages(languages)
+}
+
+pub fn syntax_update(languages: &[String], all: bool) -> HzResult<SyntaxUpdateResult> {
+    hz_syntax::update_languages(languages, all)
+}
+
+pub fn syntax_remove(languages: &[String]) -> HzResult<SyntaxRemoveResult> {
+    hz_syntax::remove_languages(languages)
+}
+
+pub fn syntax_statuses() -> HzResult<Vec<SyntaxLanguageStatus>> {
+    hz_syntax::language_statuses()
+}
+
+pub fn syntax_available_languages(filter: SyntaxAvailableFilter) -> HzResult<Vec<String>> {
+    hz_syntax::available_languages(filter)
+}
+
+pub fn syntax_clean_cache() -> HzResult<SyntaxCleanResult> {
+    hz_syntax::clean_cache()
+}
+
+pub fn syntax_cache_dir() -> HzResult<String> {
+    hz_syntax::cache_dir()
+}
+
+pub fn syntax_config_path() -> HzResult<PathBuf> {
+    hz_syntax::config_path()
+}
+
+pub fn syntax_settings_path() -> HzResult<PathBuf> {
+    hz_syntax::settings_path()
+}
+
+pub fn syntax_colorscheme_dir() -> HzResult<PathBuf> {
+    hz_syntax::colorscheme_dir()
+}
+
+pub fn syntax_doctor() -> HzResult<SyntaxDoctorReport> {
+    hz_syntax::doctor()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -936,6 +985,11 @@ mod tests {
         assert!(script.contains("'install:install shell integration'"));
         assert!(script.contains("'update:update hz from GitHub releases'"));
         assert!(script.contains("'diff:review a git diff'"));
+        assert!(script.contains("'ts:manage diff syntax highlighting languages'"));
+        assert!(script.contains("'add:install and enable syntax highlighting languages'"));
+        assert!(script.contains("'update:update cached syntax highlighting parsers'"));
+        assert!(script.contains("--installed --enabled"));
+        assert!(script.contains("--all -h --help"));
         assert!(!script.contains("tui:open the terminal UI"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
@@ -944,6 +998,8 @@ mod tests {
         assert!(script.contains("--staged"));
         assert!(script.contains("--unstaged"));
         assert!(script.contains("--no-untracked"));
+        assert!(script.contains("--no-watch"));
+        assert!(script.contains("--no-syntax"));
         assert!(hzlocal_completion.contains("_hz_complete_command_options cd"));
         assert!(!hzlocal_completion.contains("_hz_complete_command_positionals cd"));
     }
@@ -957,6 +1013,12 @@ mod tests {
         assert!(script.contains("command hz __complete removable-worktrees"));
         assert!(script.contains("complete -c hz -n \"__fish_seen_subcommand_from rm remove\""));
         assert!(script.contains("init install setup cleanup shell update"));
+        assert!(script.contains("ts tree-sitter"));
+        assert!(script.contains("__hz_needs_ts_subcommand"));
+        assert!(script.contains("add update rm remove list available clean path doctor"));
+        assert!(script.contains("-l installed"));
+        assert!(script.contains("-l enabled"));
+        assert!(script.contains("-l all"));
         assert!(script.contains("-l no-setup"));
         assert!(script.contains("-l no-cleanup"));
         assert!(script.contains("-l max-detached"));
@@ -965,17 +1027,38 @@ mod tests {
         assert!(script.contains("-l staged"));
         assert!(script.contains("-l unstaged"));
         assert!(script.contains("-l no-untracked"));
+        assert!(script.contains("-l no-watch"));
+        assert!(script.contains("-l no-syntax"));
         assert!(!script.contains("tui"));
     }
 
     #[test]
     fn bash_integration_registers_completion() {
         let script = shell_integration(Shell::Bash);
+        let worktree_completion = script
+            .split("if [[ \"$cmd\" == \"worktree\" || \"$cmd\" == \"wt\" ]]; then")
+            .nth(1)
+            .and_then(|completion| completion.split("if [[ \"$cmd\" == \"ts\"").next())
+            .expect("worktree completion branch should exist");
+        let ts_completion = script
+            .split("if [[ \"$cmd\" == \"ts\" || \"$cmd\" == \"tree-sitter\" ]]; then")
+            .nth(1)
+            .and_then(|completion| {
+                completion
+                    .split("_hz_complete_command_args \"$cmd\"")
+                    .next()
+            })
+            .expect("tree-sitter completion branch should exist");
 
         assert!(script.contains("complete -F _hz_completion hz"));
         assert!(script.contains("_hz_dynamic_reply worktree-targets"));
         assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
         assert!(script.contains("init install setup cleanup shell update"));
+        assert!(script.contains("ts tree-sitter"));
+        assert!(script.contains("_hz_complete_ts_args"));
+        assert!(script.contains("add update rm remove list available clean path doctor"));
+        assert!(script.contains("--installed --enabled"));
+        assert!(script.contains("--all -h --help"));
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
@@ -984,6 +1067,13 @@ mod tests {
         assert!(script.contains("--staged"));
         assert!(script.contains("--unstaged"));
         assert!(script.contains("--no-untracked"));
+        assert!(script.contains("--no-watch"));
+        assert!(script.contains("--no-syntax"));
+        assert!(
+            worktree_completion
+                .contains("_hz_complete_command_args \"${COMP_WORDS[2]}\" \"$current\"")
+        );
+        assert!(ts_completion.contains("_hz_complete_ts_args \"${COMP_WORDS[2]}\" \"$current\""));
         assert!(!script.contains("tui"));
     }
 

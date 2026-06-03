@@ -82,13 +82,27 @@ function __hz_needs_worktree_subcommand
     test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
 end
 
+function __hz_needs_ts_subcommand
+    set -l tokens (commandline -opc)
+    test (count $tokens) -ge 2; or return 1
+    contains -- $tokens[2] ts tree-sitter; or return 1
+
+    if test (count $tokens) -eq 2
+        return 0
+    end
+
+    set -l current (commandline -ct)
+    test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
+end
+
 complete -c hz -e
 complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell update diff worktree wt" -a "new path cd list ls remove rm handoff init install setup cleanup shell update diff worktree wt"
+complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt" -a "new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt"
 complete -c hz -n "__hz_needs_worktree_subcommand" -a "new path cd list ls remove rm handoff"
+complete -c hz -n "__hz_needs_ts_subcommand" -a "add update rm remove list available clean path doctor"
 
 complete -c hz -n "__fish_seen_subcommand_from cd path handoff setup cleanup" -a "(__hz_complete_worktree_targets)"
 complete -c hz -n "__fish_seen_subcommand_from rm remove" -a "(__hz_complete_removable_worktrees)"
@@ -112,9 +126,15 @@ complete -c hz -n "__fish_seen_subcommand_from diff" -l staged
 complete -c hz -n "__fish_seen_subcommand_from diff" -l unstaged
 complete -c hz -n "__fish_seen_subcommand_from diff" -l no-untracked
 complete -c hz -n "__fish_seen_subcommand_from diff" -l patch -r -F
+complete -c hz -n "__fish_seen_subcommand_from diff" -l no-watch
+complete -c hz -n "__fish_seen_subcommand_from diff" -l no-syntax
 complete -c hz -n "__fish_seen_subcommand_from diff" -s s -l stat
-complete -c hz -n "__fish_seen_subcommand_from update" -l target-version -r
-complete -c hz -n "__fish_seen_subcommand_from update" -l install-dir -r -F
+complete -c hz -n "__fish_seen_subcommand_from ts tree-sitter" -s h -l help
+complete -c hz -n "__fish_seen_subcommand_from ts tree-sitter; and __fish_seen_subcommand_from available" -l installed
+complete -c hz -n "__fish_seen_subcommand_from ts tree-sitter; and __fish_seen_subcommand_from available" -l enabled
+complete -c hz -n "__fish_seen_subcommand_from ts tree-sitter; and __fish_seen_subcommand_from update" -l all
+complete -c hz -n "not __fish_seen_subcommand_from ts tree-sitter; and __fish_seen_subcommand_from update" -l target-version -r
+complete -c hz -n "not __fish_seen_subcommand_from ts tree-sitter; and __fish_seen_subcommand_from update" -l install-dir -r -F
 complete -c hz -s h -l help
 complete -c hz -s V -l version
 
