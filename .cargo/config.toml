@@ -1,0 +1,6 @@
+[env]
+# Build the curated zero-config language set into hz.  Extra languages still use
+# `hz ts add`, but these common/compiler languages should not require a
+# user-writable parser cache on first run.
+TSLP_LANGUAGES = { value = "rust,c,cpp,python,typescript,javascript,tsx,zig,llvm,mlir,cmake,nix,bash,toml,json,yaml,markdown,asm,tablegen", force = false }
+TSLP_LINK_MODE = { value = "static", force = false }

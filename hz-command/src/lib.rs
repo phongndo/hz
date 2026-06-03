@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 
 pub use hz_diff::{DiffOptions, DiffScope, DiffSource, PatchSource};
 pub use hz_syntax::{
-    SyntaxAddResult, SyntaxDoctorReport, SyntaxLanguageStatus, SyntaxRemoveResult,
+    SyntaxAddResult, SyntaxCleanResult, SyntaxDoctorReport, SyntaxLanguageStatus,
+    SyntaxRemoveResult,
 };
 pub use hz_worktree::{
     CreateWorktree, CreatedWorktree, FindWorktree, HandoffMode, HandoffWorktree, ListWorktrees,
@@ -187,7 +188,7 @@ pub fn syntax_available_languages() -> HzResult<Vec<String>> {
     hz_syntax::available_languages()
 }
 
-pub fn syntax_clean_cache() -> HzResult<()> {
+pub fn syntax_clean_cache() -> HzResult<SyntaxCleanResult> {
     hz_syntax::clean_cache()
 }
 

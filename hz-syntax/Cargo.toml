@@ -10,5 +10,6 @@ repository.workspace = true
 hz-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tree-sitter-highlight.workspace = true
 tree-sitter-language-pack.workspace = true

@@ -143,20 +143,23 @@ Supported color names are `black`, `red`, `green`, `yellow`, `blue`,
 ## Syntax highlighting
 
 `hz diff` syntax highlighting is configured outside repo-local `.hz/hz.toml`
-because parser downloads are a user-local cache concern. Use:
+because extra parser downloads are a user-local cache concern. Core languages
+are bundled; use these commands for extra languages and cache diagnostics:
 
 ```sh
 hz ts add rust mlir llvm asm nasm
 hz ts rm rust
-hz ts list
+hz ts ls
 hz ts doctor
 hz ts clean
 ```
 
-The interactive diff viewer only uses already-enabled, already-installed
-Tree-sitter parsers. It does not download parsers while rendering. `hz ts rm`
-removes a language from the enabled set and deletes its cached parser library
-when present; `hz ts clean` purges the whole parser cache.
+The interactive diff viewer only uses bundled parsers or already-enabled,
+already-installed Tree-sitter parsers with matching checksum records. It does not
+download parsers while rendering. `hz diff --no-syntax` disables syntax for a run.
+`hz ts rm` removes a language from the enabled set and deletes its cached parser
+library when present; `hz ts clean` purges the parser cache while keeping the
+enabled-language config.
 
 ## Lifecycle
 

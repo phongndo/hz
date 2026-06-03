@@ -659,6 +659,7 @@ dependencies = [
  "hz-core",
  "serde",
  "serde_json",
+ "sha2",
  "tree-sitter-highlight",
  "tree-sitter-language-pack",
 ]

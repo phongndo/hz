@@ -1,8 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     ffi::OsStr,
-    hash::Hash,
+    hash::{Hash, Hasher},
     io,
+    panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
@@ -52,7 +53,9 @@ const MAX_HIGHLIGHT_HUNK_BYTES: usize = 128 * 1024;
 const MAX_HIGHLIGHT_LINE_BYTES: usize = 8 * 1024;
 const MAX_HIGHLIGHT_CACHE_ENTRIES: usize = 512;
 const MAX_HIGHLIGHT_QUEUE_ENTRIES: usize = 512;
+const MAX_SYNTAX_RESULTS_PER_FRAME: usize = 64;
 const HIGHLIGHT_PREFETCH_VIEWPORTS: usize = 1;
+const SYNTAX_THEME_ID: u64 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiffBenchmarkOptions {
@@ -141,13 +144,26 @@ pub fn run_diff(options: DiffOptions) -> HzResult<()> {
 }
 
 pub fn run_diff_with_live_updates(options: DiffOptions, live_updates: bool) -> HzResult<()> {
+    run_diff_with_live_updates_and_syntax(options, live_updates, true)
+}
+
+pub fn run_diff_with_live_updates_and_syntax(
+    options: DiffOptions,
+    live_updates: bool,
+    syntax_enabled: bool,
+) -> HzResult<()> {
     let changeset = hz_diff::load_review_ref(&options)?;
 
     let mut cleanup = TerminalCleanup::install()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     let layout = default_layout_for_width(terminal.size()?.width);
-    let mut app = DiffApp::new(options, changeset, layout);
+    let syntax_mode = if syntax_enabled {
+        SyntaxStartupMode::Config
+    } else {
+        SyntaxStartupMode::Disabled
+    };
+    let mut app = DiffApp::new_with_syntax(options, changeset, layout, syntax_mode);
     let live_diff = if live_updates && live_diff_supported(&app.options) {
         match LiveDiff::start(app.options.clone(), &app.changeset.repo) {
             Ok(live_diff) => Some(live_diff),
@@ -425,11 +441,36 @@ enum DiffSide {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct SyntaxKey {
+struct SyntaxPosition {
     generation: u64,
     file: usize,
     hunk: usize,
     side: DiffSide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SyntaxSourceKind {
+    HunkSide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SyntaxKey {
+    position: SyntaxPosition,
+    source_kind: SyntaxSourceKind,
+    source_hash: u64,
+    language_hash: u64,
+    theme_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyntaxSkipReason {
+    InvalidPosition,
+    NoPath,
+    NoLanguage,
+    NoSource,
+    TooLarge,
+    QueueClosed,
+    HighlightError,
 }
 
 #[derive(Debug, Clone)]
@@ -517,6 +558,8 @@ where
     }
 
     fn touch(&mut self, key: &K) {
+        // O(n) is intentional here: the syntax cache is capped at a small fixed
+        // size, so avoiding another dependency/index keeps this simple.
         if let Some(index) = self.order.iter().position(|candidate| candidate == key) {
             self.order.remove(index);
         }
@@ -592,7 +635,7 @@ impl SyntaxWorkerQueue {
         if state.closed {
             return Err(SyntaxQueueError::Closed);
         }
-        if job.key.generation != state.generation {
+        if job.key.position.generation != state.generation {
             return Err(SyntaxQueueError::Stale);
         }
         if self.inner.capacity == 0 {
@@ -645,10 +688,12 @@ impl SyntaxWorkerQueue {
             return;
         };
         state.generation = generation;
-        state.visible.retain(|job| job.key.generation == generation);
+        state
+            .visible
+            .retain(|job| job.key.position.generation == generation);
         state
             .prefetch
-            .retain(|job| job.key.generation == generation);
+            .retain(|job| job.key.position.generation == generation);
         self.inner.ready.notify_all();
     }
 
@@ -664,7 +709,7 @@ impl SyntaxWorkerQueue {
                 .pop_front()
                 .or_else(|| state.prefetch.pop_front());
             if let Some(job) = job {
-                if job.key.generation == state.generation {
+                if job.key.position.generation == state.generation {
                     return Some(job);
                 }
                 continue;
@@ -711,12 +756,13 @@ impl SyntaxWorkerQueueState {
 struct SyntaxRuntime {
     languages: SyntaxLanguageSet,
     result_rx: Receiver<SyntaxResult>,
-    _worker: thread::JoinHandle<()>,
     queue: SyntaxWorkerQueue,
     cache: LruCache<SyntaxKey, HighlightedSide>,
     pending: HashSet<SyntaxKey>,
-    skipped: HashSet<SyntaxKey>,
+    position_keys: HashMap<SyntaxPosition, SyntaxKey>,
+    skipped: HashMap<SyntaxPosition, SyntaxSkipReason>,
     stats: SyntaxBenchmarkReport,
+    worker: Option<thread::JoinHandle<()>>,
 }
 
 impl SyntaxRuntime {
@@ -734,12 +780,13 @@ impl SyntaxRuntime {
         Ok(Some(Self {
             languages,
             result_rx,
-            _worker: worker,
             queue,
             cache: LruCache::new(MAX_HIGHLIGHT_CACHE_ENTRIES),
             pending: HashSet::new(),
-            skipped: HashSet::new(),
+            position_keys: HashMap::new(),
+            skipped: HashMap::new(),
             stats: SyntaxBenchmarkReport::default(),
+            worker: Some(worker),
         }))
     }
 
@@ -757,18 +804,20 @@ impl SyntaxRuntime {
         Some(Self {
             languages,
             result_rx,
-            _worker: worker,
             queue,
             cache: LruCache::new(MAX_HIGHLIGHT_CACHE_ENTRIES),
             pending: HashSet::new(),
-            skipped: HashSet::new(),
+            position_keys: HashMap::new(),
+            skipped: HashMap::new(),
             stats: SyntaxBenchmarkReport::default(),
+            worker: Some(worker),
         })
     }
 
     fn clear(&mut self, generation: u64) {
         self.cache.clear();
         self.pending.clear();
+        self.position_keys.clear();
         self.skipped.clear();
         self.queue.set_generation(generation);
     }
@@ -782,14 +831,61 @@ impl SyntaxRuntime {
         side: DiffSide,
         priority: SyntaxPriority,
     ) {
-        let key = SyntaxKey {
+        let position = SyntaxPosition {
             generation,
             file,
             hunk,
             side,
         };
         self.stats.queue_requests = self.stats.queue_requests.saturating_add(1);
-        if self.cache.contains_key(&key) || self.skipped.contains(&key) {
+        if let Some(key) = self.position_keys.get(&position).copied() {
+            if self.cache.contains_key(&key) {
+                return;
+            }
+            if self.pending.contains(&key) {
+                if priority == SyntaxPriority::Visible {
+                    self.queue.promote(key);
+                }
+                return;
+            }
+        }
+        if self.skipped.contains_key(&position) {
+            return;
+        }
+
+        let Some(file_diff) = changeset.files.get(file) else {
+            self.skip(position, SyntaxSkipReason::InvalidPosition);
+            return;
+        };
+        let Some(path) = syntax_path(file_diff, side) else {
+            self.skip(position, SyntaxSkipReason::NoPath);
+            return;
+        };
+        let Some(language) = self.languages.language_for_path(path) else {
+            self.skip(position, SyntaxSkipReason::NoLanguage);
+            return;
+        };
+        let Some(hunk_diff) = file_diff.hunks.get(hunk) else {
+            self.skip(position, SyntaxSkipReason::InvalidPosition);
+            return;
+        };
+        let source = match build_hunk_source(&hunk_diff.lines, side) {
+            Ok(source) => source,
+            Err(reason) => {
+                self.skip(position, reason);
+                return;
+            }
+        };
+
+        let key = SyntaxKey {
+            position,
+            source_kind: SyntaxSourceKind::HunkSide,
+            source_hash: hash_text(&source.text),
+            language_hash: hash_text(&language),
+            theme_id: SYNTAX_THEME_ID,
+        };
+        self.position_keys.insert(position, key);
+        if self.cache.contains_key(&key) {
             return;
         }
         if self.pending.contains(&key) {
@@ -798,32 +894,6 @@ impl SyntaxRuntime {
             }
             return;
         }
-
-        let Some(file_diff) = changeset.files.get(file) else {
-            self.skipped.insert(key);
-            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
-            return;
-        };
-        let Some(path) = syntax_path(file_diff, side) else {
-            self.skipped.insert(key);
-            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
-            return;
-        };
-        let Some(language) = self.languages.language_for_path(path) else {
-            self.skipped.insert(key);
-            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
-            return;
-        };
-        let Some(hunk_diff) = file_diff.hunks.get(hunk) else {
-            self.skipped.insert(key);
-            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
-            return;
-        };
-        let Some(source) = build_hunk_source(&hunk_diff.lines, side) else {
-            self.skipped.insert(key);
-            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
-            return;
-        };
 
         let source_bytes = source.text.len() as u64;
         let source_lines = source.line_map.len() as u64;
@@ -852,17 +922,25 @@ impl SyntaxRuntime {
                 self.stats.jobs_rejected = self.stats.jobs_rejected.saturating_add(1);
             }
             Err(SyntaxQueueError::Closed) => {
-                self.skipped.insert(key);
-                self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
+                self.skip(position, SyntaxSkipReason::QueueClosed);
             }
         }
     }
 
-    fn drain(&mut self, generation: u64) -> bool {
+    fn skip(&mut self, position: SyntaxPosition, reason: SyntaxSkipReason) {
+        if self.skipped.insert(position, reason).is_none() {
+            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
+        }
+    }
+
+    fn drain(&mut self, generation: u64, max_results: usize) -> bool {
         let mut changed = false;
-        while let Ok(result) = self.result_rx.try_recv() {
+        for _ in 0..max_results {
+            let Ok(result) = self.result_rx.try_recv() else {
+                break;
+            };
             self.pending.remove(&result.key);
-            if result.key.generation != generation {
+            if result.key.position.generation != generation {
                 self.stats.stale_results = self.stats.stale_results.saturating_add(1);
                 continue;
             }
@@ -880,7 +958,8 @@ impl SyntaxRuntime {
                     changed = true;
                 }
                 Err(()) => {
-                    self.skipped.insert(result.key);
+                    self.skipped
+                        .insert(result.key.position, SyntaxSkipReason::HighlightError);
                     self.stats.jobs_failed = self.stats.jobs_failed.saturating_add(1);
                 }
             }
@@ -888,10 +967,11 @@ impl SyntaxRuntime {
         changed
     }
 
-    fn line(&mut self, key: SyntaxKey, line: usize) -> Option<HighlightedLine> {
+    fn line(&mut self, position: SyntaxPosition, line: usize) -> Option<HighlightedLine> {
         let highlighted = self
-            .cache
-            .get(&key)
+            .position_keys
+            .get(&position)
+            .and_then(|key| self.cache.get(key))
             .and_then(|side| side.lines.get(line))
             .and_then(Option::as_ref)
             .cloned();
@@ -919,6 +999,9 @@ impl SyntaxRuntime {
 impl Drop for SyntaxRuntime {
     fn drop(&mut self) {
         self.queue.close();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -945,10 +1028,13 @@ struct HunkSource {
 fn run_syntax_worker(queue: SyntaxWorkerQueue, result_tx: Sender<SyntaxResult>) {
     let mut highlighter = SyntaxHighlighter::new();
     while let Some(job) = queue.pop() {
-        let side = highlighter
-            .highlight(&job.language, &job.source.text)
-            .map(|highlighted| highlighted_side(job.source, highlighted.lines))
-            .map_err(|_| ());
+        let side = panic::catch_unwind(AssertUnwindSafe(|| {
+            highlighter
+                .highlight(&job.language, &job.source.text)
+                .map(|highlighted| highlighted_side(job.source, highlighted.lines))
+                .map_err(|_| ())
+        }))
+        .unwrap_or(Err(()));
         if result_tx.send(SyntaxResult { key: job.key, side }).is_err() {
             break;
         }
@@ -972,29 +1058,42 @@ fn syntax_path(file: &hz_diff::DiffFile, side: DiffSide) -> Option<&str> {
     }
 }
 
-fn build_hunk_source(lines: &[DiffLine], side: DiffSide) -> Option<HunkSource> {
+fn build_hunk_source(lines: &[DiffLine], side: DiffSide) -> Result<HunkSource, SyntaxSkipReason> {
     let mut text = String::new();
     let mut line_map = Vec::new();
 
     for (index, line) in lines.iter().enumerate() {
-        if !line_belongs_to_side(line.kind, side) || line.text.len() > MAX_HIGHLIGHT_LINE_BYTES {
+        if !line_belongs_to_side(line.kind, side) {
             continue;
+        }
+        if line.text.len() > MAX_HIGHLIGHT_LINE_BYTES {
+            return Err(SyntaxSkipReason::TooLarge);
         }
         if !text.is_empty() {
             text.push('\n');
         }
         text.push_str(&line.text);
         if text.len() > MAX_HIGHLIGHT_HUNK_BYTES {
-            return None;
+            return Err(SyntaxSkipReason::TooLarge);
         }
         line_map.push(index);
     }
 
-    (!line_map.is_empty()).then_some(HunkSource {
+    if line_map.is_empty() {
+        return Err(SyntaxSkipReason::NoSource);
+    }
+
+    Ok(HunkSource {
         text,
         line_map,
         line_count: lines.len(),
     })
+}
+
+fn hash_text(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn line_belongs_to_side(kind: DiffLineKind, side: DiffSide) -> bool {
@@ -1609,6 +1708,7 @@ struct DiffApp {
 }
 
 impl DiffApp {
+    #[cfg(test)]
     fn new(options: DiffOptions, changeset: Changeset, layout: DiffLayoutMode) -> Self {
         Self::new_with_syntax(options, changeset, layout, SyntaxStartupMode::Config)
     }
@@ -1795,7 +1895,7 @@ impl DiffApp {
         start: usize,
         end: usize,
         priority: SyntaxPriority,
-        requested: &mut HashSet<SyntaxKey>,
+        requested: &mut HashSet<SyntaxPosition>,
     ) {
         for row_index in start..end {
             let Some(row) = self.model.row(row_index) else {
@@ -1809,7 +1909,7 @@ impl DiffApp {
         &mut self,
         row: UiRow,
         priority: SyntaxPriority,
-        requested: &mut HashSet<SyntaxKey>,
+        requested: &mut HashSet<SyntaxPosition>,
     ) {
         match row {
             UiRow::UnifiedLine { file, hunk, line } => {
@@ -1853,15 +1953,15 @@ impl DiffApp {
         hunk: usize,
         side: DiffSide,
         priority: SyntaxPriority,
-        requested: &mut HashSet<SyntaxKey>,
+        requested: &mut HashSet<SyntaxPosition>,
     ) {
-        let key = SyntaxKey {
+        let position = SyntaxPosition {
             generation: self.generation,
             file,
             hunk,
             side,
         };
-        if !requested.insert(key) {
+        if !requested.insert(position) {
             return;
         }
         if let Some(syntax) = self.syntax.as_mut() {
@@ -1871,7 +1971,7 @@ impl DiffApp {
 
     fn drain_syntax(&mut self) {
         if let Some(syntax) = self.syntax.as_mut()
-            && syntax.drain(self.generation)
+            && syntax.drain(self.generation, MAX_SYNTAX_RESULTS_PER_FRAME)
         {
             self.dirty = true;
         }
@@ -1893,7 +1993,7 @@ impl DiffApp {
     ) -> Option<HighlightedLine> {
         self.syntax.as_mut().and_then(|syntax| {
             syntax.line(
-                SyntaxKey {
+                SyntaxPosition {
                     generation: self.generation,
                     file,
                     hunk,
@@ -2632,12 +2732,7 @@ mod tests {
             Err(SyntaxQueueError::Stale)
         );
 
-        let fresh = SyntaxKey {
-            generation: 1,
-            file: 0,
-            hunk: 0,
-            side: DiffSide::New,
-        };
+        let fresh = syntax_key_with_generation(1, 0);
         queue
             .try_push(syntax_job(fresh), SyntaxPriority::Visible)
             .unwrap();
@@ -2657,11 +2752,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(build_hunk_source(&lines, DiffSide::New).is_none());
+        assert_eq!(
+            build_hunk_source(&lines, DiffSide::New).unwrap_err(),
+            SyntaxSkipReason::TooLarge
+        );
     }
 
     #[test]
-    fn oversized_lines_fall_back_without_disabling_the_whole_hunk() {
+    fn oversized_lines_disable_hunk_highlighting() {
         let lines = vec![
             DiffLine {
                 kind: DiffLineKind::Context,
@@ -2677,11 +2775,67 @@ mod tests {
             },
         ];
 
+        assert_eq!(
+            build_hunk_source(&lines, DiffSide::New).unwrap_err(),
+            SyntaxSkipReason::TooLarge
+        );
+    }
+
+    #[test]
+    fn hunk_source_excludes_diff_meta_lines_and_preserves_empty_lines() {
+        let lines = vec![
+            DiffLine {
+                kind: DiffLineKind::Context,
+                old_line: Some(1),
+                new_line: Some(1),
+                text: "let a = 1;".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Meta,
+                old_line: None,
+                new_line: None,
+                text: "\\ No newline at end of file".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(2),
+                text: String::new(),
+            },
+        ];
+
+        let source = build_hunk_source(&lines, DiffSide::New).unwrap();
+
+        assert_eq!(source.text, "let a = 1;\n");
+        assert_eq!(source.line_map, vec![0, 2]);
+        assert_eq!(source.line_count, 3);
+    }
+
+    #[test]
+    fn hunk_source_keeps_single_line_without_trailing_newline_marker() {
+        let lines = vec![DiffLine {
+            kind: DiffLineKind::Addition,
+            old_line: None,
+            new_line: Some(1),
+            text: "let value = 1;".to_owned(),
+        }];
+
         let source = build_hunk_source(&lines, DiffSide::New).unwrap();
 
         assert_eq!(source.text, "let value = 1;");
-        assert_eq!(source.line_map, vec![1]);
-        assert_eq!(source.line_count, 2);
+        assert_eq!(source.line_map, vec![0]);
+        assert_eq!(source.line_count, 1);
+    }
+
+    #[test]
+    fn queue_close_wakes_blocked_pop() {
+        let queue = SyntaxWorkerQueue::new(8, 0);
+        let worker_queue = queue.clone();
+        let worker = thread::spawn(move || worker_queue.pop());
+
+        queue.close();
+
+        assert!(worker.join().unwrap().is_none());
     }
 
     fn changeset_with_context_lines(line_count: usize) -> Changeset {
@@ -2718,11 +2872,21 @@ mod tests {
     }
 
     fn syntax_key(file: usize) -> SyntaxKey {
+        syntax_key_with_generation(0, file)
+    }
+
+    fn syntax_key_with_generation(generation: u64, file: usize) -> SyntaxKey {
         SyntaxKey {
-            generation: 0,
-            file,
-            hunk: 0,
-            side: DiffSide::New,
+            position: SyntaxPosition {
+                generation,
+                file,
+                hunk: 0,
+                side: DiffSide::New,
+            },
+            source_kind: SyntaxSourceKind::HunkSide,
+            source_hash: file as u64,
+            language_hash: 1,
+            theme_id: SYNTAX_THEME_ID,
         }
     }
 

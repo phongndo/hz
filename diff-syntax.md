@@ -3,10 +3,27 @@
 `hz diff` syntax highlighting should stay fast, explicit, and safe:
 
 - `hz diff` never downloads parsers while rendering.
-- Users opt in with `hz ts add <language>` and remove with `hz ts rm <language>`.
+- Common/compiler languages are bundled for zero-config highlighting.
+- Users add extra languages with `hz ts add <language>` and remove them with `hz ts rm <language>`.
+- User-cache parser libraries require matching checksum records before loading.
 - Missing parsers, missing highlight queries, oversized hunks, and oversized lines fall back to plain diff text.
 - Diff backgrounds stay authoritative; syntax highlighting only supplies foreground color.
 - Parser/highlight work must not block scrolling.
+
+## Current status
+
+Syntax highlighting is implemented and on by default for bundled core languages.
+The interactive renderer is still hunk-local, lazy, bounded, and non-downloading.
+`hz diff --no-syntax` / `hz --no-syntax` disables syntax for a run.
+
+Language management currently supports:
+
+- `hz ts add <language>` / `hz ts rm <language>` for extra user-cache parsers.
+- `hz ts ls` (`hz ts list`) as a compact table with aligned `language`, `status`, `source`, and `version` columns.
+- `hz ts doctor`, `hz ts clean`, `hz ts path`, and `hz ts available` for diagnostics and cache maintenance.
+
+Open follow-up work remains in Phases 3–7 below: richer filters/update/group commands,
+theme/config knobs, full-file highlighting, inline emphasis, and semantic experiments.
 
 ## Phase 0: MVP foundation
 
@@ -32,9 +49,14 @@ Status: implemented.
 - Prioritize visible rows, then one viewport of prefetch ahead/behind.
 - Drop stale queued jobs when live reload increments the generation.
 - Add tests proving `hz diff` does not download parsers.
-- Add tests for missing parser, missing query, huge hunk, and huge line fallback.
+- Add tests for missing parser, missing query, huge hunk, huge line fallback,
+  meta-line exclusion, empty lines, and no-trailing-newline mapping.
 - Improve `hz ts rm` output to distinguish config removal from physical parser deletion.
 - Add clearer `hz ts doctor` checks for stale config, missing cache files, and load failures.
+- Add parser checksum records and verify user-cache parser libraries before loading.
+- Bundle a curated core language set for zero-config highlighting.
+- Add `hz diff --no-syntax` / `hz --no-syntax` escape hatch.
+- Add TypeScript/TSX highlight query fallback using the bundled JavaScript query.
 
 ## Phase 2: benchmark and tune performance
 
@@ -112,6 +134,17 @@ Completed items:
 
 ## Phase 3: polish language management
 
+Status: partially implemented.
+
+Implemented:
+
+- Compact `hz ts ls` table aligned with `hz ls`.
+- `hz ts ls` alias for `hz ts list`.
+- Full `status` header with centered status glyphs/labels in both `hz ts ls` and `hz ls`.
+- `source` and `version` columns for bundled and cached parser visibility.
+
+Remaining:
+
 - Add `hz ts available --installed` and `hz ts available --enabled` filters.
 - Add `hz ts update <language>` and `hz ts update --all`.
 - Add language groups:
@@ -119,7 +152,7 @@ Completed items:
   - `systems`: `rust`, `c`, `cpp`, `go`, `zig`, `bash`, `make`, `cmake`
   - `web`: `javascript`, `typescript`, `tsx`, `jsx`, `html`, `css`, `json`, `yaml`, `toml`
 - Add `hz ts add --group <name>`.
-- Add aliases for common user inputs like `c++`, `shell`, `sh`, and extensions.
+- Add aliases for common user inputs like `c++`, `shell`, `sh`, basenames, and extensions.
 - Consider a `hz ts doctor --repair` mode for stale enabled languages.
 
 ## Phase 4: theme and config support
@@ -127,7 +160,7 @@ Completed items:
 - Add user-local syntax config for performance and theme knobs.
 - Keep repo-local `.hz/hz.toml` out of parser download decisions.
 - Add configurable syntax theme names such as `terminal-dark`, `terminal-light`, and `minimal`.
-- Allow disabling syntax globally without removing installed parsers.
+- Allow richer syntax modes (`builtin`, `all`) without removing installed parsers.
 - Keep color layering stable:
   1. diff row background
   2. syntax foreground
