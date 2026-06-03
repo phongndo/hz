@@ -597,6 +597,8 @@ name = "hz-bench"
 version = "0.1.2"
 dependencies = [
  "clap",
+ "hz-diff",
+ "hz-tui",
  "serde",
  "serde_json",
 ]

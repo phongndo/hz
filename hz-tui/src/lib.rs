@@ -1,9 +1,13 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     ffi::OsStr,
+    hash::Hash,
     io,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    sync::{
+        Arc, Condvar, Mutex,
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -46,7 +50,67 @@ const UNIFIED_GUTTER_WIDTH: usize = 13;
 const NOTICE_TTL: Duration = Duration::from_millis(1_500);
 const MAX_HIGHLIGHT_HUNK_BYTES: usize = 128 * 1024;
 const MAX_HIGHLIGHT_LINE_BYTES: usize = 8 * 1024;
-const MAX_HIGHLIGHT_CACHE_ENTRIES: usize = 256;
+const MAX_HIGHLIGHT_CACHE_ENTRIES: usize = 512;
+const MAX_HIGHLIGHT_QUEUE_ENTRIES: usize = 512;
+const HIGHLIGHT_PREFETCH_VIEWPORTS: usize = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffBenchmarkOptions {
+    pub width: usize,
+    pub viewport_rows: usize,
+    pub scroll_step: usize,
+    pub max_scroll_steps: usize,
+}
+
+impl Default for DiffBenchmarkOptions {
+    fn default() -> Self {
+        Self {
+            width: 160,
+            viewport_rows: 40,
+            scroll_step: 20,
+            max_scroll_steps: 200,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffBenchmarkReport {
+    pub syntax_enabled: bool,
+    pub row_count: usize,
+    pub file_count: usize,
+    pub hunk_count: usize,
+    pub open_micros: u128,
+    pub initial_render_micros: u128,
+    pub cold_scroll_steps: usize,
+    pub cold_scroll_total_micros: u128,
+    pub cold_scroll_max_micros: u128,
+    pub syntax_settle_micros: Option<u128>,
+    pub warm_scroll_steps: usize,
+    pub warm_scroll_total_micros: u128,
+    pub warm_scroll_max_micros: u128,
+    pub warm_cache_hits: u64,
+    pub warm_cache_misses: u64,
+    pub syntax: SyntaxBenchmarkReport,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyntaxBenchmarkReport {
+    pub queue_requests: u64,
+    pub jobs_queued: u64,
+    pub jobs_completed: u64,
+    pub jobs_failed: u64,
+    pub jobs_skipped: u64,
+    pub jobs_rejected: u64,
+    pub jobs_evicted: u64,
+    pub stale_results: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub cache_entries_peak: usize,
+    pub queue_depth_peak: usize,
+    pub source_bytes_queued: u64,
+    pub source_lines_queued: u64,
+    pub estimated_memory_peak_bytes: u64,
+}
 
 fn muted() -> Color {
     Color::Rgb(125, 135, 148)
@@ -105,6 +169,145 @@ pub fn run_diff_with_live_updates(options: DiffOptions, live_updates: bool) -> H
 
     result?;
     cleanup_result
+}
+
+pub fn benchmark_diff_view(
+    changeset: Changeset,
+    syntax_languages: Option<Vec<String>>,
+    options: DiffBenchmarkOptions,
+) -> DiffBenchmarkReport {
+    let options = sanitize_benchmark_options(options);
+    let file_count = changeset.files.len();
+    let hunk_count = changeset.files.iter().map(|file| file.hunks.len()).sum();
+    let syntax_mode = syntax_languages
+        .map(SyntaxStartupMode::Languages)
+        .unwrap_or(SyntaxStartupMode::Disabled);
+
+    let open_start = Instant::now();
+    let mut app = DiffApp::new_with_syntax(
+        DiffOptions::default(),
+        changeset,
+        DiffLayoutMode::Split,
+        syntax_mode,
+    );
+    let open_micros = open_start.elapsed().as_micros();
+    let row_count = app.model.len();
+    let syntax_enabled = app.syntax.is_some();
+
+    app.set_viewport_rows(options.viewport_rows);
+
+    let initial_render_start = Instant::now();
+    render_viewport_for_benchmark(&mut app, options.width);
+    let initial_render_micros = initial_render_start.elapsed().as_micros();
+
+    let positions = benchmark_scroll_positions(
+        app.model.len(),
+        options.viewport_rows,
+        options.scroll_step,
+        options.max_scroll_steps,
+    );
+    let (cold_scroll_total_micros, cold_scroll_max_micros) =
+        benchmark_scroll_pass(&mut app, &positions, options.width);
+
+    let syntax_settle_micros =
+        settle_syntax_for_benchmark(&mut app).map(|duration| duration.as_micros());
+
+    let before_warm_stats = app.syntax_stats();
+    let (warm_scroll_total_micros, warm_scroll_max_micros) =
+        benchmark_scroll_pass(&mut app, &positions, options.width);
+    let after_warm_stats = app.syntax_stats();
+
+    DiffBenchmarkReport {
+        syntax_enabled,
+        row_count,
+        file_count,
+        hunk_count,
+        open_micros,
+        initial_render_micros,
+        cold_scroll_steps: positions.len(),
+        cold_scroll_total_micros,
+        cold_scroll_max_micros,
+        syntax_settle_micros,
+        warm_scroll_steps: positions.len(),
+        warm_scroll_total_micros,
+        warm_scroll_max_micros,
+        warm_cache_hits: after_warm_stats
+            .cache_hits
+            .saturating_sub(before_warm_stats.cache_hits),
+        warm_cache_misses: after_warm_stats
+            .cache_misses
+            .saturating_sub(before_warm_stats.cache_misses),
+        syntax: after_warm_stats,
+    }
+}
+
+fn sanitize_benchmark_options(mut options: DiffBenchmarkOptions) -> DiffBenchmarkOptions {
+    options.width = options.width.max(1);
+    options.viewport_rows = options.viewport_rows.max(1);
+    options.scroll_step = options.scroll_step.max(1);
+    options.max_scroll_steps = options.max_scroll_steps.max(1);
+    options
+}
+
+fn render_viewport_for_benchmark(app: &mut DiffApp, width: usize) {
+    app.prepare_syntax_for_viewport(app.viewport_rows);
+    for offset in 0..app.viewport_rows {
+        let Some(row) = app.model.row(app.scroll + offset) else {
+            continue;
+        };
+        let _ = render_row(app, row, width);
+    }
+}
+
+fn benchmark_scroll_pass(app: &mut DiffApp, positions: &[usize], width: usize) -> (u128, u128) {
+    let mut total = 0u128;
+    let mut max = 0u128;
+    for position in positions {
+        let start = Instant::now();
+        app.drain_syntax();
+        app.set_scroll(*position);
+        render_viewport_for_benchmark(app, width);
+        let elapsed = start.elapsed().as_micros();
+        total = total.saturating_add(elapsed);
+        max = max.max(elapsed);
+    }
+    (total, max)
+}
+
+fn benchmark_scroll_positions(
+    row_count: usize,
+    viewport_rows: usize,
+    scroll_step: usize,
+    max_steps: usize,
+) -> Vec<usize> {
+    let max_scroll = max_scroll_for_viewport(row_count, viewport_rows);
+    let mut positions = Vec::new();
+    let mut position = 0usize;
+
+    while positions.len() < max_steps {
+        positions.push(position);
+        if position >= max_scroll {
+            break;
+        }
+        position = position.saturating_add(scroll_step).min(max_scroll);
+    }
+
+    positions
+}
+
+fn settle_syntax_for_benchmark(app: &mut DiffApp) -> Option<Duration> {
+    app.syntax.as_ref()?;
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(30);
+    loop {
+        app.drain_syntax();
+        let idle = app.syntax.as_ref().is_none_or(SyntaxRuntime::is_idle);
+        if idle || start.elapsed() >= timeout {
+            return Some(start.elapsed());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 struct TerminalCleanup {
@@ -234,15 +437,286 @@ struct HighlightedSide {
     lines: Vec<Option<HighlightedLine>>,
 }
 
+impl HighlightedSide {
+    fn memory_bytes(&self) -> usize {
+        self.lines
+            .iter()
+            .filter_map(Option::as_ref)
+            .flat_map(|line| line.segments.iter())
+            .map(|segment| segment.text.len())
+            .sum::<usize>()
+            .saturating_add(self.lines.len() * std::mem::size_of::<Option<HighlightedLine>>())
+    }
+}
+
+#[derive(Debug)]
+struct LruCache<K, V> {
+    entries: HashMap<K, V>,
+    order: VecDeque<K>,
+    capacity: usize,
+}
+
+impl<K, V> LruCache<K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn values(&self) -> impl Iterator<Item = &V> {
+        self.entries.values()
+    }
+
+    fn contains_key(&self, key: &K) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        if self.entries.contains_key(&key) {
+            self.entries.insert(key, value);
+            self.touch(&key);
+            return;
+        }
+
+        while self.entries.len() >= self.capacity {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+
+        self.entries.insert(key, value);
+        self.order.push_back(key);
+    }
+
+    fn get(&mut self, key: &K) -> Option<&V> {
+        if !self.entries.contains_key(key) {
+            return None;
+        }
+
+        self.touch(key);
+        self.entries.get(key)
+    }
+
+    fn touch(&mut self, key: &K) {
+        if let Some(index) = self.order.iter().position(|candidate| candidate == key) {
+            self.order.remove(index);
+        }
+        self.order.push_back(*key);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyntaxPriority {
+    Visible,
+    Prefetch,
+}
+
+#[derive(Debug, Clone)]
+struct SyntaxWorkerQueue {
+    inner: Arc<SyntaxWorkerQueueInner>,
+}
+
+#[derive(Debug)]
+struct SyntaxWorkerQueueInner {
+    state: Mutex<SyntaxWorkerQueueState>,
+    ready: Condvar,
+    capacity: usize,
+}
+
+#[derive(Debug)]
+struct SyntaxWorkerQueueState {
+    generation: u64,
+    visible: VecDeque<SyntaxJob>,
+    prefetch: VecDeque<SyntaxJob>,
+    closed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SyntaxQueuePush {
+    dropped: Option<SyntaxKey>,
+    depth: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyntaxQueueError {
+    Full,
+    Closed,
+    Stale,
+}
+
+impl SyntaxWorkerQueue {
+    fn new(capacity: usize, generation: u64) -> Self {
+        Self {
+            inner: Arc::new(SyntaxWorkerQueueInner {
+                state: Mutex::new(SyntaxWorkerQueueState {
+                    generation,
+                    visible: VecDeque::new(),
+                    prefetch: VecDeque::new(),
+                    closed: false,
+                }),
+                ready: Condvar::new(),
+                capacity,
+            }),
+        }
+    }
+
+    fn try_push(
+        &self,
+        job: SyntaxJob,
+        priority: SyntaxPriority,
+    ) -> Result<SyntaxQueuePush, SyntaxQueueError> {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| SyntaxQueueError::Closed)?;
+        if state.closed {
+            return Err(SyntaxQueueError::Closed);
+        }
+        if job.key.generation != state.generation {
+            return Err(SyntaxQueueError::Stale);
+        }
+        if self.inner.capacity == 0 {
+            return Err(SyntaxQueueError::Full);
+        }
+
+        let mut dropped = None;
+        if state.len() >= self.inner.capacity {
+            match priority {
+                SyntaxPriority::Visible => {
+                    let Some(evicted) = state.prefetch.pop_back() else {
+                        return Err(SyntaxQueueError::Full);
+                    };
+                    dropped = Some(evicted.key);
+                }
+                SyntaxPriority::Prefetch => return Err(SyntaxQueueError::Full),
+            }
+        }
+
+        match priority {
+            SyntaxPriority::Visible => state.visible.push_back(job),
+            SyntaxPriority::Prefetch => state.prefetch.push_back(job),
+        }
+        let depth = state.len();
+        self.inner.ready.notify_one();
+        Ok(SyntaxQueuePush { dropped, depth })
+    }
+
+    fn promote(&self, key: SyntaxKey) -> bool {
+        let Ok(mut state) = self.inner.state.lock() else {
+            return false;
+        };
+        if state.closed {
+            return false;
+        }
+
+        let Some(index) = state.prefetch.iter().position(|job| job.key == key) else {
+            return false;
+        };
+        let Some(job) = state.prefetch.remove(index) else {
+            return false;
+        };
+        state.visible.push_back(job);
+        self.inner.ready.notify_one();
+        true
+    }
+
+    fn set_generation(&self, generation: u64) {
+        let Ok(mut state) = self.inner.state.lock() else {
+            return;
+        };
+        state.generation = generation;
+        state.visible.retain(|job| job.key.generation == generation);
+        state
+            .prefetch
+            .retain(|job| job.key.generation == generation);
+        self.inner.ready.notify_all();
+    }
+
+    fn pop(&self) -> Option<SyntaxJob> {
+        let mut state = self.inner.state.lock().ok()?;
+        loop {
+            if state.closed {
+                return None;
+            }
+
+            let job = state
+                .visible
+                .pop_front()
+                .or_else(|| state.prefetch.pop_front());
+            if let Some(job) = job {
+                if job.key.generation == state.generation {
+                    return Some(job);
+                }
+                continue;
+            }
+
+            state = self.inner.ready.wait(state).ok()?;
+        }
+    }
+
+    fn close(&self) {
+        let Ok(mut state) = self.inner.state.lock() else {
+            return;
+        };
+        state.closed = true;
+        state.visible.clear();
+        state.prefetch.clear();
+        self.inner.ready.notify_all();
+    }
+
+    fn len(&self) -> usize {
+        let Ok(state) = self.inner.state.lock() else {
+            return 0;
+        };
+        state.len()
+    }
+
+    #[cfg(test)]
+    fn try_pop(&self) -> Option<SyntaxJob> {
+        let mut state = self.inner.state.lock().ok()?;
+        state
+            .visible
+            .pop_front()
+            .or_else(|| state.prefetch.pop_front())
+    }
+}
+
+impl SyntaxWorkerQueueState {
+    fn len(&self) -> usize {
+        self.visible.len() + self.prefetch.len()
+    }
+}
+
 #[derive(Debug)]
 struct SyntaxRuntime {
     languages: SyntaxLanguageSet,
-    command_tx: Sender<SyntaxCommand>,
     result_rx: Receiver<SyntaxResult>,
     _worker: thread::JoinHandle<()>,
-    cache: HashMap<SyntaxKey, HighlightedSide>,
+    queue: SyntaxWorkerQueue,
+    cache: LruCache<SyntaxKey, HighlightedSide>,
     pending: HashSet<SyntaxKey>,
     skipped: HashSet<SyntaxKey>,
+    stats: SyntaxBenchmarkReport,
 }
 
 impl SyntaxRuntime {
@@ -252,25 +726,51 @@ impl SyntaxRuntime {
             return Ok(None);
         }
 
-        let (command_tx, command_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
-        let worker = thread::spawn(move || run_syntax_worker(command_rx, result_tx));
+        let queue = SyntaxWorkerQueue::new(MAX_HIGHLIGHT_QUEUE_ENTRIES, 0);
+        let worker_queue = queue.clone();
+        let worker = thread::spawn(move || run_syntax_worker(worker_queue, result_tx));
 
         Ok(Some(Self {
             languages,
-            command_tx,
             result_rx,
             _worker: worker,
-            cache: HashMap::new(),
+            queue,
+            cache: LruCache::new(MAX_HIGHLIGHT_CACHE_ENTRIES),
             pending: HashSet::new(),
             skipped: HashSet::new(),
+            stats: SyntaxBenchmarkReport::default(),
         }))
     }
 
-    fn clear(&mut self) {
+    fn start_with_languages(languages: Vec<String>) -> Option<Self> {
+        let languages = SyntaxLanguageSet::from_enabled_languages(&languages);
+        if languages.is_empty() {
+            return None;
+        }
+
+        let (result_tx, result_rx) = mpsc::channel();
+        let queue = SyntaxWorkerQueue::new(MAX_HIGHLIGHT_QUEUE_ENTRIES, 0);
+        let worker_queue = queue.clone();
+        let worker = thread::spawn(move || run_syntax_worker(worker_queue, result_tx));
+
+        Some(Self {
+            languages,
+            result_rx,
+            _worker: worker,
+            queue,
+            cache: LruCache::new(MAX_HIGHLIGHT_CACHE_ENTRIES),
+            pending: HashSet::new(),
+            skipped: HashSet::new(),
+            stats: SyntaxBenchmarkReport::default(),
+        })
+    }
+
+    fn clear(&mut self, generation: u64) {
         self.cache.clear();
         self.pending.clear();
         self.skipped.clear();
+        self.queue.set_generation(generation);
     }
 
     fn queue_hunk(
@@ -280,6 +780,7 @@ impl SyntaxRuntime {
         file: usize,
         hunk: usize,
         side: DiffSide,
+        priority: SyntaxPriority,
     ) {
         let key = SyntaxKey {
             generation,
@@ -287,43 +788,73 @@ impl SyntaxRuntime {
             hunk,
             side,
         };
-        if self.cache.contains_key(&key)
-            || self.pending.contains(&key)
-            || self.skipped.contains(&key)
-        {
+        self.stats.queue_requests = self.stats.queue_requests.saturating_add(1);
+        if self.cache.contains_key(&key) || self.skipped.contains(&key) {
+            return;
+        }
+        if self.pending.contains(&key) {
+            if priority == SyntaxPriority::Visible {
+                self.queue.promote(key);
+            }
             return;
         }
 
         let Some(file_diff) = changeset.files.get(file) else {
             self.skipped.insert(key);
+            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
             return;
         };
         let Some(path) = syntax_path(file_diff, side) else {
             self.skipped.insert(key);
+            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
             return;
         };
         let Some(language) = self.languages.language_for_path(path) else {
             self.skipped.insert(key);
+            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
             return;
         };
         let Some(hunk_diff) = file_diff.hunks.get(hunk) else {
             self.skipped.insert(key);
+            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
             return;
         };
         let Some(source) = build_hunk_source(&hunk_diff.lines, side) else {
             self.skipped.insert(key);
+            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
             return;
         };
+
+        let source_bytes = source.text.len() as u64;
+        let source_lines = source.line_map.len() as u64;
 
         let job = SyntaxJob {
             key,
             language,
             source,
         };
-        if self.command_tx.send(SyntaxCommand::Highlight(job)).is_ok() {
-            self.pending.insert(key);
-        } else {
-            self.skipped.insert(key);
+
+        match self.queue.try_push(job, priority) {
+            Ok(push) => {
+                if let Some(dropped) = push.dropped {
+                    self.pending.remove(&dropped);
+                    self.stats.jobs_evicted = self.stats.jobs_evicted.saturating_add(1);
+                }
+                self.stats.jobs_queued = self.stats.jobs_queued.saturating_add(1);
+                self.stats.queue_depth_peak = self.stats.queue_depth_peak.max(push.depth);
+                self.stats.source_bytes_queued =
+                    self.stats.source_bytes_queued.saturating_add(source_bytes);
+                self.stats.source_lines_queued =
+                    self.stats.source_lines_queued.saturating_add(source_lines);
+                self.pending.insert(key);
+            }
+            Err(SyntaxQueueError::Full | SyntaxQueueError::Stale) => {
+                self.stats.jobs_rejected = self.stats.jobs_rejected.saturating_add(1);
+            }
+            Err(SyntaxQueueError::Closed) => {
+                self.skipped.insert(key);
+                self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
+            }
         }
     }
 
@@ -332,45 +863,63 @@ impl SyntaxRuntime {
         while let Ok(result) = self.result_rx.try_recv() {
             self.pending.remove(&result.key);
             if result.key.generation != generation {
+                self.stats.stale_results = self.stats.stale_results.saturating_add(1);
                 continue;
             }
 
             match result.side {
                 Ok(side) => {
-                    if self.cache.len() >= MAX_HIGHLIGHT_CACHE_ENTRIES
-                        && let Some(key) = self.cache.keys().next().copied()
-                    {
-                        self.cache.remove(&key);
-                    }
                     self.cache.insert(result.key, side);
+                    self.stats.jobs_completed = self.stats.jobs_completed.saturating_add(1);
+                    self.stats.cache_entries_peak =
+                        self.stats.cache_entries_peak.max(self.cache.len());
+                    self.stats.estimated_memory_peak_bytes = self
+                        .stats
+                        .estimated_memory_peak_bytes
+                        .max(self.estimated_memory_bytes() as u64);
                     changed = true;
                 }
                 Err(()) => {
                     self.skipped.insert(result.key);
+                    self.stats.jobs_failed = self.stats.jobs_failed.saturating_add(1);
                 }
             }
         }
         changed
     }
 
-    fn line(&self, key: SyntaxKey, line: usize) -> Option<&HighlightedLine> {
-        self.cache
+    fn line(&mut self, key: SyntaxKey, line: usize) -> Option<HighlightedLine> {
+        let highlighted = self
+            .cache
             .get(&key)
             .and_then(|side| side.lines.get(line))
             .and_then(Option::as_ref)
+            .cloned();
+        if highlighted.is_some() {
+            self.stats.cache_hits = self.stats.cache_hits.saturating_add(1);
+        } else {
+            self.stats.cache_misses = self.stats.cache_misses.saturating_add(1);
+        }
+        highlighted
+    }
+
+    fn is_idle(&self) -> bool {
+        self.pending.is_empty() && self.queue.len() == 0
+    }
+
+    fn stats(&self) -> SyntaxBenchmarkReport {
+        self.stats.clone()
+    }
+
+    fn estimated_memory_bytes(&self) -> usize {
+        self.cache.values().map(HighlightedSide::memory_bytes).sum()
     }
 }
 
 impl Drop for SyntaxRuntime {
     fn drop(&mut self) {
-        let _ = self.command_tx.send(SyntaxCommand::Stop);
+        self.queue.close();
     }
-}
-
-#[derive(Debug)]
-enum SyntaxCommand {
-    Highlight(SyntaxJob),
-    Stop,
 }
 
 #[derive(Debug)]
@@ -393,13 +942,9 @@ struct HunkSource {
     line_count: usize,
 }
 
-fn run_syntax_worker(command_rx: Receiver<SyntaxCommand>, result_tx: Sender<SyntaxResult>) {
+fn run_syntax_worker(queue: SyntaxWorkerQueue, result_tx: Sender<SyntaxResult>) {
     let mut highlighter = SyntaxHighlighter::new();
-    while let Ok(command) = command_rx.recv() {
-        let SyntaxCommand::Highlight(job) = command else {
-            break;
-        };
-
+    while let Some(job) = queue.pop() {
         let side = highlighter
             .highlight(&job.language, &job.source.text)
             .map(|highlighted| highlighted_side(job.source, highlighted.lines))
@@ -1039,6 +1584,13 @@ struct Notice {
     expires_at: Instant,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SyntaxStartupMode {
+    Config,
+    Disabled,
+    Languages(Vec<String>),
+}
+
 #[derive(Debug)]
 struct DiffApp {
     options: DiffOptions,
@@ -1058,17 +1610,32 @@ struct DiffApp {
 
 impl DiffApp {
     fn new(options: DiffOptions, changeset: Changeset, layout: DiffLayoutMode) -> Self {
+        Self::new_with_syntax(options, changeset, layout, SyntaxStartupMode::Config)
+    }
+
+    fn new_with_syntax(
+        options: DiffOptions,
+        changeset: Changeset,
+        layout: DiffLayoutMode,
+        syntax_mode: SyntaxStartupMode,
+    ) -> Self {
         let model = UiModel::new(&changeset, layout);
         let stats = changeset.stats();
-        let (syntax, notice) = match SyntaxRuntime::start() {
-            Ok(syntax) => (syntax, None),
-            Err(error) => (
-                None,
-                Some(Notice {
-                    text: format!("syntax disabled: {error}"),
-                    expires_at: Instant::now() + NOTICE_TTL,
-                }),
-            ),
+        let (syntax, notice) = match syntax_mode {
+            SyntaxStartupMode::Config => match SyntaxRuntime::start() {
+                Ok(syntax) => (syntax, None),
+                Err(error) => (
+                    None,
+                    Some(Notice {
+                        text: format!("syntax disabled: {error}"),
+                        expires_at: Instant::now() + NOTICE_TTL,
+                    }),
+                ),
+            },
+            SyntaxStartupMode::Disabled => (None, None),
+            SyntaxStartupMode::Languages(languages) => {
+                (SyntaxRuntime::start_with_languages(languages), None)
+            }
         };
         Self {
             options,
@@ -1186,7 +1753,64 @@ impl DiffApp {
         self.set_scroll(self.scroll);
     }
 
-    fn prepare_syntax_for_row(&mut self, row: UiRow) {
+    fn prepare_syntax_for_viewport(&mut self, visible_rows: usize) {
+        if visible_rows == 0 {
+            return;
+        }
+        let mut requested = HashSet::new();
+
+        let visible_start = self.scroll;
+        let visible_end = visible_start
+            .saturating_add(visible_rows)
+            .min(self.model.len());
+        self.prepare_syntax_for_range(
+            visible_start,
+            visible_end,
+            SyntaxPriority::Visible,
+            &mut requested,
+        );
+
+        let prefetch_rows = visible_rows.saturating_mul(HIGHLIGHT_PREFETCH_VIEWPORTS);
+        let ahead_end = visible_end
+            .saturating_add(prefetch_rows)
+            .min(self.model.len());
+        self.prepare_syntax_for_range(
+            visible_end,
+            ahead_end,
+            SyntaxPriority::Prefetch,
+            &mut requested,
+        );
+
+        let behind_start = visible_start.saturating_sub(prefetch_rows);
+        self.prepare_syntax_for_range(
+            behind_start,
+            visible_start,
+            SyntaxPriority::Prefetch,
+            &mut requested,
+        );
+    }
+
+    fn prepare_syntax_for_range(
+        &mut self,
+        start: usize,
+        end: usize,
+        priority: SyntaxPriority,
+        requested: &mut HashSet<SyntaxKey>,
+    ) {
+        for row_index in start..end {
+            let Some(row) = self.model.row(row_index) else {
+                continue;
+            };
+            self.prepare_syntax_for_row(row, priority, requested);
+        }
+    }
+
+    fn prepare_syntax_for_row(
+        &mut self,
+        row: UiRow,
+        priority: SyntaxPriority,
+        requested: &mut HashSet<SyntaxKey>,
+    ) {
         match row {
             UiRow::UnifiedLine { file, hunk, line } => {
                 let Some(diff_line) = self
@@ -1199,7 +1823,7 @@ impl DiffApp {
                     return;
                 };
                 if let Some(side) = unified_syntax_side(diff_line.kind) {
-                    self.queue_syntax_hunk(file, hunk, side);
+                    self.queue_syntax_hunk(file, hunk, side, priority, requested);
                 }
             }
             UiRow::SplitLine {
@@ -1209,10 +1833,10 @@ impl DiffApp {
                 right,
             } => {
                 if left.is_some() {
-                    self.queue_syntax_hunk(file, hunk, DiffSide::Old);
+                    self.queue_syntax_hunk(file, hunk, DiffSide::Old, priority, requested);
                 }
                 if right.is_some() {
-                    self.queue_syntax_hunk(file, hunk, DiffSide::New);
+                    self.queue_syntax_hunk(file, hunk, DiffSide::New, priority, requested);
                 }
             }
             UiRow::FileHeader(_)
@@ -1223,9 +1847,25 @@ impl DiffApp {
         }
     }
 
-    fn queue_syntax_hunk(&mut self, file: usize, hunk: usize, side: DiffSide) {
+    fn queue_syntax_hunk(
+        &mut self,
+        file: usize,
+        hunk: usize,
+        side: DiffSide,
+        priority: SyntaxPriority,
+        requested: &mut HashSet<SyntaxKey>,
+    ) {
+        let key = SyntaxKey {
+            generation: self.generation,
+            file,
+            hunk,
+            side,
+        };
+        if !requested.insert(key) {
+            return;
+        }
         if let Some(syntax) = self.syntax.as_mut() {
-            syntax.queue_hunk(&self.changeset, self.generation, file, hunk, side);
+            syntax.queue_hunk(&self.changeset, self.generation, file, hunk, side, priority);
         }
     }
 
@@ -1237,14 +1877,21 @@ impl DiffApp {
         }
     }
 
+    fn syntax_stats(&self) -> SyntaxBenchmarkReport {
+        self.syntax
+            .as_ref()
+            .map(SyntaxRuntime::stats)
+            .unwrap_or_default()
+    }
+
     fn syntax_line(
-        &self,
+        &mut self,
         file: usize,
         hunk: usize,
         line: usize,
         side: DiffSide,
-    ) -> Option<&HighlightedLine> {
-        self.syntax.as_ref().and_then(|syntax| {
+    ) -> Option<HighlightedLine> {
+        self.syntax.as_mut().and_then(|syntax| {
             syntax.line(
                 SyntaxKey {
                     generation: self.generation,
@@ -1353,7 +2000,7 @@ impl DiffApp {
         self.changeset = changeset;
         self.generation = self.generation.wrapping_add(1);
         if let Some(syntax) = self.syntax.as_mut() {
-            syntax.clear();
+            syntax.clear(self.generation);
         }
         self.model = UiModel::new(&self.changeset, self.layout);
         self.selected_file = selected_file.min(self.changeset.files.len().saturating_sub(1));
@@ -1427,19 +2074,20 @@ fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
     }
 
     let visible_rows = area.height as usize;
+    app.prepare_syntax_for_viewport(visible_rows);
+
     let mut lines = Vec::with_capacity(visible_rows);
     for offset in 0..visible_rows {
         let Some(row) = app.model.row(app.scroll + offset) else {
             continue;
         };
-        app.prepare_syntax_for_row(row);
         lines.push(render_row(app, row, area.width as usize));
     }
 
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
-fn render_row(app: &DiffApp, row: UiRow, width: usize) -> Line<'static> {
+fn render_row(app: &mut DiffApp, row: UiRow, width: usize) -> Line<'static> {
     match row {
         UiRow::FileHeader(file_index) => {
             let file = &app.changeset.files[file_index];
@@ -1480,16 +2128,15 @@ fn render_row(app: &DiffApp, row: UiRow, width: usize) -> Line<'static> {
             ))
         }
         UiRow::UnifiedLine { file, hunk, line } => {
-            let diff_line = &app.changeset.files[file].hunks[hunk].lines[line];
+            let diff_line = app.changeset.files[file].hunks[hunk].lines[line].clone();
             let syntax = unified_syntax_side(diff_line.kind)
                 .and_then(|side| app.syntax_line(file, hunk, line, side));
-            render_unified_line(diff_line, syntax, width)
+            render_unified_line(&diff_line, syntax.as_ref(), width)
         }
-        UiRow::MetaLine { file, hunk, line } => render_unified_line(
-            &app.changeset.files[file].hunks[hunk].lines[line],
-            None,
-            width,
-        ),
+        UiRow::MetaLine { file, hunk, line } => {
+            let diff_line = app.changeset.files[file].hunks[hunk].lines[line].clone();
+            render_unified_line(&diff_line, None, width)
+        }
         UiRow::SplitLine {
             file,
             hunk,
@@ -1595,7 +2242,7 @@ fn syntax_fg(class: SyntaxClass) -> Option<Color> {
 }
 
 fn render_split_line(
-    app: &DiffApp,
+    app: &mut DiffApp,
     file: usize,
     hunk: usize,
     left: Option<usize>,
@@ -1606,13 +2253,22 @@ fn render_split_line(
         return Line::default();
     }
 
+    let (left_line, right_line) = {
+        let lines = &app.changeset.files[file].hunks[hunk].lines;
+        (
+            left.and_then(|index| lines.get(index)).cloned(),
+            right.and_then(|index| lines.get(index)).cloned(),
+        )
+    };
+    let left_syntax = left.and_then(|index| app.syntax_line(file, hunk, index, DiffSide::Old));
+    let right_syntax = right.and_then(|index| app.syntax_line(file, hunk, index, DiffSide::New));
+
     let separator_width = usize::from(width > 1);
     let left_width = width.saturating_sub(separator_width) / 2;
     let right_width = width.saturating_sub(separator_width + left_width);
-    let lines = &app.changeset.files[file].hunks[hunk].lines;
     let mut spans = split_cell_spans(
-        left.and_then(|index| lines.get(index)),
-        left.and_then(|index| app.syntax_line(file, hunk, index, DiffSide::Old)),
+        left_line.as_ref(),
+        left_syntax.as_ref(),
         SplitSide::Old,
         left_width,
     );
@@ -1620,8 +2276,8 @@ fn render_split_line(
         spans.push(Span::styled("│", Style::default().fg(muted())));
     }
     spans.extend(split_cell_spans(
-        right.and_then(|index| lines.get(index)),
-        right.and_then(|index| app.syntax_line(file, hunk, index, DiffSide::New)),
+        right_line.as_ref(),
+        right_syntax.as_ref(),
         SplitSide::New,
         right_width,
     ));
@@ -1908,6 +2564,126 @@ mod tests {
         );
     }
 
+    #[test]
+    fn highlight_cache_evicts_least_recently_used_entry() {
+        let mut cache = LruCache::new(2);
+        let first = syntax_key(0);
+        let second = syntax_key(1);
+        let third = syntax_key(2);
+
+        cache.insert(first, 1);
+        cache.insert(second, 2);
+        assert_eq!(cache.get(&first), Some(&1));
+
+        cache.insert(third, 3);
+
+        assert_eq!(cache.get(&second), None);
+        assert_eq!(cache.get(&first), Some(&1));
+        assert_eq!(cache.get(&third), Some(&3));
+    }
+
+    #[test]
+    fn highlight_queue_runs_visible_jobs_before_prefetch_jobs() {
+        let queue = SyntaxWorkerQueue::new(8, 0);
+        let prefetch = syntax_key(1);
+        let visible = syntax_key(2);
+
+        queue
+            .try_push(syntax_job(prefetch), SyntaxPriority::Prefetch)
+            .unwrap();
+        queue
+            .try_push(syntax_job(visible), SyntaxPriority::Visible)
+            .unwrap();
+
+        assert_eq!(queue.try_pop().map(|job| job.key), Some(visible));
+        assert_eq!(queue.try_pop().map(|job| job.key), Some(prefetch));
+    }
+
+    #[test]
+    fn visible_highlight_job_can_evict_prefetch_when_queue_is_full() {
+        let queue = SyntaxWorkerQueue::new(1, 0);
+        let prefetch = syntax_key(1);
+        let visible = syntax_key(2);
+
+        queue
+            .try_push(syntax_job(prefetch), SyntaxPriority::Prefetch)
+            .unwrap();
+        let pushed = queue
+            .try_push(syntax_job(visible), SyntaxPriority::Visible)
+            .unwrap();
+
+        assert_eq!(pushed.dropped, Some(prefetch));
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.try_pop().map(|job| job.key), Some(visible));
+    }
+
+    #[test]
+    fn stale_highlight_jobs_are_dropped_on_generation_change() {
+        let queue = SyntaxWorkerQueue::new(8, 0);
+
+        queue
+            .try_push(syntax_job(syntax_key(1)), SyntaxPriority::Prefetch)
+            .unwrap();
+        queue.set_generation(1);
+
+        assert_eq!(queue.len(), 0);
+        assert_eq!(
+            queue.try_push(syntax_job(syntax_key(2)), SyntaxPriority::Visible),
+            Err(SyntaxQueueError::Stale)
+        );
+
+        let fresh = SyntaxKey {
+            generation: 1,
+            file: 0,
+            hunk: 0,
+            side: DiffSide::New,
+        };
+        queue
+            .try_push(syntax_job(fresh), SyntaxPriority::Visible)
+            .unwrap();
+        assert_eq!(queue.try_pop().map(|job| job.key), Some(fresh));
+    }
+
+    #[test]
+    fn oversized_hunks_fall_back_to_plain_diff_text() {
+        let text = "x".repeat(MAX_HIGHLIGHT_LINE_BYTES);
+        let line_count = (MAX_HIGHLIGHT_HUNK_BYTES / MAX_HIGHLIGHT_LINE_BYTES) + 2;
+        let lines = (0..line_count)
+            .map(|index| DiffLine {
+                kind: DiffLineKind::Context,
+                old_line: Some(index + 1),
+                new_line: Some(index + 1),
+                text: text.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        assert!(build_hunk_source(&lines, DiffSide::New).is_none());
+    }
+
+    #[test]
+    fn oversized_lines_fall_back_without_disabling_the_whole_hunk() {
+        let lines = vec![
+            DiffLine {
+                kind: DiffLineKind::Context,
+                old_line: Some(1),
+                new_line: Some(1),
+                text: "x".repeat(MAX_HIGHLIGHT_LINE_BYTES + 1),
+            },
+            DiffLine {
+                kind: DiffLineKind::Context,
+                old_line: Some(2),
+                new_line: Some(2),
+                text: "let value = 1;".to_owned(),
+            },
+        ];
+
+        let source = build_hunk_source(&lines, DiffSide::New).unwrap();
+
+        assert_eq!(source.text, "let value = 1;");
+        assert_eq!(source.line_map, vec![1]);
+        assert_eq!(source.line_count, 2);
+    }
+
     fn changeset_with_context_lines(line_count: usize) -> Changeset {
         let lines = (1..=line_count)
             .map(|line| DiffLine {
@@ -1938,6 +2714,27 @@ mod tests {
                 is_binary: false,
             }],
             raw_patch: String::new(),
+        }
+    }
+
+    fn syntax_key(file: usize) -> SyntaxKey {
+        SyntaxKey {
+            generation: 0,
+            file,
+            hunk: 0,
+            side: DiffSide::New,
+        }
+    }
+
+    fn syntax_job(key: SyntaxKey) -> SyntaxJob {
+        SyntaxJob {
+            key,
+            language: "rust".to_owned(),
+            source: HunkSource {
+                text: "fn main() {}".to_owned(),
+                line_map: vec![0],
+                line_count: 1,
+            },
         }
     }
 }

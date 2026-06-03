@@ -25,6 +25,8 @@ Status: implemented as first step.
 
 ## Phase 1: harden the MVP
 
+Status: implemented.
+
 - Replace arbitrary cache eviction with a small LRU cache.
 - Add a bounded worker queue so fast scrolling cannot enqueue unlimited work.
 - Prioritize visible rows, then one viewport of prefetch ahead/behind.
@@ -36,16 +38,77 @@ Status: implemented as first step.
 
 ## Phase 2: benchmark and tune performance
 
-- Extend benchmark scenarios with syntax-enabled runs.
-- Measure initial TUI open latency, scroll latency, cache hit rate, queue depth, and memory growth.
-- Tune defaults for:
+Status: implemented.
+
+Implemented benchmark support:
+
+- Added syntax-oriented Rust fixture scenarios:
+  - `syntax-many-small-rust`
+  - `syntax-large-rust`
+  - `syntax-minified-rust`
+- Added `hz-bench measure` to report:
+  - patch load latency
+  - synthetic TUI open latency
+  - initial render latency
+  - cold and warm scroll latency
+  - syntax cache hit rate
+  - queue depth
+  - cache entries
+  - estimated syntax memory
+  - process RSS delta
+
+Local release benchmark command:
+
+```sh
+cargo run --release -p hz-bench -- fixtures --out target/bench-fixtures-phase2 --syntax --force
+target/release/hz-bench measure \
+  --fixtures target/bench-fixtures-phase2 \
+  --syntax \
+  --syntax-language rust \
+  --max-scroll-steps 200 \
+  --viewport-rows 40 \
+  --scroll-step 20 \
+  --width 160
+```
+
+Tuned defaults after measurement:
+
+- max hunk bytes: `128 KiB` unchanged; large hunks stay on the cheap fallback path.
+- max line bytes: `8 KiB` unchanged; minified/generated single-line files stay cheap.
+- cache entries: increased from `256` to `512`; many-small syntax runs can keep all measured hunk sides hot.
+- queue capacity: increased from `128` to `512`; visible plus one viewport prefetch avoids dropped/rejected syntax jobs in the many-small syntax run.
+- prefetch distance: `1` viewport unchanged; enough to warm nearby scrolling without runaway work.
+
+Representative local release results at 160 columns, 40 rows, 200 scroll samples:
+
+| scenario | mode | rows | open µs | cold scroll avg µs | warm scroll avg µs | warm hit | queue peak | cache peak | syntax mem |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| many-small-files | plain | 5040 | 92 | 48 | 39 | n/a | 0 | 0 | 0 |
+| many-small-files | syntax enabled, unsupported path fallback | 5040 | 130 | 34 | 33 | 0% | 0 | 0 | 0 |
+| syntax-many-small-rust | plain | 5040 | 65 | 32 | 32 | n/a | 0 | 0 | 0 |
+| syntax-many-small-rust | syntax | 5040 | 94 | 34 | 98 | 100% | 387 | 388 | ~645 KiB |
+| syntax-large-rust | syntax fallback, huge hunk | 16009 | 117 | 35 | 35 | 0% | 0 | 0 | 0 |
+| syntax-minified-rust | syntax fallback, huge line | 3 | 37 | 18 | 18 | 0% | 0 | 0 | 0 |
+
+Evaluation:
+
+- Unsupported-language fallback remains effectively as cheap as plain rendering.
+- Huge-hunk and huge-line fallback paths enqueue no parser work and do not grow syntax memory.
+- Warm syntax rendering is slower than plain rendering because it emits multiple styled spans per line, but stays below 0.1 ms per measured scroll step in the many-small Rust fixture.
+- Syntax cache memory stayed under 1 MiB estimated for the measured many-small Rust run; process RSS delta includes dynamic parser/library loading overhead.
+
+Completed items:
+
+- [x] Extend benchmark scenarios with syntax-enabled runs.
+- [x] Measure initial TUI open latency, scroll latency, cache hit rate, queue depth, and memory growth.
+- [x] Tune defaults for:
   - max hunk bytes
   - max line bytes
   - cache entries
   - queue capacity
   - prefetch distance
-- Add stress coverage for generated/minified files, large single files, and many-small-file diffs.
-- Keep the fallback path cheap enough that unsupported languages remain as fast as plain diff.
+- [x] Add stress coverage for generated/minified files, large single files, and many-small-file diffs.
+- [x] Keep the fallback path cheap enough that unsupported languages remain as fast as plain diff.
 
 ## Phase 3: polish language management
 

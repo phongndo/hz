@@ -117,6 +117,8 @@ pub struct SyntaxAddResult {
 pub struct SyntaxRemoveResult {
     pub removed: Vec<String>,
     pub missing: Vec<String>,
+    pub cache_deleted: Vec<String>,
+    pub cache_missing: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,8 +147,18 @@ impl SyntaxLanguageSet {
         })
     }
 
+    pub fn from_enabled_languages(languages: &[String]) -> Self {
+        Self {
+            enabled: language_vec_to_set(languages),
+            installed: installed_language_set(),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.enabled.is_empty() || self.installed.is_empty()
+        !self
+            .enabled
+            .iter()
+            .any(|language| self.is_highlight_ready(language))
     }
 
     pub fn language_for_path(&self, path: &str) -> Option<String> {
@@ -325,6 +337,8 @@ pub fn remove_languages(languages: &[String]) -> HzResult<SyntaxRemoveResult> {
     let mut enabled = language_vec_to_set(&config.languages);
     let mut removed = Vec::new();
     let mut missing = Vec::new();
+    let mut cache_deleted = Vec::new();
+    let mut cache_missing = Vec::new();
 
     for language in &requested {
         if enabled.remove(language.as_str()) {
@@ -338,10 +352,19 @@ pub fn remove_languages(languages: &[String]) -> HzResult<SyntaxRemoveResult> {
     save_config(&config)?;
 
     for language in requested {
-        remove_cached_language(&language)?;
+        if remove_cached_language(&language)? {
+            cache_deleted.push(language);
+        } else {
+            cache_missing.push(language);
+        }
     }
 
-    Ok(SyntaxRemoveResult { removed, missing })
+    Ok(SyntaxRemoveResult {
+        removed,
+        missing,
+        cache_deleted,
+        cache_missing,
+    })
 }
 
 pub fn clean_cache() -> HzResult<()> {
@@ -351,35 +374,51 @@ pub fn clean_cache() -> HzResult<()> {
 
 pub fn doctor() -> HzResult<SyntaxDoctorReport> {
     let statuses = language_statuses()?;
+    let issues = doctor_issues(&statuses);
+
+    Ok(SyntaxDoctorReport { statuses, issues })
+}
+
+fn doctor_issues(statuses: &[SyntaxLanguageStatus]) -> Vec<SyntaxDoctorIssue> {
     let mut issues = Vec::new();
 
-    for status in &statuses {
+    for status in statuses {
         if !status.enabled {
+            continue;
+        }
+        if !tree_sitter_language_pack::has_language(&status.language) {
+            issues.push(SyntaxDoctorIssue {
+                language: status.language.clone(),
+                message: "enabled in config, but language is not known; run `hz ts rm`".to_owned(),
+            });
             continue;
         }
         if !status.installed {
             issues.push(SyntaxDoctorIssue {
                 language: status.language.clone(),
-                message: "enabled but parser is not installed; run `hz ts add`".to_owned(),
+                message: "enabled in config, but parser cache file is missing; run `hz ts add`"
+                    .to_owned(),
             });
             continue;
         }
         if !status.has_highlights {
             issues.push(SyntaxDoctorIssue {
                 language: status.language.clone(),
-                message: "parser is installed, but no bundled highlights query exists".to_owned(),
+                message: "parser is available, but no bundled highlights query exists; diff will render plain text"
+                    .to_owned(),
             });
-            continue;
         }
-        if let Err(error) = tree_sitter_language_pack::get_language(&status.language) {
+        if let Err(error) = load_language_without_download(&status.language) {
             issues.push(SyntaxDoctorIssue {
                 language: status.language.clone(),
-                message: format!("failed to load parser: {error}"),
+                message: format!(
+                    "parser cache exists, but failed to load without downloading: {error}"
+                ),
             });
         }
     }
 
-    Ok(SyntaxDoctorReport { statuses, issues })
+    issues
 }
 
 pub fn detect_language_from_path(path: &str) -> Option<String> {
@@ -595,6 +634,17 @@ fn is_language_installed_with_set(language: &str, installed: &BTreeSet<String>) 
     installed.contains(language) || tree_sitter_language_pack::has_parser(language)
 }
 
+fn load_language_without_download(language: &str) -> Result<(), String> {
+    let registry = LanguageRegistry::new();
+    if let Ok(cache) = cache_dir() {
+        registry.add_extra_libs_dir(PathBuf::from(cache));
+    }
+    registry
+        .get_language(language)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn has_highlights(language: &str) -> bool {
     highlights_query(language).is_some()
 }
@@ -606,22 +656,23 @@ fn highlights_query(language: &str) -> Option<&'static str> {
     }
 }
 
-fn remove_cached_language(language: &str) -> HzResult<()> {
+fn remove_cached_language(language: &str) -> HzResult<bool> {
     let cache = PathBuf::from(cache_dir()?);
-    let mut candidates = Vec::new();
+    let mut candidates = BTreeSet::new();
     if let Some(path) = cached_language_path(&cache, language) {
-        candidates.push(path);
+        candidates.insert(path);
     }
     candidates.extend(scan_cached_language_paths(&cache, language));
 
+    let mut removed = false;
     for path in candidates {
         match fs::remove_file(&path) {
-            Ok(()) => {}
+            Ok(()) => removed = true,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(())
+    Ok(removed)
 }
 
 fn cached_language_path(cache: &Path, language: &str) -> Option<PathBuf> {
@@ -730,6 +781,81 @@ mod tests {
         assert!(has_highlights("mlir"));
         assert!(has_highlights("asm"));
         assert!(has_highlights("nasm"));
+    }
+
+    #[test]
+    fn language_set_falls_back_when_parser_is_missing() {
+        let languages = SyntaxLanguageSet {
+            enabled: BTreeSet::from(["rust".to_owned()]),
+            installed: BTreeSet::new(),
+        };
+
+        assert!(!languages.is_highlight_ready("rust"));
+        assert_eq!(languages.language_for_path("src/main.rs"), None);
+        assert!(languages.is_empty());
+    }
+
+    #[test]
+    fn language_set_falls_back_when_highlight_query_is_missing() {
+        let languages = SyntaxLanguageSet {
+            enabled: BTreeSet::from(["desktop".to_owned()]),
+            installed: BTreeSet::from(["desktop".to_owned()]),
+        };
+
+        assert!(tree_sitter_language_pack::has_language("desktop"));
+        assert!(!has_highlights("desktop"));
+        assert!(!languages.is_highlight_ready("desktop"));
+        assert!(languages.is_empty());
+    }
+
+    #[test]
+    fn diff_highlighter_does_not_download_missing_parser() {
+        let before = installed_language_set();
+        let Some(language) = ["abl", "agda", "cobol", "desktop", "devicetree"]
+            .into_iter()
+            .find(|language| {
+                tree_sitter_language_pack::has_language(language)
+                    && !tree_sitter_language_pack::has_parser(language)
+                    && !before.contains(*language)
+            })
+        else {
+            return;
+        };
+        let mut highlighter = SyntaxHighlighter::new();
+
+        let error = highlighter
+            .highlight(language, "x")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("not installed"));
+        assert_eq!(installed_language_set(), before);
+    }
+
+    #[test]
+    fn doctor_reports_stale_enabled_config() {
+        let issues = doctor_issues(&[SyntaxLanguageStatus {
+            language: "definitely_not_a_tree_sitter_language".to_owned(),
+            enabled: true,
+            installed: false,
+            has_highlights: false,
+        }]);
+
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].message.contains("not known"));
+    }
+
+    #[test]
+    fn doctor_reports_missing_parser_cache_file() {
+        let issues = doctor_issues(&[SyntaxLanguageStatus {
+            language: "rust".to_owned(),
+            enabled: true,
+            installed: false,
+            has_highlights: true,
+        }]);
+
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].message.contains("parser cache file is missing"));
     }
 
     #[test]

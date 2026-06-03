@@ -4,10 +4,11 @@ use std::{
     fmt, fs, io,
     path::{Path, PathBuf},
     process::Command,
+    time::Instant,
 };
 
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 type BenchResult<T> = Result<T, BenchError>;
 
@@ -15,6 +16,7 @@ type BenchResult<T> = Result<T, BenchError>;
 enum BenchError {
     Io(io::Error),
     Json(serde_json::Error),
+    Hz(String),
     Git { command: String, stderr: String },
     Usage(String),
 }
@@ -24,6 +26,7 @@ impl fmt::Display for BenchError {
         match self {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Json(error) => write!(formatter, "{error}"),
+            Self::Hz(error) => write!(formatter, "{error}"),
             Self::Git { command, stderr } => {
                 if stderr.trim().is_empty() {
                     write!(formatter, "git command failed: {command}")
@@ -65,6 +68,8 @@ struct Cli {
 enum BenchCommand {
     #[command(about = "Generate deterministic diff benchmark fixtures")]
     Fixtures(FixturesArgs),
+    #[command(about = "Measure patch loading, TUI rendering, and syntax highlighting")]
+    Measure(MeasureArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -81,9 +86,49 @@ struct FixturesArgs {
     /// Include the larger stress scenario with --all or the default suite.
     #[arg(long)]
     stress: bool,
+    /// Include syntax-oriented Rust fixture scenarios.
+    #[arg(long)]
+    syntax: bool,
     /// Remove an existing scenario output directory before writing it.
     #[arg(long)]
     force: bool,
+}
+
+#[derive(Debug, Parser)]
+struct MeasureArgs {
+    /// Directory containing generated benchmark fixture directories.
+    #[arg(long, value_name = "DIR")]
+    fixtures: PathBuf,
+    /// Scenario to measure. May be repeated. Defaults to the standard suite.
+    #[arg(long, value_enum, value_name = "NAME")]
+    scenario: Vec<ScenarioKind>,
+    /// Measure all standard scenarios. This is also the default when no scenario is passed.
+    #[arg(long)]
+    all: bool,
+    /// Include the larger stress scenario with --all or the default suite.
+    #[arg(long)]
+    stress: bool,
+    /// Include syntax-oriented Rust scenarios with --all or the default suite.
+    #[arg(long)]
+    syntax: bool,
+    /// Language to enable for the syntax run. Repeat to enable several languages.
+    #[arg(long = "syntax-language", value_name = "LANG")]
+    syntax_languages: Vec<String>,
+    /// Terminal width used by the synthetic TUI renderer.
+    #[arg(long, default_value_t = 160)]
+    width: usize,
+    /// Visible rows used by the synthetic TUI renderer.
+    #[arg(long, default_value_t = 40)]
+    viewport_rows: usize,
+    /// Row delta between measured scroll positions.
+    #[arg(long, default_value_t = 20)]
+    scroll_step: usize,
+    /// Maximum measured scroll positions per scenario and mode.
+    #[arg(long, default_value_t = 200)]
+    max_scroll_steps: usize,
+    /// Emit JSON instead of a human table.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, ValueEnum)]
@@ -98,6 +143,9 @@ enum ScenarioKind {
     BinaryFiles,
     StagedUnstaged,
     HugeMixedStress,
+    SyntaxManySmallRust,
+    SyntaxLargeRust,
+    SyntaxMinifiedRust,
 }
 
 impl ScenarioKind {
@@ -112,6 +160,9 @@ impl ScenarioKind {
             Self::BinaryFiles => "binary-files",
             Self::StagedUnstaged => "staged-unstaged",
             Self::HugeMixedStress => "huge-mixed-stress",
+            Self::SyntaxManySmallRust => "syntax-many-small-rust",
+            Self::SyntaxLargeRust => "syntax-large-rust",
+            Self::SyntaxMinifiedRust => "syntax-minified-rust",
         }
     }
 
@@ -126,6 +177,11 @@ impl ScenarioKind {
             Self::BinaryFiles => "Binary modified and untracked files plus a small text edit.",
             Self::StagedUnstaged => "Separate staged, unstaged, mixed, and untracked changes.",
             Self::HugeMixedStress => "Large opt-in stress case for max-size and memory testing.",
+            Self::SyntaxManySmallRust => "Rust many-small-file diff for syntax-enabled runs.",
+            Self::SyntaxLargeRust => "Rust large-single-file diff for syntax-enabled runs.",
+            Self::SyntaxMinifiedRust => {
+                "Generated one-line Rust file that should hit fallback caps."
+            }
         }
     }
 
@@ -139,6 +195,14 @@ impl ScenarioKind {
             Self::MinifiedOneLine,
             Self::BinaryFiles,
             Self::StagedUnstaged,
+        ]
+    }
+
+    fn syntax_suite() -> &'static [Self] {
+        &[
+            Self::SyntaxManySmallRust,
+            Self::SyntaxLargeRust,
+            Self::SyntaxMinifiedRust,
         ]
     }
 }
@@ -159,7 +223,7 @@ struct UntrackedShape {
     extension: &'static str,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct FixtureCounts {
     tracked_files: usize,
     untracked_files: usize,
@@ -168,7 +232,7 @@ struct FixtureCounts {
     expected_text_deletions: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct FixturePaths {
     repo: String,
     patch: String,
@@ -179,11 +243,11 @@ struct FixturePaths {
     pair_after: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct FixtureManifest {
     version: u8,
-    scenario: &'static str,
-    description: &'static str,
+    scenario: String,
+    description: String,
     paths: FixturePaths,
     counts: FixtureCounts,
     patch_bytes: u64,
@@ -203,6 +267,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
         BenchCommand::Fixtures(args) => generate_fixtures(args)?,
+        BenchCommand::Measure(args) => measure_fixtures(args)?,
     }
     Ok(())
 }
@@ -235,10 +300,341 @@ fn selected_scenarios(args: &FixturesArgs) -> Vec<ScenarioKind> {
     if args.stress && !selected.contains(&ScenarioKind::HugeMixedStress) {
         selected.push(ScenarioKind::HugeMixedStress);
     }
+    if args.syntax {
+        selected.extend_from_slice(ScenarioKind::syntax_suite());
+    }
 
     let mut seen = HashSet::new();
     selected.retain(|scenario| seen.insert(*scenario));
     selected
+}
+
+fn selected_measure_scenarios(args: &MeasureArgs) -> Vec<ScenarioKind> {
+    let mut selected = Vec::new();
+    if args.all || args.scenario.is_empty() {
+        selected.extend_from_slice(ScenarioKind::standard());
+    }
+    selected.extend(args.scenario.iter().copied());
+
+    if args.stress && !selected.contains(&ScenarioKind::HugeMixedStress) {
+        selected.push(ScenarioKind::HugeMixedStress);
+    }
+    if args.syntax {
+        selected.extend_from_slice(ScenarioKind::syntax_suite());
+    }
+
+    let mut seen = HashSet::new();
+    selected.retain(|scenario| seen.insert(*scenario));
+    selected
+}
+
+#[derive(Debug, Serialize)]
+struct MeasureSuiteReport {
+    version: u8,
+    fixture_root: String,
+    options: MeasureOptionsReport,
+    runs: Vec<MeasureRunReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct MeasureOptionsReport {
+    width: usize,
+    viewport_rows: usize,
+    scroll_step: usize,
+    max_scroll_steps: usize,
+    syntax_languages: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MeasureRunReport {
+    scenario: &'static str,
+    mode: &'static str,
+    patch_bytes: u64,
+    load_micros: u128,
+    rss_before_bytes: Option<u64>,
+    rss_after_bytes: Option<u64>,
+    rss_delta_bytes: Option<i128>,
+    tui: TuiMeasureReport,
+}
+
+#[derive(Debug, Serialize)]
+struct TuiMeasureReport {
+    syntax_enabled: bool,
+    row_count: usize,
+    file_count: usize,
+    hunk_count: usize,
+    open_micros: u128,
+    initial_render_micros: u128,
+    cold_scroll_steps: usize,
+    cold_scroll_total_micros: u128,
+    cold_scroll_max_micros: u128,
+    cold_scroll_avg_micros: u128,
+    syntax_settle_micros: Option<u128>,
+    warm_scroll_steps: usize,
+    warm_scroll_total_micros: u128,
+    warm_scroll_max_micros: u128,
+    warm_scroll_avg_micros: u128,
+    warm_cache_hits: u64,
+    warm_cache_misses: u64,
+    warm_cache_hit_rate: Option<f64>,
+    syntax: SyntaxMeasureReport,
+}
+
+#[derive(Debug, Serialize)]
+struct SyntaxMeasureReport {
+    queue_requests: u64,
+    jobs_queued: u64,
+    jobs_completed: u64,
+    jobs_failed: u64,
+    jobs_skipped: u64,
+    jobs_rejected: u64,
+    jobs_evicted: u64,
+    stale_results: u64,
+    cache_hits: u64,
+    cache_misses: u64,
+    cache_entries_peak: usize,
+    queue_depth_peak: usize,
+    source_bytes_queued: u64,
+    source_lines_queued: u64,
+    estimated_memory_peak_bytes: u64,
+}
+
+fn measure_fixtures(args: MeasureArgs) -> BenchResult<()> {
+    let scenarios = selected_measure_scenarios(&args);
+    let syntax_languages = if args.syntax_languages.is_empty() && args.syntax {
+        vec!["rust".to_owned()]
+    } else {
+        args.syntax_languages.clone()
+    };
+    let options = hz_tui::DiffBenchmarkOptions {
+        width: args.width,
+        viewport_rows: args.viewport_rows,
+        scroll_step: args.scroll_step,
+        max_scroll_steps: args.max_scroll_steps,
+    };
+    let mut runs = Vec::new();
+
+    for scenario in scenarios {
+        let scenario_dir = args.fixtures.join(scenario.name());
+        let manifest = load_manifest(&scenario_dir)?;
+        runs.push(measure_fixture_run(
+            scenario,
+            "plain",
+            &scenario_dir,
+            &manifest,
+            None,
+            options,
+        )?);
+        if !syntax_languages.is_empty() {
+            runs.push(measure_fixture_run(
+                scenario,
+                "syntax",
+                &scenario_dir,
+                &manifest,
+                Some(syntax_languages.clone()),
+                options,
+            )?);
+        }
+    }
+
+    let report = MeasureSuiteReport {
+        version: 1,
+        fixture_root: args.fixtures.display().to_string(),
+        options: MeasureOptionsReport {
+            width: options.width,
+            viewport_rows: options.viewport_rows,
+            scroll_step: options.scroll_step,
+            max_scroll_steps: options.max_scroll_steps,
+            syntax_languages,
+        },
+        runs,
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_measure_report(&report);
+    }
+
+    Ok(())
+}
+
+fn load_manifest(scenario_dir: &Path) -> BenchResult<FixtureManifest> {
+    let bytes = fs::read(scenario_dir.join("manifest.json"))?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn measure_fixture_run(
+    scenario: ScenarioKind,
+    mode: &'static str,
+    scenario_dir: &Path,
+    manifest: &FixtureManifest,
+    syntax_languages: Option<Vec<String>>,
+    options: hz_tui::DiffBenchmarkOptions,
+) -> BenchResult<MeasureRunReport> {
+    let patch = scenario_dir.join(&manifest.paths.patch);
+    let load_start = Instant::now();
+    let changeset = hz_diff::load_review_ref(&hz_diff::DiffOptions {
+        repo: None,
+        source: hz_diff::DiffSource::Patch(hz_diff::PatchSource::File(patch)),
+        scope: hz_diff::DiffScope::All,
+        include_untracked: false,
+        stat: false,
+    })
+    .map_err(|error| BenchError::Hz(error.to_string()))?;
+    let load_micros = load_start.elapsed().as_micros();
+
+    let rss_before = current_rss_bytes();
+    let tui = hz_tui::benchmark_diff_view(changeset, syntax_languages, options);
+    let rss_after = current_rss_bytes();
+
+    Ok(MeasureRunReport {
+        scenario: scenario.name(),
+        mode,
+        patch_bytes: manifest.patch_bytes,
+        load_micros,
+        rss_before_bytes: rss_before,
+        rss_after_bytes: rss_after,
+        rss_delta_bytes: rss_before
+            .zip(rss_after)
+            .map(|(before, after)| after as i128 - before as i128),
+        tui: tui_report(tui),
+    })
+}
+
+fn tui_report(report: hz_tui::DiffBenchmarkReport) -> TuiMeasureReport {
+    let warm_cache_total = report
+        .warm_cache_hits
+        .saturating_add(report.warm_cache_misses);
+    TuiMeasureReport {
+        syntax_enabled: report.syntax_enabled,
+        row_count: report.row_count,
+        file_count: report.file_count,
+        hunk_count: report.hunk_count,
+        open_micros: report.open_micros,
+        initial_render_micros: report.initial_render_micros,
+        cold_scroll_steps: report.cold_scroll_steps,
+        cold_scroll_total_micros: report.cold_scroll_total_micros,
+        cold_scroll_max_micros: report.cold_scroll_max_micros,
+        cold_scroll_avg_micros: average_micros(
+            report.cold_scroll_total_micros,
+            report.cold_scroll_steps,
+        ),
+        syntax_settle_micros: report.syntax_settle_micros,
+        warm_scroll_steps: report.warm_scroll_steps,
+        warm_scroll_total_micros: report.warm_scroll_total_micros,
+        warm_scroll_max_micros: report.warm_scroll_max_micros,
+        warm_scroll_avg_micros: average_micros(
+            report.warm_scroll_total_micros,
+            report.warm_scroll_steps,
+        ),
+        warm_cache_hits: report.warm_cache_hits,
+        warm_cache_misses: report.warm_cache_misses,
+        warm_cache_hit_rate: (warm_cache_total > 0)
+            .then(|| report.warm_cache_hits as f64 / warm_cache_total as f64),
+        syntax: syntax_report(report.syntax),
+    }
+}
+
+fn syntax_report(report: hz_tui::SyntaxBenchmarkReport) -> SyntaxMeasureReport {
+    SyntaxMeasureReport {
+        queue_requests: report.queue_requests,
+        jobs_queued: report.jobs_queued,
+        jobs_completed: report.jobs_completed,
+        jobs_failed: report.jobs_failed,
+        jobs_skipped: report.jobs_skipped,
+        jobs_rejected: report.jobs_rejected,
+        jobs_evicted: report.jobs_evicted,
+        stale_results: report.stale_results,
+        cache_hits: report.cache_hits,
+        cache_misses: report.cache_misses,
+        cache_entries_peak: report.cache_entries_peak,
+        queue_depth_peak: report.queue_depth_peak,
+        source_bytes_queued: report.source_bytes_queued,
+        source_lines_queued: report.source_lines_queued,
+        estimated_memory_peak_bytes: report.estimated_memory_peak_bytes,
+    }
+}
+
+fn average_micros(total: u128, count: usize) -> u128 {
+    if count == 0 { 0 } else { total / count as u128 }
+}
+
+fn current_rss_bytes() -> Option<u64> {
+    let pid = std::process::id().to_string();
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", pid.as_str()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|kb| kb.saturating_mul(1024))
+}
+
+fn print_measure_report(report: &MeasureSuiteReport) {
+    println!(
+        "{:<24} {:<7} {:>7} {:>8} {:>8} {:>9} {:>9} {:>8} {:>8} {:>8} {:>9} {:>8}",
+        "scenario",
+        "mode",
+        "rows",
+        "loadµs",
+        "openµs",
+        "coldµs",
+        "warmµs",
+        "hit%",
+        "qpeak",
+        "cache",
+        "synmem",
+        "rssΔ"
+    );
+    for run in &report.runs {
+        println!(
+            "{:<24} {:<7} {:>7} {:>8} {:>8} {:>9} {:>9} {:>8} {:>8} {:>8} {:>9} {:>8}",
+            run.scenario,
+            run.mode,
+            run.tui.row_count,
+            run.load_micros,
+            run.tui.open_micros,
+            run.tui.cold_scroll_avg_micros,
+            run.tui.warm_scroll_avg_micros,
+            percent(run.tui.warm_cache_hit_rate),
+            run.tui.syntax.queue_depth_peak,
+            run.tui.syntax.cache_entries_peak,
+            human_bytes(run.tui.syntax.estimated_memory_peak_bytes),
+            run.rss_delta_bytes
+                .map(human_signed_bytes)
+                .unwrap_or_else(|| "n/a".to_owned())
+        );
+    }
+}
+
+fn percent(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{:.1}", value * 100.0))
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn human_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1}M", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1}K", bytes as f64 / 1024.0)
+    } else {
+        bytes.to_string()
+    }
+}
+
+fn human_signed_bytes(bytes: i128) -> String {
+    if bytes < 0 {
+        format!("-{}", human_bytes(bytes.unsigned_abs() as u64))
+    } else {
+        human_bytes(bytes as u64)
+    }
 }
 
 fn generate_scenario(
@@ -336,6 +732,31 @@ fn generate_scenario(
                 extension: "ts",
             },
         )?,
+        ScenarioKind::SyntaxManySmallRust => generate_tracked_text_scenario(
+            &scenario_dir,
+            scenario,
+            TextShape {
+                file_count: 240,
+                lines: 72,
+                changed_start: None,
+                changed_lines: 12,
+                extension: "rs",
+            },
+        )?,
+        ScenarioKind::SyntaxLargeRust => generate_tracked_text_scenario(
+            &scenario_dir,
+            scenario,
+            TextShape {
+                file_count: 1,
+                lines: 32_000,
+                changed_start: Some(8_000),
+                changed_lines: 16_000,
+                extension: "rs",
+            },
+        )?,
+        ScenarioKind::SyntaxMinifiedRust => {
+            generate_minified_rust_scenario(&scenario_dir, scenario, 45_000)?
+        }
     };
 
     write_manifest(&scenario_dir, &manifest)?;
@@ -437,6 +858,62 @@ fn generate_minified_one_line_scenario(
     };
 
     finish_manifest(scenario_dir, scenario, counts, &repo, &[])
+}
+
+fn generate_minified_rust_scenario(
+    scenario_dir: &Path,
+    scenario: ScenarioKind,
+    tokens: usize,
+) -> BenchResult<FixtureManifest> {
+    let repo = scenario_dir.join("repo");
+    initialize_repo(&repo)?;
+
+    let path = repo.join("src/generated.rs");
+    write_file(
+        &path,
+        minified_rust_source(tokens, SourceVariant::Baseline).as_bytes(),
+    )?;
+    git(&repo, &["add", "."])?;
+    git(&repo, &["commit", "-m", "initial benchmark fixture"])?;
+    write_file(
+        &path,
+        minified_rust_source(tokens, SourceVariant::ChangedA).as_bytes(),
+    )?;
+
+    let pair = scenario_dir.join("pair");
+    write_file(
+        &pair.join("before.rs"),
+        minified_rust_source(tokens, SourceVariant::Baseline).as_bytes(),
+    )?;
+    write_file(
+        &pair.join("after.rs"),
+        minified_rust_source(tokens, SourceVariant::ChangedA).as_bytes(),
+    )?;
+
+    let counts = FixtureCounts {
+        tracked_files: 1,
+        expected_text_additions: 1,
+        expected_text_deletions: 1,
+        ..FixtureCounts::default()
+    };
+
+    finish_manifest(scenario_dir, scenario, counts, &repo, &[])
+}
+
+fn minified_rust_source(tokens: usize, variant: SourceVariant) -> String {
+    let mut text = String::from("pub static HZ_BENCH_GENERATED: &[&str] = &[");
+    for index in 0..tokens {
+        if index > 0 {
+            text.push(',');
+        }
+        match variant {
+            SourceVariant::Baseline => text.push_str(&format!("\"token_{index}\"")),
+            SourceVariant::ChangedA => text.push_str(&format!("\"token_{index}_changed\"")),
+            SourceVariant::ChangedB => text.push_str(&format!("\"token_{index}_again\"")),
+        }
+    }
+    text.push_str("];\n");
+    text
 }
 
 fn generate_binary_scenario(
@@ -567,12 +1044,13 @@ fn create_text_repo(scenario_dir: &Path, shape: TextShape) -> BenchResult<PathBu
         let relative = text_file_path(index, shape.extension);
         write_file(
             &repo.join(&relative),
-            synthetic_source(
+            synthetic_source_for_extension(
                 index,
                 SourceVariant::Baseline,
                 shape.lines,
                 shape.changed_start,
                 shape.changed_lines,
+                shape.extension,
             )
             .as_bytes(),
         )?;
@@ -585,12 +1063,13 @@ fn create_text_repo(scenario_dir: &Path, shape: TextShape) -> BenchResult<PathBu
         let relative = text_file_path(index, shape.extension);
         write_file(
             &repo.join(&relative),
-            synthetic_source(
+            synthetic_source_for_extension(
                 index,
                 SourceVariant::ChangedA,
                 shape.lines,
                 shape.changed_start,
                 shape.changed_lines,
+                shape.extension,
             )
             .as_bytes(),
         )?;
@@ -605,12 +1084,13 @@ fn add_untracked_text_files(repo: &Path, shape: UntrackedShape) -> BenchResult<V
         let relative = PathBuf::from(format!("untracked/new{index}.{}", shape.extension));
         write_file(
             &repo.join(&relative),
-            synthetic_source(
+            synthetic_source_for_extension(
                 index,
                 SourceVariant::ChangedA,
                 shape.lines,
                 None,
                 shape.lines / 4,
+                shape.extension,
             )
             .as_bytes(),
         )?;
@@ -623,23 +1103,25 @@ fn write_pair_fixture(scenario_dir: &Path, shape: TextShape, file_index: usize) 
     let pair = scenario_dir.join("pair");
     write_file(
         &pair.join(format!("before.{}", shape.extension)),
-        synthetic_source(
+        synthetic_source_for_extension(
             file_index,
             SourceVariant::Baseline,
             shape.lines,
             shape.changed_start,
             shape.changed_lines,
+            shape.extension,
         )
         .as_bytes(),
     )?;
     write_file(
         &pair.join(format!("after.{}", shape.extension)),
-        synthetic_source(
+        synthetic_source_for_extension(
             file_index,
             SourceVariant::ChangedA,
             shape.lines,
             shape.changed_start,
             shape.changed_lines,
+            shape.extension,
         )
         .as_bytes(),
     )?;
@@ -704,8 +1186,8 @@ fn finish_manifest(
 
     Ok(FixtureManifest {
         version: 1,
-        scenario: scenario.name(),
-        description: scenario.description(),
+        scenario: scenario.name().to_owned(),
+        description: scenario.description().to_owned(),
         paths: FixturePaths {
             repo: "repo".to_owned(),
             patch: "patch.diff".to_owned(),
@@ -880,6 +1362,56 @@ fn synthetic_source(
     text
 }
 
+fn synthetic_source_for_extension(
+    file_index: usize,
+    variant: SourceVariant,
+    lines: usize,
+    changed_start: Option<usize>,
+    changed_lines: usize,
+    extension: &str,
+) -> String {
+    match extension {
+        "rs" => synthetic_rust_source(file_index, variant, lines, changed_start, changed_lines),
+        _ => synthetic_source(file_index, variant, lines, changed_start, changed_lines),
+    }
+}
+
+fn synthetic_rust_source(
+    file_index: usize,
+    variant: SourceVariant,
+    lines: usize,
+    changed_start: Option<usize>,
+    changed_lines: usize,
+) -> String {
+    let start = changed_start.unwrap_or(lines / 3).min(lines);
+    let end = (start + changed_lines).min(lines);
+    let mut text = String::new();
+
+    for line_index in 0..lines {
+        let line = line_index + 1;
+        let in_changed_region = line_index >= start && line_index < end;
+        if in_changed_region {
+            match variant {
+                SourceVariant::Baseline => text.push_str(&format!(
+                    "pub fn bench_{file_index}_{line}(value: i64) -> i64 {{ value + {line} }}\n"
+                )),
+                SourceVariant::ChangedA => text.push_str(&format!(
+                    "pub fn bench_{file_index}_{line}(value: i64) -> i64 {{ value * {line} + {file_index} }}\n"
+                )),
+                SourceVariant::ChangedB => text.push_str(&format!(
+                    "pub fn bench_{file_index}_{line}(value: i64) -> i64 {{ value - {line} - {file_index} }}\n"
+                )),
+            }
+        } else {
+            text.push_str(&format!(
+                "pub fn bench_{file_index}_{line}(value: i64) -> i64 {{ value + {line} }}\n"
+            ));
+        }
+    }
+
+    text
+}
+
 fn minified_source(tokens: usize, variant: SourceVariant) -> String {
     let mut text = String::from("const hzBenchBundle=[");
     for index in 0..tokens {
@@ -924,6 +1456,9 @@ mod tests {
             ScenarioKind::BinaryFiles,
             ScenarioKind::StagedUnstaged,
             ScenarioKind::HugeMixedStress,
+            ScenarioKind::SyntaxManySmallRust,
+            ScenarioKind::SyntaxLargeRust,
+            ScenarioKind::SyntaxMinifiedRust,
         ];
         let mut names = HashSet::new();
         for scenario in scenarios {
@@ -960,6 +1495,7 @@ mod tests {
             scenario: vec![ScenarioKind::HugeMixedStress],
             all: true,
             stress: false,
+            syntax: false,
             force: false,
         };
 
@@ -967,6 +1503,33 @@ mod tests {
 
         assert!(selected.starts_with(ScenarioKind::standard()));
         assert_eq!(selected.last(), Some(&ScenarioKind::HugeMixedStress));
+    }
+
+    #[test]
+    fn syntax_flag_includes_syntax_fixture_suite() {
+        let args = FixturesArgs {
+            out: PathBuf::from("fixtures"),
+            scenario: Vec::new(),
+            all: false,
+            stress: false,
+            syntax: true,
+            force: false,
+        };
+
+        let selected = selected_scenarios(&args);
+
+        assert!(selected.contains(&ScenarioKind::SyntaxManySmallRust));
+        assert!(selected.contains(&ScenarioKind::SyntaxLargeRust));
+        assert!(selected.contains(&ScenarioKind::SyntaxMinifiedRust));
+    }
+
+    #[test]
+    fn rust_syntax_fixture_source_uses_rust_extension_and_shape() {
+        let source =
+            synthetic_source_for_extension(7, SourceVariant::ChangedA, 4, Some(1), 2, "rs");
+
+        assert!(source.contains("pub fn bench_7_2(value: i64) -> i64"));
+        assert!(source.contains("value * 2 + 7"));
     }
 
     #[test]

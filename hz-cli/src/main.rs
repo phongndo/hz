@@ -490,10 +490,16 @@ fn print_tree_sitter_add_result(result: &hz_command::SyntaxAddResult) {
 
 fn print_tree_sitter_remove_result(result: &hz_command::SyntaxRemoveResult) {
     for language in &result.removed {
-        println!("- removed {language}");
+        println!("- disabled {language} in config");
     }
     for language in &result.missing {
-        println!("= not enabled {language}");
+        println!("= not enabled in config {language}");
+    }
+    for language in &result.cache_deleted {
+        println!("- deleted parser cache {language}");
+    }
+    for language in &result.cache_missing {
+        println!("= no parser cache {language}");
     }
 }
 
