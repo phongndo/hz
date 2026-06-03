@@ -207,6 +207,49 @@ impl ScenarioKind {
     }
 }
 
+trait ScenarioSelection {
+    fn scenarios(&self) -> &[ScenarioKind];
+    fn all(&self) -> bool;
+    fn stress(&self) -> bool;
+    fn syntax(&self) -> bool;
+}
+
+impl ScenarioSelection for FixturesArgs {
+    fn scenarios(&self) -> &[ScenarioKind] {
+        &self.scenario
+    }
+
+    fn all(&self) -> bool {
+        self.all
+    }
+
+    fn stress(&self) -> bool {
+        self.stress
+    }
+
+    fn syntax(&self) -> bool {
+        self.syntax
+    }
+}
+
+impl ScenarioSelection for MeasureArgs {
+    fn scenarios(&self) -> &[ScenarioKind] {
+        &self.scenario
+    }
+
+    fn all(&self) -> bool {
+        self.all
+    }
+
+    fn stress(&self) -> bool {
+        self.stress
+    }
+
+    fn syntax(&self) -> bool {
+        self.syntax
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct TextShape {
     file_count: usize,
@@ -273,7 +316,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn generate_fixtures(args: FixturesArgs) -> BenchResult<()> {
-    let scenarios = selected_scenarios(&args);
+    let scenarios = select_scenarios(&args);
     fs::create_dir_all(&args.out)?;
 
     for scenario in scenarios {
@@ -290,36 +333,17 @@ fn generate_fixtures(args: FixturesArgs) -> BenchResult<()> {
     Ok(())
 }
 
-fn selected_scenarios(args: &FixturesArgs) -> Vec<ScenarioKind> {
+fn select_scenarios(selection: &impl ScenarioSelection) -> Vec<ScenarioKind> {
     let mut selected = Vec::new();
-    if args.all || args.scenario.is_empty() {
+    if selection.all() || selection.scenarios().is_empty() {
         selected.extend_from_slice(ScenarioKind::standard());
     }
-    selected.extend(args.scenario.iter().copied());
+    selected.extend(selection.scenarios().iter().copied());
 
-    if args.stress && !selected.contains(&ScenarioKind::HugeMixedStress) {
+    if selection.stress() && !selected.contains(&ScenarioKind::HugeMixedStress) {
         selected.push(ScenarioKind::HugeMixedStress);
     }
-    if args.syntax {
-        selected.extend_from_slice(ScenarioKind::syntax_suite());
-    }
-
-    let mut seen = HashSet::new();
-    selected.retain(|scenario| seen.insert(*scenario));
-    selected
-}
-
-fn selected_measure_scenarios(args: &MeasureArgs) -> Vec<ScenarioKind> {
-    let mut selected = Vec::new();
-    if args.all || args.scenario.is_empty() {
-        selected.extend_from_slice(ScenarioKind::standard());
-    }
-    selected.extend(args.scenario.iter().copied());
-
-    if args.stress && !selected.contains(&ScenarioKind::HugeMixedStress) {
-        selected.push(ScenarioKind::HugeMixedStress);
-    }
-    if args.syntax {
+    if selection.syntax() {
         selected.extend_from_slice(ScenarioKind::syntax_suite());
     }
 
@@ -400,7 +424,7 @@ struct SyntaxMeasureReport {
 }
 
 fn measure_fixtures(args: MeasureArgs) -> BenchResult<()> {
-    let scenarios = selected_measure_scenarios(&args);
+    let scenarios = select_scenarios(&args);
     let syntax_languages = if args.syntax_languages.is_empty() && args.syntax {
         vec!["rust".to_owned()]
     } else {
@@ -560,6 +584,12 @@ fn average_micros(total: u128, count: usize) -> u128 {
     if count == 0 { 0 } else { total / count as u128 }
 }
 
+/// Returns the current process RSS in bytes on Unix-like hosts.
+///
+/// The benchmark runner uses the `ps` command because it is already available
+/// in the supported development and CI environments. Non-Unix hosts return
+/// `None` instead of shelling out to a platform-specific equivalent.
+#[cfg(unix)]
 fn current_rss_bytes() -> Option<u64> {
     let pid = std::process::id().to_string();
     let output = Command::new("ps")
@@ -574,6 +604,11 @@ fn current_rss_bytes() -> Option<u64> {
         .parse::<u64>()
         .ok()
         .map(|kb| kb.saturating_mul(1024))
+}
+
+#[cfg(not(unix))]
+fn current_rss_bytes() -> Option<u64> {
+    None
 }
 
 fn print_measure_report(report: &MeasureSuiteReport) {
@@ -1499,7 +1534,7 @@ mod tests {
             force: false,
         };
 
-        let selected = selected_scenarios(&args);
+        let selected = select_scenarios(&args);
 
         assert!(selected.starts_with(ScenarioKind::standard()));
         assert_eq!(selected.last(), Some(&ScenarioKind::HugeMixedStress));
@@ -1516,7 +1551,7 @@ mod tests {
             force: false,
         };
 
-        let selected = selected_scenarios(&args);
+        let selected = select_scenarios(&args);
 
         assert!(selected.contains(&ScenarioKind::SyntaxManySmallRust));
         assert!(selected.contains(&ScenarioKind::SyntaxLargeRust));
