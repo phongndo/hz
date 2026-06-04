@@ -4268,8 +4268,16 @@ impl DiffApp {
         let mut options = self.options.clone();
         match choice {
             DiffChoice::Branch => {
-                options.source =
-                    self.branch_source(self.branch_base.clone()?, self.branch_head.clone()?);
+                let base = self
+                    .branch_base
+                    .clone()
+                    .or_else(|| default_branch_base(&self.options, &self.changeset.repo))?;
+                let head = self
+                    .branch_head
+                    .clone()
+                    .or_else(|| self.current_head.clone())
+                    .or_else(|| current_head_label(&self.changeset.repo))?;
+                options.source = self.branch_source(base, head);
                 options.scope = DiffScope::All;
             }
             DiffChoice::All => {
@@ -4604,11 +4612,16 @@ impl DiffApp {
             })
             .unwrap_or(0);
 
+        let previous_branch_base = self.branch_base.clone();
+        let previous_branch_head = self.branch_head.clone();
         self.options = options;
         self.current_head = current_head_label(&changeset.repo);
         self.branch_base = branch_base_from_options(&self.options)
+            .or(previous_branch_base)
             .or_else(|| default_branch_base(&self.options, &changeset.repo));
-        self.branch_head = branch_head_from_options(&self.options, self.current_head.as_deref());
+        self.branch_head = branch_head_from_options(&self.options, self.current_head.as_deref())
+            .or(previous_branch_head)
+            .or_else(|| self.current_head.clone());
         self.comparison_branches = comparison_branches(
             &changeset.repo,
             &[self.branch_head.as_deref(), self.branch_base.as_deref()],
@@ -5764,6 +5777,38 @@ mod tests {
         let branch = app.options_for_choice(DiffChoice::Branch).unwrap();
         assert_eq!(branch.source, DiffSource::Base("origin/main".to_owned()));
         assert_eq!(branch.scope, DiffScope::All);
+    }
+
+    #[test]
+    fn branch_choice_survives_switching_to_worktree_scope() {
+        let options = DiffOptions {
+            source: DiffSource::Base("origin/main".to_owned()),
+            ..DiffOptions::default()
+        };
+        let mut app = DiffApp::new(
+            options,
+            changeset_with_context_lines(1),
+            DiffLayoutMode::Unified,
+        );
+        app.branch_base = Some("origin/main".to_owned());
+        app.branch_head = Some("feature/header".to_owned());
+
+        app.replace_loaded_diff(
+            DiffOptions::default(),
+            changeset_with_context_lines(1),
+            None,
+        );
+
+        assert_eq!(app.branch_base.as_deref(), Some("origin/main"));
+        assert_eq!(app.branch_head.as_deref(), Some("feature/header"));
+        assert_eq!(
+            app.options_for_choice(DiffChoice::Branch)
+                .map(|options| options.source),
+            Some(DiffSource::Branch {
+                base: "origin/main".to_owned(),
+                head: "feature/header".to_owned(),
+            })
+        );
     }
 
     #[test]
