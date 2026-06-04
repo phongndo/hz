@@ -20,7 +20,7 @@ use crossterm::{
     cursor::Show,
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseEvent, MouseEventKind,
+        MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -40,7 +40,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::{Color, Line, Modifier, Span, Style, Text},
-    widgets::Paragraph,
+    widgets::{Clear, Paragraph},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -66,6 +66,8 @@ const SYNTAX_THEME_ID: u64 = 0;
 const MAX_INLINE_DIFF_LINE_BYTES: usize = 4 * 1024;
 const MAX_INLINE_DIFF_TOKENS: usize = 256;
 const MAX_INLINE_DIFF_CACHE_ENTRIES: usize = 512;
+const MAX_BRANCH_MENU_ROWS: usize = 10;
+const BRANCH_COMPARISON_SEPARATOR: &str = " → ";
 
 fn line_gutter_fg(kind: DiffLineKind, theme: DiffTheme) -> Color {
     match kind {
@@ -1103,6 +1105,7 @@ pub fn run_diff_with_live_updates_and_syntax(
     live_updates: bool,
     syntax_enabled: bool,
 ) -> HzResult<()> {
+    let options = default_tui_diff_options(options);
     let changeset = hz_diff::load_review_ref(&options)?;
 
     let mut cleanup = TerminalCleanup::install()?;
@@ -1115,23 +1118,10 @@ pub fn run_diff_with_live_updates_and_syntax(
         SyntaxStartupMode::Disabled
     };
     let mut app = DiffApp::new_with_syntax(options, changeset, layout, syntax_mode);
-    let live_diff = if live_updates && live_diff_supported(&app.options) {
-        match LiveDiff::start(app.options.clone(), &app.changeset.repo) {
-            Ok(live_diff) => Some(live_diff),
-            Err(error) => {
-                app.set_notice(format!("live reload unavailable: {error}"));
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let mut live_diff = None;
+    sync_live_diff(&mut live_diff, &mut app, live_updates);
 
-    let result = run_loop(
-        &mut terminal,
-        &mut app,
-        live_diff.as_ref().map(|live_diff| &live_diff.reload_rx),
-    );
+    let result = run_loop(&mut terminal, &mut app, live_updates, &mut live_diff);
     let cleanup_result = cleanup.cleanup();
 
     result?;
@@ -1318,6 +1308,7 @@ impl Drop for TerminalCleanup {
 
 #[derive(Debug)]
 struct LiveDiff {
+    options: DiffOptions,
     _watcher: notify::RecommendedWatcher,
     _worker: thread::JoinHandle<()>,
     control_tx: Sender<LiveDiffCommand>,
@@ -1357,9 +1348,10 @@ impl LiveDiff {
                 })?;
         }
 
-        let worker = spawn_live_diff_worker(options, control_rx, reload_tx);
+        let worker = spawn_live_diff_worker(options.clone(), control_rx, reload_tx);
 
         Ok(Self {
+            options,
             _watcher: watcher,
             _worker: worker,
             control_tx,
@@ -2350,6 +2342,19 @@ fn full_file_source(
             rev: "HEAD".to_owned(),
             path,
         },
+        (DiffSource::Branch { base, head }, DiffScope::All, DiffSide::Old) => {
+            FullFileSourceKind::GitMergeBase {
+                base: base.clone(),
+                head: head.clone(),
+                path,
+            }
+        }
+        (DiffSource::Branch { head, .. }, DiffScope::All, DiffSide::New) => {
+            FullFileSourceKind::GitRevision {
+                rev: head.clone(),
+                path,
+            }
+        }
         (DiffSource::Range { left, .. }, DiffScope::All, DiffSide::Old) => {
             FullFileSourceKind::GitRevision {
                 rev: left.clone(),
@@ -2904,19 +2909,227 @@ enum DiffLayoutMode {
 }
 
 impl DiffLayoutMode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Split => "split",
-            Self::Unified => "unified",
-        }
-    }
-
     fn toggled(self) -> Self {
         match self {
             Self::Split => Self::Unified,
             Self::Unified => Self::Split,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffChoice {
+    Branch,
+    All,
+    Unstaged,
+    Staged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchMenu {
+    Head,
+    Base,
+}
+
+impl DiffChoice {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Branch => "Branch",
+            Self::All => "All changes",
+            Self::Unstaged => "Unstaged",
+            Self::Staged => "Staged",
+        }
+    }
+
+    fn notice(self) -> &'static str {
+        match self {
+            Self::Branch => "branch diff",
+            Self::All => "all changes",
+            Self::Unstaged => "unstaged changes",
+            Self::Staged => "staged changes",
+        }
+    }
+}
+
+const WORKTREE_DIFF_CHOICES: [DiffChoice; 3] =
+    [DiffChoice::All, DiffChoice::Unstaged, DiffChoice::Staged];
+
+fn default_branch_base(options: &DiffOptions, repo: &Path) -> Option<String> {
+    branch_base_from_options(options)
+        .or_else(env_branch_base)
+        .or_else(|| git_remote_head_branch(repo))
+        .or_else(|| git_local_branch_candidate(repo))
+}
+
+fn default_tui_diff_options(mut options: DiffOptions) -> DiffOptions {
+    if matches!(&options.source, DiffSource::Worktree)
+        && options.scope == DiffScope::All
+        && let Ok(repo) = hz_git::repository_root(options.repo.as_deref())
+        && let Some(base) = default_branch_base(&options, &repo)
+    {
+        options.source = DiffSource::Base(base);
+    }
+
+    options
+}
+
+fn comparison_branches(repo: &Path, selected_refs: &[Option<&str>]) -> Vec<String> {
+    let mut branches = git_branches(repo);
+    for selected in selected_refs
+        .iter()
+        .filter_map(|selected| selected.filter(|reference| !reference.is_empty()))
+    {
+        if !branches.iter().any(|branch| branch == selected) {
+            branches.push(selected.to_owned());
+        }
+    }
+    branches
+}
+
+fn branch_match_score(query: &str, branch: &str) -> Option<(usize, usize)> {
+    let branch_lower = branch.to_ascii_lowercase();
+    if branch_lower == query {
+        return Some((0, 0));
+    }
+    if branch_lower.starts_with(query) {
+        return Some((1, branch.len().saturating_sub(query.len())));
+    }
+    if let Some(index) = branch_lower.find(query) {
+        return Some((2, index));
+    }
+    fuzzy_subsequence_score(query, &branch_lower).map(|score| (3, score))
+}
+
+fn fuzzy_subsequence_score(query: &str, branch: &str) -> Option<usize> {
+    let mut last_match: Option<usize> = None;
+    let mut score = 0usize;
+    let mut search_start = 0usize;
+
+    for character in query.chars() {
+        let remaining = branch.get(search_start..)?;
+        let offset = remaining.find(character)?;
+        let index = search_start + offset;
+        if let Some(previous) = last_match {
+            score = score.saturating_add(index.saturating_sub(previous + 1));
+        } else {
+            score = score.saturating_add(index);
+        }
+        last_match = Some(index);
+        search_start = index + character.len_utf8();
+    }
+
+    Some(score)
+}
+
+fn git_branches(repo: &Path) -> Vec<String> {
+    if repo.as_os_str().is_empty() || !repo.exists() {
+        return Vec::new();
+    }
+
+    let output = match Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(committerdate:unix)%09%(refname:short)",
+            "refs/heads",
+            "refs/remotes",
+        ])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return Vec::new(),
+    };
+
+    let mut branches = Vec::new();
+    let mut seen = HashSet::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let branch = line
+            .split_once('\t')
+            .map(|(_, branch)| branch)
+            .unwrap_or(line)
+            .trim();
+        if branch.is_empty() || branch.ends_with("/HEAD") || !seen.insert(branch.to_owned()) {
+            continue;
+        }
+        branches.push(branch.to_owned());
+    }
+    branches
+}
+
+fn branch_base_from_options(options: &DiffOptions) -> Option<String> {
+    match &options.source {
+        DiffSource::Base(base) if !base.is_empty() => Some(base.clone()),
+        DiffSource::Branch { base, .. } if !base.is_empty() => Some(base.clone()),
+        _ => None,
+    }
+}
+
+fn branch_head_from_options(options: &DiffOptions, current_head: Option<&str>) -> Option<String> {
+    match &options.source {
+        DiffSource::Base(_) => current_head.map(str::to_owned),
+        DiffSource::Branch { head, .. } if !head.is_empty() => Some(head.clone()),
+        _ => None,
+    }
+}
+
+fn current_head_label(repo: &Path) -> Option<String> {
+    hz_git::current_branch(repo)
+        .ok()
+        .flatten()
+        .or_else(|| git_output(repo, ["rev-parse", "--short", "HEAD"]))
+}
+
+fn env_branch_base() -> Option<String> {
+    env::var("HZ_BASE_BRANCH")
+        .ok()
+        .map(|base| base.trim().to_owned())
+        .filter(|base| !base.is_empty())
+}
+
+fn git_remote_head_branch(repo: &Path) -> Option<String> {
+    git_output(
+        repo,
+        [
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    )
+}
+
+fn git_local_branch_candidate(repo: &Path) -> Option<String> {
+    if !repo.exists() {
+        return None;
+    }
+
+    ["main", "master"].into_iter().find_map(|branch| {
+        hz_git::branch_exists(repo, branch)
+            .ok()
+            .filter(|exists| *exists)
+            .map(|_| branch.to_owned())
+    })
+}
+
+fn git_output<const N: usize>(repo: &Path, args: [&str; N]) -> Option<String> {
+    if repo.as_os_str().is_empty() || !repo.exists() {
+        return None;
+    }
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!value.is_empty()).then_some(value)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3122,11 +3335,16 @@ fn push_split_hunk_rows(
 fn run_loop(
     terminal: &mut CrosstermTerminal,
     app: &mut DiffApp,
-    live_reload_rx: Option<&Receiver<LiveDiffReload>>,
+    live_updates: bool,
+    live_diff: &mut Option<LiveDiff>,
 ) -> HzResult<()> {
     loop {
+        sync_live_diff(live_diff, app, live_updates);
         app.expire_notice(Instant::now());
-        drain_live_reloads(app, live_reload_rx);
+        drain_live_reloads(
+            app,
+            live_diff.as_ref().map(|live_diff| &live_diff.reload_rx),
+        );
         app.drain_syntax();
         if app.dirty {
             terminal.draw(|frame| draw(frame, app))?;
@@ -3157,6 +3375,36 @@ fn run_loop(
     Ok(())
 }
 
+fn sync_live_diff(live_diff: &mut Option<LiveDiff>, app: &mut DiffApp, live_updates: bool) {
+    if !live_updates || !live_diff_supported(&app.options) {
+        *live_diff = None;
+        app.live_diff_failed_options = None;
+        return;
+    }
+
+    if live_diff
+        .as_ref()
+        .is_some_and(|live_diff| live_diff.options == app.options)
+    {
+        return;
+    }
+    if app.live_diff_failed_options.as_ref() == Some(&app.options) {
+        return;
+    }
+
+    match LiveDiff::start(app.options.clone(), &app.changeset.repo) {
+        Ok(next_live_diff) => {
+            app.live_diff_failed_options = None;
+            *live_diff = Some(next_live_diff);
+        }
+        Err(error) => {
+            *live_diff = None;
+            app.live_diff_failed_options = Some(app.options.clone());
+            app.set_notice(format!("live reload unavailable: {error}"));
+        }
+    }
+}
+
 fn drain_live_reloads(app: &mut DiffApp, live_reload_rx: Option<&Receiver<LiveDiffReload>>) {
     let Some(live_reload_rx) = live_reload_rx else {
         return;
@@ -3176,7 +3424,7 @@ fn handle_event(app: &mut DiffApp, event: Event) -> HzResult<bool> {
     match event {
         Event::Key(key) if app.handle_key(key)? => Ok(true),
         Event::Mouse(mouse) => {
-            app.handle_mouse(mouse);
+            app.handle_mouse(mouse)?;
             Ok(false)
         }
         Event::Resize(width, _) => {
@@ -3287,6 +3535,16 @@ struct DiffApp {
     scroll: usize,
     viewport_rows: usize,
     selected_file: usize,
+    diff_menu_open: bool,
+    branch_menu_open: Option<BranchMenu>,
+    branch_menu_input: String,
+    branch_menu_scroll: usize,
+    branch_menu_selected: usize,
+    branch_base: Option<String>,
+    branch_head: Option<String>,
+    current_head: Option<String>,
+    comparison_branches: Vec<String>,
+    live_diff_failed_options: Option<DiffOptions>,
     mouse_scroll: MouseScroll,
     notice: Option<Notice>,
     theme: DiffTheme,
@@ -3328,6 +3586,13 @@ impl DiffApp {
     ) -> Self {
         let model = UiModel::new(&changeset, layout);
         let stats = changeset.stats();
+        let branch_base = default_branch_base(&options, &changeset.repo);
+        let current_head = current_head_label(&changeset.repo);
+        let branch_head = branch_head_from_options(&options, current_head.as_deref());
+        let comparison_branches = comparison_branches(
+            &changeset.repo,
+            &[branch_head.as_deref(), branch_base.as_deref()],
+        );
         let (settings, mut notice) = load_syntax_settings_for_diff(matches!(
             syntax_mode,
             SyntaxStartupMode::Config | SyntaxStartupMode::Disabled
@@ -3376,6 +3641,16 @@ impl DiffApp {
             scroll: 0,
             viewport_rows: 1,
             selected_file: 0,
+            diff_menu_open: false,
+            branch_menu_open: None,
+            branch_menu_input: String::new(),
+            branch_menu_scroll: 0,
+            branch_menu_selected: 0,
+            branch_base,
+            branch_head,
+            current_head,
+            comparison_branches,
+            live_diff_failed_options: None,
             mouse_scroll: MouseScroll::default(),
             notice,
             theme,
@@ -3393,6 +3668,78 @@ impl DiffApp {
         }
 
         self.mouse_scroll.reset();
+
+        if self.branch_menu_open.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.close_branch_menu();
+                    return Ok(false);
+                }
+                KeyCode::Enter => {
+                    self.select_highlighted_branch_match();
+                    return Ok(false);
+                }
+                KeyCode::Tab => {
+                    self.cycle_branch_completion(1);
+                    return Ok(false);
+                }
+                KeyCode::BackTab => {
+                    self.cycle_branch_completion(-1);
+                    return Ok(false);
+                }
+                KeyCode::Backspace => {
+                    self.pop_branch_input();
+                    return Ok(false);
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.clear_branch_input();
+                    return Ok(false);
+                }
+                KeyCode::Down => {
+                    self.move_branch_selection(1);
+                    return Ok(false);
+                }
+                KeyCode::Up => {
+                    self.move_branch_selection(-1);
+                    return Ok(false);
+                }
+                KeyCode::PageDown => {
+                    self.move_branch_selection(MAX_BRANCH_MENU_ROWS as isize);
+                    return Ok(false);
+                }
+                KeyCode::PageUp => {
+                    self.move_branch_selection(-(MAX_BRANCH_MENU_ROWS as isize));
+                    return Ok(false);
+                }
+                KeyCode::Home => {
+                    self.set_branch_selection(0);
+                    return Ok(false);
+                }
+                KeyCode::End => {
+                    self.set_branch_selection(usize::MAX);
+                    return Ok(false);
+                }
+                KeyCode::Char(character)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    self.push_branch_input(character);
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+
+        if self.diff_menu_open {
+            if key.code == KeyCode::Esc {
+                self.diff_menu_open = false;
+                self.dirty = true;
+                return Ok(false);
+            }
+            if key.code == KeyCode::Char('q') {
+                return Ok(true);
+            }
+        }
 
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(true),
@@ -3433,8 +3780,25 @@ impl DiffApp {
         }
     }
 
-    fn handle_mouse(&mut self, mouse: MouseEvent) {
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> HzResult<()> {
+        if self.branch_menu_open.is_some() {
+            match mouse.kind {
+                MouseEventKind::ScrollDown => {
+                    self.move_branch_selection(1);
+                    return Ok(());
+                }
+                MouseEventKind::ScrollUp => {
+                    self.move_branch_selection(-1);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.handle_click(mouse.column, mouse.row);
+            }
             MouseEventKind::ScrollDown => {
                 let delta = self
                     .mouse_scroll
@@ -3449,6 +3813,480 @@ impl DiffApp {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    fn handle_click(&mut self, column: u16, row: u16) {
+        let clicked_selector = row == 0 && column < diff_selector_width(&self.options);
+        let clicked_branch_selector = (row == 0)
+            .then(|| self.branch_selector_at(column))
+            .flatten();
+
+        if let Some(menu) = self.branch_menu_open {
+            if let Some(branch) = self.branch_choice_at(menu, column, row) {
+                self.close_branch_menu();
+                self.select_branch(menu, branch);
+                return;
+            }
+
+            if let Some(clicked_menu) = clicked_branch_selector {
+                self.toggle_branch_menu(clicked_menu);
+                return;
+            }
+
+            self.close_branch_menu();
+            if clicked_selector {
+                self.toggle_diff_menu();
+            }
+            return;
+        }
+
+        if self.diff_menu_open {
+            if let Some(choice) = self.diff_choice_at(column, row) {
+                self.diff_menu_open = false;
+                self.select_diff_choice(choice);
+                return;
+            }
+
+            if let Some(menu) = clicked_branch_selector {
+                self.diff_menu_open = false;
+                self.toggle_branch_menu(menu);
+                return;
+            }
+
+            if clicked_selector {
+                self.toggle_diff_menu();
+                return;
+            }
+
+            self.diff_menu_open = false;
+            self.dirty = true;
+            return;
+        }
+
+        if clicked_selector {
+            self.toggle_diff_menu();
+        } else if let Some(menu) = clicked_branch_selector {
+            self.toggle_branch_menu(menu);
+        }
+    }
+
+    fn toggle_diff_menu(&mut self) {
+        if self.diff_menu_choices().is_empty() {
+            return;
+        }
+        self.diff_menu_open = !self.diff_menu_open;
+        self.branch_menu_open = None;
+        self.dirty = true;
+    }
+
+    fn close_branch_menu(&mut self) {
+        if self.branch_menu_open.is_some()
+            || !self.branch_menu_input.is_empty()
+            || self.branch_menu_scroll != 0
+        {
+            self.branch_menu_open = None;
+            self.branch_menu_input.clear();
+            self.branch_menu_scroll = 0;
+            self.branch_menu_selected = 0;
+            self.dirty = true;
+        }
+    }
+
+    fn toggle_branch_menu(&mut self, menu: BranchMenu) {
+        if !self.is_branch_diff() || self.comparison_branches.is_empty() {
+            return;
+        }
+        if self.branch_menu_open == Some(menu) {
+            self.close_branch_menu();
+            return;
+        }
+
+        self.branch_menu_open = Some(menu);
+        self.diff_menu_open = false;
+        self.branch_menu_input.clear();
+        self.branch_menu_selected = self
+            .branch_ref(menu)
+            .and_then(|branch| {
+                self.filtered_branches()
+                    .iter()
+                    .position(|candidate| *candidate == branch)
+            })
+            .unwrap_or_default()
+            .min(self.max_branch_menu_selection());
+        self.ensure_branch_selection_visible();
+        self.dirty = true;
+    }
+
+    fn branch_selector_at(&self, column: u16) -> Option<BranchMenu> {
+        [BranchMenu::Head, BranchMenu::Base]
+            .into_iter()
+            .find(|menu| {
+                let Some(start) = self.branch_selector_start(*menu) else {
+                    return false;
+                };
+                let Some(width) = self.branch_selector_width(*menu) else {
+                    return false;
+                };
+                column >= start && column < start.saturating_add(width)
+            })
+    }
+
+    fn branch_choice_at(&self, menu: BranchMenu, column: u16, row: u16) -> Option<String> {
+        let start = self.branch_selector_start(menu)?;
+        let width = self.branch_menu_width();
+        if column < start || column >= start.saturating_add(width) || row == 0 {
+            return None;
+        }
+
+        let row_index = usize::from(row - 1);
+        if row_index >= self.visible_branch_menu_rows() {
+            return None;
+        }
+
+        self.filtered_branch(row_index).map(str::to_owned)
+    }
+
+    fn filtered_branch(&self, row_index: usize) -> Option<&str> {
+        self.filtered_branches()
+            .get(self.branch_menu_scroll.saturating_add(row_index))
+            .copied()
+    }
+
+    fn move_branch_selection(&mut self, delta: isize) {
+        let next = if delta < 0 {
+            self.branch_menu_selected
+                .saturating_sub(delta.unsigned_abs())
+        } else {
+            self.branch_menu_selected.saturating_add(delta as usize)
+        };
+        self.set_branch_selection(next);
+    }
+
+    fn set_branch_selection(&mut self, selected: usize) {
+        let selected = selected.min(self.max_branch_menu_selection());
+        if self.branch_menu_selected != selected {
+            self.branch_menu_selected = selected;
+            self.ensure_branch_selection_visible();
+            self.dirty = true;
+        }
+    }
+
+    fn cycle_branch_completion(&mut self, delta: isize) {
+        let len = self.filtered_branches().len();
+        if len == 0 {
+            return;
+        }
+
+        let next = if delta < 0 {
+            self.branch_menu_selected
+                .checked_sub(1)
+                .unwrap_or(len.saturating_sub(1))
+        } else {
+            (self.branch_menu_selected + 1) % len
+        };
+        self.set_branch_selection(next);
+    }
+
+    fn ensure_branch_selection_visible(&mut self) {
+        let max_scroll = self.max_branch_menu_scroll();
+        if self.branch_menu_selected < self.branch_menu_scroll {
+            self.branch_menu_scroll = self.branch_menu_selected;
+        } else if self.branch_menu_selected
+            >= self.branch_menu_scroll.saturating_add(MAX_BRANCH_MENU_ROWS)
+        {
+            self.branch_menu_scroll = self
+                .branch_menu_selected
+                .saturating_add(1)
+                .saturating_sub(MAX_BRANCH_MENU_ROWS);
+        }
+        self.branch_menu_scroll = self.branch_menu_scroll.min(max_scroll);
+    }
+
+    fn max_branch_menu_selection(&self) -> usize {
+        self.filtered_branches().len().saturating_sub(1)
+    }
+
+    fn max_branch_menu_scroll(&self) -> usize {
+        self.filtered_branches()
+            .len()
+            .saturating_sub(MAX_BRANCH_MENU_ROWS)
+    }
+
+    fn visible_branch_menu_rows(&self) -> usize {
+        self.filtered_branches().len().min(MAX_BRANCH_MENU_ROWS)
+    }
+
+    fn branch_menu_height(&self) -> usize {
+        self.visible_branch_menu_rows()
+            .max(usize::from(self.filtered_branches().is_empty()))
+    }
+
+    fn filtered_branches(&self) -> Vec<&str> {
+        let menu = self.branch_menu_open.unwrap_or(BranchMenu::Base);
+        let query = self.branch_menu_input.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            let mut matches: Vec<_> = self
+                .comparison_branches
+                .iter()
+                .enumerate()
+                .map(|(index, branch)| (self.branch_pin_rank(menu, branch), index, branch.as_str()))
+                .collect();
+            matches.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+            return matches.into_iter().map(|(_, _, branch)| branch).collect();
+        }
+
+        let mut matches: Vec<_> = self
+            .comparison_branches
+            .iter()
+            .enumerate()
+            .filter_map(|(index, branch)| {
+                branch_match_score(&query, branch).map(|score| {
+                    (
+                        self.branch_pin_rank(menu, branch),
+                        score,
+                        branch.len(),
+                        index,
+                        branch.as_str(),
+                    )
+                })
+            })
+            .collect();
+        matches.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.cmp(&right.2))
+                .then_with(|| left.3.cmp(&right.3))
+                .then_with(|| left.4.cmp(right.4))
+        });
+        matches
+            .into_iter()
+            .map(|(_, _, _, _, branch)| branch)
+            .collect()
+    }
+
+    fn branch_pin_rank(&self, menu: BranchMenu, branch: &str) -> usize {
+        let current = self.branch_head.as_deref().or(self.current_head.as_deref());
+        match menu {
+            BranchMenu::Head => {
+                if current == Some(branch) {
+                    0
+                } else if branch == "origin/main" {
+                    1
+                } else {
+                    2
+                }
+            }
+            BranchMenu::Base => {
+                if branch == "origin/main" {
+                    0
+                } else if current == Some(branch) {
+                    1
+                } else {
+                    2
+                }
+            }
+        }
+    }
+
+    fn push_branch_input(&mut self, character: char) {
+        self.branch_menu_input.push(character);
+        self.branch_menu_scroll = 0;
+        self.branch_menu_selected = 0;
+        self.dirty = true;
+    }
+
+    fn pop_branch_input(&mut self) {
+        if self.branch_menu_input.pop().is_some() {
+            self.branch_menu_scroll = 0;
+            self.branch_menu_selected = 0;
+            self.dirty = true;
+        }
+    }
+
+    fn clear_branch_input(&mut self) {
+        if !self.branch_menu_input.is_empty()
+            || self.branch_menu_scroll != 0
+            || self.branch_menu_selected != 0
+        {
+            self.branch_menu_input.clear();
+            self.branch_menu_scroll = 0;
+            self.branch_menu_selected = 0;
+            self.dirty = true;
+        }
+    }
+
+    fn select_highlighted_branch_match(&mut self) {
+        let Some(menu) = self.branch_menu_open else {
+            return;
+        };
+        let Some(branch) = self
+            .filtered_branches()
+            .get(self.branch_menu_selected)
+            .map(|branch| (*branch).to_owned())
+        else {
+            self.set_notice("no matching branch");
+            return;
+        };
+        self.close_branch_menu();
+        self.select_branch(menu, branch);
+    }
+
+    fn is_branch_diff(&self) -> bool {
+        matches!(
+            &self.options.source,
+            DiffSource::Base(_) | DiffSource::Branch { .. }
+        )
+    }
+
+    fn branch_ref(&self, menu: BranchMenu) -> Option<&str> {
+        match menu {
+            BranchMenu::Head => self.branch_head.as_deref(),
+            BranchMenu::Base => self.branch_base.as_deref(),
+        }
+    }
+
+    fn branch_selector_text(&self, menu: BranchMenu) -> Option<String> {
+        let branch = self.branch_ref(menu)?;
+        if self.branch_menu_open == Some(menu) {
+            let width = branch.width().max(self.branch_menu_input.width());
+            return Some(format!("{} ▾", fit_padded(&self.branch_menu_input, width)));
+        }
+
+        Some(format!("{branch} ▾"))
+    }
+
+    fn branch_selector_width(&self, menu: BranchMenu) -> Option<u16> {
+        self.branch_selector_text(menu)
+            .map(|text| text.width() as u16)
+    }
+
+    fn branch_menu_width(&self) -> u16 {
+        let branch_width = branch_menu_width(&self.comparison_branches) as usize;
+        let input_width = self.branch_menu_input.width().saturating_add(4).max(20);
+        branch_width.max(input_width) as u16
+    }
+
+    fn branch_selector_start(&self, menu: BranchMenu) -> Option<u16> {
+        if !self.is_branch_diff() {
+            return None;
+        }
+
+        let head_width = self.branch_selector_width(BranchMenu::Head)?;
+        match menu {
+            BranchMenu::Head => Some(diff_selector_width(&self.options)),
+            BranchMenu::Base => Some(
+                diff_selector_width(&self.options)
+                    .saturating_add(head_width)
+                    .saturating_add(BRANCH_COMPARISON_SEPARATOR.width() as u16),
+            ),
+        }
+    }
+
+    fn diff_choice_at(&self, column: u16, row: u16) -> Option<DiffChoice> {
+        let choices = self.diff_menu_choices();
+        let width = diff_menu_width(&choices);
+        if column >= width || row == 0 {
+            return None;
+        }
+
+        choices.get(usize::from(row - 1)).copied()
+    }
+
+    fn diff_menu_choices(&self) -> Vec<DiffChoice> {
+        if matches!(&self.options.source, DiffSource::Patch(_)) {
+            return Vec::new();
+        }
+
+        let mut choices = Vec::with_capacity(4);
+        if self.branch_base.is_some() {
+            choices.push(DiffChoice::Branch);
+        }
+        choices.extend(WORKTREE_DIFF_CHOICES);
+        choices
+    }
+
+    fn select_branch(&mut self, menu: BranchMenu, branch: String) {
+        let base = match menu {
+            BranchMenu::Head => self.branch_base.clone(),
+            BranchMenu::Base => Some(branch.clone()),
+        };
+        let head = match menu {
+            BranchMenu::Head => Some(branch.clone()),
+            BranchMenu::Base => self.branch_head.clone(),
+        };
+        let Some((base, head)) = base.zip(head) else {
+            self.set_notice("branch diff unavailable");
+            return;
+        };
+
+        let mut options = self.options.clone();
+        options.source = self.branch_source(base, head);
+        options.scope = DiffScope::All;
+
+        if options == self.options {
+            self.dirty = true;
+            return;
+        }
+
+        match hz_diff::load_review_ref(&options) {
+            Ok(changeset) => {
+                let notice = format!("branch {branch}");
+                self.replace_loaded_diff(options, changeset, Some(&notice));
+            }
+            Err(error) => self.set_notice(format!("branch diff unavailable: {error}")),
+        }
+    }
+
+    fn branch_source(&self, base: String, head: String) -> DiffSource {
+        if self.current_head.as_deref() == Some(head.as_str()) {
+            DiffSource::Base(base)
+        } else {
+            DiffSource::Branch { base, head }
+        }
+    }
+
+    fn select_diff_choice(&mut self, choice: DiffChoice) {
+        let Some(options) = self.options_for_choice(choice) else {
+            self.set_notice("base branch unavailable");
+            return;
+        };
+
+        if options == self.options {
+            self.dirty = true;
+            return;
+        }
+
+        match hz_diff::load_review_ref(&options) {
+            Ok(changeset) => self.replace_loaded_diff(options, changeset, Some(choice.notice())),
+            Err(error) => self.set_notice(format!("diff unavailable: {error}")),
+        }
+    }
+
+    fn options_for_choice(&self, choice: DiffChoice) -> Option<DiffOptions> {
+        let mut options = self.options.clone();
+        match choice {
+            DiffChoice::Branch => {
+                options.source =
+                    self.branch_source(self.branch_base.clone()?, self.branch_head.clone()?);
+                options.scope = DiffScope::All;
+            }
+            DiffChoice::All => {
+                options.source = DiffSource::Worktree;
+                options.scope = DiffScope::All;
+            }
+            DiffChoice::Unstaged => {
+                options.source = DiffSource::Worktree;
+                options.scope = DiffScope::Unstaged;
+            }
+            DiffChoice::Staged => {
+                options.source = DiffSource::Worktree;
+                options.scope = DiffScope::Staged;
+            }
+        }
+
+        Some(options)
     }
 
     fn scroll_by(&mut self, delta: isize) {
@@ -3716,7 +4554,10 @@ impl DiffApp {
         self.set_scroll(scroll);
         self.dirty = true;
         if show_notice {
-            self.set_notice(self.layout.label());
+            self.set_notice(match self.layout {
+                DiffLayoutMode::Split => "split view",
+                DiffLayoutMode::Unified => "unified view",
+            });
         }
     }
 
@@ -3727,7 +4568,17 @@ impl DiffApp {
     }
 
     fn replace_changeset(&mut self, changeset: Changeset, notice: Option<&str>) {
-        if self.changeset == changeset {
+        self.replace_loaded_diff(self.options.clone(), changeset, notice);
+    }
+
+    fn replace_loaded_diff(
+        &mut self,
+        options: DiffOptions,
+        changeset: Changeset,
+        notice: Option<&str>,
+    ) {
+        let options_changed = self.options != options;
+        if !options_changed && self.changeset == changeset {
             if let Some(notice) = notice {
                 self.set_notice(notice);
             }
@@ -3753,6 +4604,16 @@ impl DiffApp {
             })
             .unwrap_or(0);
 
+        self.options = options;
+        self.current_head = current_head_label(&changeset.repo);
+        self.branch_base = branch_base_from_options(&self.options)
+            .or_else(|| default_branch_base(&self.options, &changeset.repo));
+        self.branch_head = branch_head_from_options(&self.options, self.current_head.as_deref());
+        self.comparison_branches = comparison_branches(
+            &changeset.repo,
+            &[self.branch_head.as_deref(), self.branch_base.as_deref()],
+        );
+        self.branch_menu_scroll = self.branch_menu_scroll.min(self.max_branch_menu_scroll());
         self.stats = changeset.stats();
         self.changeset = changeset;
         self.generation = self.generation.wrapping_add(1);
@@ -3789,6 +4650,8 @@ fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
     app.set_viewport_rows(vertical[1].height as usize);
     draw_header(frame, app, vertical[0]);
     draw_diff(frame, app, vertical[1]);
+    draw_diff_menu(frame, app, area);
+    draw_branch_menu(frame, app, area);
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
@@ -3797,29 +4660,283 @@ fn draw_header(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
         .as_ref()
         .map(|notice| notice.text.as_str())
         .unwrap_or("");
-    let line = Line::from(vec![
-        Span::styled(
-            &app.changeset.title,
+    let mut spans = vec![Span::styled(
+        diff_selector_text(&app.options),
+        Style::default()
+            .fg(app.theme.header)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if app.is_branch_diff()
+        && let (Some(head), Some(base)) = (
+            app.branch_selector_text(BranchMenu::Head),
+            app.branch_selector_text(BranchMenu::Base),
+        )
+    {
+        spans.push(Span::styled(
+            head,
             Style::default()
                 .fg(app.theme.header)
                 .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            BRANCH_COMPARISON_SEPARATOR,
+            Style::default().fg(app.theme.muted),
+        ));
+        spans.push(Span::styled(
+            base,
+            Style::default()
+                .fg(app.theme.header)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        spans.push(Span::styled(
+            diff_comparison_label(&app.options),
+            Style::default().fg(app.theme.muted),
+        ));
+    }
+    spans.extend([
+        Span::raw("  "),
+        Span::styled(
+            format!("{} files", format_count(app.stats.files)),
+            Style::default().fg(app.theme.foreground),
         ),
         Span::raw("  "),
-        Span::styled(app.layout.label(), Style::default().fg(app.theme.muted)),
-        Span::raw(format!(
-            "  {} files  +{} -{}  {}",
-            app.stats.files,
-            app.stats.additions,
-            app.stats.deletions,
-            progress_label(app.scroll, app.max_scroll())
-        )),
+        Span::styled(
+            format!("+{}", format_count(app.stats.additions)),
+            Style::default()
+                .fg(app.theme.addition_fg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("-{}", format_count(app.stats.deletions)),
+            Style::default()
+                .fg(app.theme.deletion_fg)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
-        Span::styled(notice, Style::default().fg(app.theme.notice)),
+        Span::styled(
+            progress_label(app.scroll, app.max_scroll()),
+            Style::default().fg(app.theme.header),
+        ),
     ]);
+    if !notice.is_empty() {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(notice, Style::default().fg(app.theme.notice)));
+    }
+    let line = Line::from(spans);
     frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(base_bg(app.theme))),
+        Paragraph::new(line).style(Style::default().bg(header_bg(app.theme))),
         area,
     );
+}
+
+fn draw_diff_menu(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
+    if !app.diff_menu_open || area.height <= 1 {
+        return;
+    }
+
+    let choices = app.diff_menu_choices();
+    if choices.is_empty() {
+        return;
+    }
+
+    let width = diff_menu_width(&choices).min(area.width);
+    let height = (choices.len() as u16).min(area.height - 1);
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let menu_area = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width,
+        height,
+    };
+    let selected = diff_choice_from_options(&app.options);
+    let lines: Vec<_> = choices
+        .into_iter()
+        .take(height as usize)
+        .map(|choice| {
+            let active = selected == Some(choice);
+            let marker = if active { "✓" } else { " " };
+            let text = fit_padded(&format!(" {marker} {}", choice.label()), width as usize);
+            let style = if active {
+                Style::default()
+                    .fg(app.theme.header)
+                    .bg(header_bg(app.theme))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(app.theme.foreground)
+                    .bg(header_bg(app.theme))
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+
+    frame.render_widget(Clear, menu_area);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(header_bg(app.theme))),
+        menu_area,
+    );
+}
+
+fn draw_branch_menu(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
+    let Some(menu) = app.branch_menu_open else {
+        return;
+    };
+    if area.height <= 1 || app.comparison_branches.is_empty() {
+        return;
+    }
+
+    let x = app
+        .branch_selector_start(menu)
+        .unwrap_or_default()
+        .min(area.width);
+    let width = app.branch_menu_width().min(area.width.saturating_sub(x));
+    let height = (app.branch_menu_height() as u16).min(area.height - 1);
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let menu_area = Rect {
+        x: area.x + x,
+        y: area.y + 1,
+        width,
+        height,
+    };
+    let selected = app.branch_ref(menu);
+    let matches = app.filtered_branches();
+    let lines: Vec<_> = if matches.is_empty() {
+        vec![Line::from(Span::styled(
+            fit_padded("   no matches", width as usize),
+            Style::default()
+                .fg(app.theme.muted)
+                .bg(header_bg(app.theme)),
+        ))]
+    } else {
+        matches
+            .iter()
+            .enumerate()
+            .skip(app.branch_menu_scroll)
+            .take(height as usize)
+            .map(|(index, branch)| {
+                let active = selected == Some(*branch);
+                let highlighted = index == app.branch_menu_selected;
+                let marker = if active {
+                    "✓"
+                } else if highlighted {
+                    "›"
+                } else {
+                    " "
+                };
+                let text = fit_padded(&format!(" {marker} {branch}"), width as usize);
+                let mut style = if active || highlighted {
+                    Style::default()
+                        .fg(app.theme.header)
+                        .bg(header_bg(app.theme))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(app.theme.foreground)
+                        .bg(header_bg(app.theme))
+                };
+                if highlighted {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
+                Line::from(Span::styled(text, style))
+            })
+            .collect()
+    };
+
+    frame.render_widget(Clear, menu_area);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(header_bg(app.theme))),
+        menu_area,
+    );
+}
+
+fn diff_selector_text(options: &DiffOptions) -> String {
+    let suffix = if matches!(&options.source, DiffSource::Patch(_)) {
+        ""
+    } else {
+        " ▾"
+    };
+    format!(" {}{} ", diff_type_label(options), suffix)
+}
+
+fn diff_selector_width(options: &DiffOptions) -> u16 {
+    diff_selector_text(options).width() as u16
+}
+
+fn diff_type_label(options: &DiffOptions) -> &'static str {
+    if let Some(choice) = diff_choice_from_options(options) {
+        return choice.label();
+    }
+
+    match &options.source {
+        DiffSource::Range { .. } => "Range",
+        DiffSource::Patch(_) => "Patch",
+        DiffSource::Worktree | DiffSource::Base(_) | DiffSource::Branch { .. } => "Diff",
+    }
+}
+
+fn diff_choice_from_options(options: &DiffOptions) -> Option<DiffChoice> {
+    match (&options.source, options.scope) {
+        (DiffSource::Base(_) | DiffSource::Branch { .. }, DiffScope::All) => {
+            Some(DiffChoice::Branch)
+        }
+        (DiffSource::Worktree, DiffScope::All) => Some(DiffChoice::All),
+        (DiffSource::Worktree, DiffScope::Unstaged) => Some(DiffChoice::Unstaged),
+        (DiffSource::Worktree, DiffScope::Staged) => Some(DiffChoice::Staged),
+        _ => None,
+    }
+}
+
+fn diff_comparison_label(options: &DiffOptions) -> String {
+    match &options.source {
+        DiffSource::Worktree => match options.scope {
+            DiffScope::All => "HEAD → working tree".to_owned(),
+            DiffScope::Staged => "HEAD → index".to_owned(),
+            DiffScope::Unstaged => "index → working tree".to_owned(),
+        },
+        DiffSource::Base(base) => format!("HEAD → {base}"),
+        DiffSource::Branch { base, head } => format!("{head} → {base}"),
+        DiffSource::Range { left, right } => format!("{left} → {right}"),
+        DiffSource::Patch(hz_diff::PatchSource::File(path)) => format!("patch {}", path.display()),
+        DiffSource::Patch(hz_diff::PatchSource::Stdin(_)) => "patch stdin".to_owned(),
+    }
+}
+
+fn diff_menu_width(choices: &[DiffChoice]) -> u16 {
+    choices
+        .iter()
+        .map(|choice| choice.label().width() + 4)
+        .max()
+        .unwrap_or_default() as u16
+}
+
+fn branch_menu_width(branches: &[String]) -> u16 {
+    branches
+        .iter()
+        .map(|branch| branch.width() + 4)
+        .max()
+        .unwrap_or_default() as u16
+}
+
+fn format_count(count: usize) -> String {
+    let digits = count.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+
+    formatted
 }
 
 fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
@@ -4037,6 +5154,14 @@ fn base_bg(theme: DiffTheme) -> Color {
         Color::Reset
     } else {
         theme.background
+    }
+}
+
+fn header_bg(theme: DiffTheme) -> Color {
+    if theme.transparent_background {
+        Color::Reset
+    } else {
+        theme.gutter_bg
     }
 }
 
@@ -4585,6 +5710,240 @@ mod tests {
         assert_eq!(progress_label(0, 20), "0%");
         assert_eq!(progress_label(10, 20), "50%");
         assert_eq!(progress_label(100, 20), "100%");
+    }
+
+    #[test]
+    fn diff_header_labels_describe_selected_scope() {
+        let mut options = DiffOptions::default();
+
+        assert_eq!(diff_selector_text(&options), " All changes ▾ ");
+        assert_eq!(diff_comparison_label(&options), "HEAD → working tree");
+
+        options.scope = DiffScope::Unstaged;
+        assert_eq!(diff_selector_text(&options), " Unstaged ▾ ");
+        assert_eq!(diff_comparison_label(&options), "index → working tree");
+
+        options.scope = DiffScope::Staged;
+        assert_eq!(diff_selector_text(&options), " Staged ▾ ");
+        assert_eq!(diff_comparison_label(&options), "HEAD → index");
+
+        options.source = DiffSource::Base("origin/main".to_owned());
+        options.scope = DiffScope::All;
+        assert_eq!(diff_selector_text(&options), " Branch ▾ ");
+        assert_eq!(diff_comparison_label(&options), "HEAD → origin/main");
+
+        options.source = DiffSource::Branch {
+            base: "origin/main".to_owned(),
+            head: "feature/ui".to_owned(),
+        };
+        assert_eq!(diff_comparison_label(&options), "feature/ui → origin/main");
+    }
+
+    #[test]
+    fn diff_menu_options_preserve_repo_and_untracked_setting() {
+        let options = DiffOptions {
+            repo: Some(PathBuf::from("/repo")),
+            include_untracked: false,
+            ..DiffOptions::default()
+        };
+        let mut app = DiffApp::new(
+            options.clone(),
+            changeset_with_context_lines(1),
+            DiffLayoutMode::Unified,
+        );
+        app.branch_base = Some("origin/main".to_owned());
+        app.branch_head = Some("feature/ui".to_owned());
+        app.current_head = Some("feature/ui".to_owned());
+
+        let staged = app.options_for_choice(DiffChoice::Staged).unwrap();
+        assert_eq!(staged.repo, options.repo);
+        assert!(!staged.include_untracked);
+        assert_eq!(staged.source, DiffSource::Worktree);
+        assert_eq!(staged.scope, DiffScope::Staged);
+
+        let branch = app.options_for_choice(DiffChoice::Branch).unwrap();
+        assert_eq!(branch.source, DiffSource::Base("origin/main".to_owned()));
+        assert_eq!(branch.scope, DiffScope::All);
+    }
+
+    #[test]
+    fn branch_header_exposes_head_and_base_selectors() {
+        let options = DiffOptions {
+            source: DiffSource::Base("origin/main".to_owned()),
+            ..DiffOptions::default()
+        };
+        let mut app = DiffApp::new(
+            options,
+            changeset_with_context_lines(1),
+            DiffLayoutMode::Unified,
+        );
+        app.branch_head = Some("feature/ui".to_owned());
+        app.branch_base = Some("origin/main".to_owned());
+
+        assert_eq!(
+            app.branch_selector_text(BranchMenu::Head).as_deref(),
+            Some("feature/ui ▾")
+        );
+        assert_eq!(
+            app.branch_selector_text(BranchMenu::Base).as_deref(),
+            Some("origin/main ▾")
+        );
+        assert_eq!(
+            app.branch_selector_at(diff_selector_width(&app.options)),
+            Some(BranchMenu::Head)
+        );
+
+        app.toggle_branch_menu(BranchMenu::Head);
+        let empty_input = app.branch_selector_text(BranchMenu::Head).unwrap();
+        assert_eq!(empty_input.width(), "feature/ui ▾".width());
+        assert!(empty_input.trim_start().starts_with('▾'));
+        app.push_branch_input('f');
+        let typed_input = app.branch_selector_text(BranchMenu::Head).unwrap();
+        assert_eq!(typed_input.width(), "feature/ui ▾".width());
+        assert!(typed_input.starts_with('f'));
+        app.close_branch_menu();
+        assert_eq!(
+            app.branch_selector_text(BranchMenu::Head).as_deref(),
+            Some("feature/ui ▾")
+        );
+    }
+
+    #[test]
+    fn branch_menu_scrolls_visible_branch_window() {
+        let options = DiffOptions {
+            source: DiffSource::Base("branch-00".to_owned()),
+            ..DiffOptions::default()
+        };
+        let mut app = DiffApp::new(
+            options,
+            changeset_with_context_lines(1),
+            DiffLayoutMode::Unified,
+        );
+        app.comparison_branches = (0..12).map(|index| format!("branch-{index:02}")).collect();
+
+        assert_eq!(app.visible_branch_menu_rows(), MAX_BRANCH_MENU_ROWS);
+        assert_eq!(app.max_branch_menu_scroll(), 2);
+
+        app.move_branch_selection(99);
+        assert_eq!(app.branch_menu_selected, 11);
+        assert_eq!(app.branch_menu_scroll, 2);
+
+        app.move_branch_selection(-1);
+        assert_eq!(app.branch_menu_selected, 10);
+        assert_eq!(app.branch_menu_scroll, 2);
+    }
+
+    #[test]
+    fn branch_combo_input_filters_and_completes() {
+        let options = DiffOptions {
+            source: DiffSource::Base("main".to_owned()),
+            ..DiffOptions::default()
+        };
+        let mut app = DiffApp::new(
+            options,
+            changeset_with_context_lines(1),
+            DiffLayoutMode::Unified,
+        );
+        app.comparison_branches = vec![
+            "main".to_owned(),
+            "feature/header".to_owned(),
+            "fix/footer".to_owned(),
+        ];
+
+        app.push_branch_input('h');
+        assert_eq!(app.filtered_branches(), vec!["feature/header"]);
+
+        app.clear_branch_input();
+        app.push_branch_input('f');
+        app.push_branch_input('h');
+        assert_eq!(app.filtered_branches(), vec!["feature/header"]);
+
+        app.branch_menu_open = Some(BranchMenu::Head);
+        app.cycle_branch_completion(1);
+        assert_eq!(app.branch_menu_selected, 0);
+        assert_eq!(app.branch_menu_input, "fh");
+
+        app.clear_branch_input();
+        app.push_branch_input('f');
+        assert_eq!(
+            app.filtered_branches(),
+            vec!["fix/footer", "feature/header"]
+        );
+        app.cycle_branch_completion(1);
+        assert_eq!(app.branch_menu_selected, 1);
+        app.cycle_branch_completion(-1);
+        assert_eq!(app.branch_menu_selected, 0);
+
+        app.clear_branch_input();
+        assert!(app.branch_menu_input.is_empty());
+    }
+
+    #[test]
+    fn branch_combo_pins_origin_main_and_current_head_before_recent_order() {
+        let options = DiffOptions {
+            source: DiffSource::Base("origin/main".to_owned()),
+            ..DiffOptions::default()
+        };
+        let mut app = DiffApp::new(
+            options,
+            changeset_with_context_lines(1),
+            DiffLayoutMode::Unified,
+        );
+        app.branch_head = Some("feature/header".to_owned());
+        app.current_head = Some("feature/header".to_owned());
+        app.comparison_branches = vec![
+            "recent".to_owned(),
+            "old".to_owned(),
+            "origin/main".to_owned(),
+            "feature/header".to_owned(),
+        ];
+
+        app.branch_menu_open = Some(BranchMenu::Base);
+        assert_eq!(
+            app.filtered_branches(),
+            vec!["origin/main", "feature/header", "recent", "old"]
+        );
+
+        app.branch_menu_open = Some(BranchMenu::Head);
+        assert_eq!(
+            app.filtered_branches(),
+            vec!["feature/header", "origin/main", "recent", "old"]
+        );
+    }
+
+    #[test]
+    fn branch_combo_close_clears_input_without_changing_selection() {
+        let options = DiffOptions {
+            source: DiffSource::Base("main".to_owned()),
+            ..DiffOptions::default()
+        };
+        let mut app = DiffApp::new(
+            options,
+            changeset_with_context_lines(1),
+            DiffLayoutMode::Unified,
+        );
+        app.branch_base = Some("main".to_owned());
+        app.branch_head = Some("feature/header".to_owned());
+        app.comparison_branches = vec!["main".to_owned(), "feature/header".to_owned()];
+
+        app.toggle_branch_menu(BranchMenu::Base);
+        app.push_branch_input('f');
+        app.close_branch_menu();
+
+        assert!(app.branch_menu_open.is_none());
+        assert!(app.branch_menu_input.is_empty());
+        assert_eq!(app.branch_base.as_deref(), Some("main"));
+        assert_eq!(app.branch_head.as_deref(), Some("feature/header"));
+        assert_eq!(app.options.source, DiffSource::Base("main".to_owned()));
+    }
+
+    #[test]
+    fn format_count_groups_thousands() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(42), "42");
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1_000), "1,000");
+        assert_eq!(format_count(1_009_257), "1,009,257");
     }
 
     #[test]
