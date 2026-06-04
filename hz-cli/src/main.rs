@@ -99,7 +99,7 @@ enum Command {
         after_help = "\
 examples:
   hz update
-  hz update --target-version 0.1.3
+  hz update --target-version 0.1.4
   hz update --install-dir ~/.local/bin"
     )]
     Update(UpdateArgs),
