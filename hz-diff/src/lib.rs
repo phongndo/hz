@@ -38,6 +38,7 @@ pub enum DiffSource {
 pub enum PatchSource {
     File(PathBuf),
     Stdin(Arc<str>),
+    Text { label: String, patch: Arc<str> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,6 +331,7 @@ fn patch_source_text(source: &PatchSource) -> HzResult<Cow<'_, str>> {
     match source {
         PatchSource::File(path) => Ok(Cow::Owned(fs::read_to_string(path)?)),
         PatchSource::Stdin(patch) => Ok(Cow::Borrowed(patch.as_ref())),
+        PatchSource::Text { patch, .. } => Ok(Cow::Borrowed(patch.as_ref())),
     }
 }
 
@@ -418,6 +420,7 @@ fn diff_title(options: &DiffOptions) -> String {
         DiffSource::Range { left, right } => format!("{left}..{right}"),
         DiffSource::Patch(PatchSource::File(path)) => format!("patch {}", path.display()),
         DiffSource::Patch(PatchSource::Stdin(_)) => "patch stdin".to_owned(),
+        DiffSource::Patch(PatchSource::Text { label, .. }) => label.clone(),
     }
 }
 
@@ -982,6 +985,25 @@ mod tests {
         assert_eq!(changeset.files[0].additions, 2);
         assert_eq!(changeset.files[0].deletions, 1);
         assert!(changeset.raw_patch.is_empty());
+    }
+
+    #[test]
+    fn patch_text_source_uses_label_title() {
+        let patch = Arc::<str>::from(
+            "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n",
+        );
+        let options = DiffOptions {
+            source: DiffSource::Patch(PatchSource::Text {
+                label: "github pr owner/repo#1".to_owned(),
+                patch,
+            }),
+            ..DiffOptions::default()
+        };
+
+        let changeset = load_review_ref(&options).expect("patch source should parse");
+
+        assert_eq!(changeset.title, "github pr owner/repo#1");
+        assert_eq!(changeset.files.len(), 1);
     }
 
     #[test]

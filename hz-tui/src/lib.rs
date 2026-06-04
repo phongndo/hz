@@ -4967,6 +4967,7 @@ fn diff_comparison_label(options: &DiffOptions) -> String {
         DiffSource::Range { left, right } => format!("{left} → {right}"),
         DiffSource::Patch(hz_diff::PatchSource::File(path)) => format!("patch {}", path.display()),
         DiffSource::Patch(hz_diff::PatchSource::Stdin(_)) => "patch stdin".to_owned(),
+        DiffSource::Patch(hz_diff::PatchSource::Text { label, .. }) => label.clone(),
     }
 }
 

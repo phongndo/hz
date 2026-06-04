@@ -95,6 +95,86 @@ function __hz_needs_ts_subcommand
     test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
 end
 
+function __hz_top_command_is
+    set -l tokens (commandline -opc)
+    test (count $tokens) -ge 2; or return 1
+    contains -- $tokens[2] $argv
+end
+
+function __hz_command_is
+    set -l tokens (commandline -opc)
+    test (count $tokens) -ge 2; or return 1
+
+    set -l cmd $tokens[2]
+    if contains -- $cmd worktree wt
+        test (count $tokens) -ge 3; or return 1
+        set cmd $tokens[3]
+    else if contains -- $cmd ts tree-sitter
+        return 1
+    end
+
+    contains -- $cmd $argv
+end
+
+function __hz_ts_subcommand_is
+    set -l tokens (commandline -opc)
+    test (count $tokens) -ge 3; or return 1
+    contains -- $tokens[2] ts tree-sitter; or return 1
+    contains -- $tokens[3] $argv
+end
+
+function __hz_current_repo_arg
+    set -l tokens (commandline -opc)
+    set -l count (count $tokens)
+    test $count -gt 0; or return
+
+    for index in (seq 1 $count)
+        switch $tokens[$index]
+            case -r --repo
+                set -l next_index (math $index + 1)
+                if test $next_index -le $count
+                    echo $tokens[$next_index]
+                    return
+                end
+            case '--repo=*'
+                string replace -- '--repo=' '' $tokens[$index]
+                return
+        end
+    end
+end
+
+function __hz_complete_git_refs
+    set -l repo (__hz_current_repo_arg)
+    if test -n "$repo"
+        command git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null
+    else
+        command git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null
+    end
+end
+
+function __hz_previous_token
+    set -l tokens (commandline -opc)
+    set -l current (commandline -ct)
+    set -l count (count $tokens)
+    test $count -gt 0; or return
+
+    if test "$tokens[$count]" = "$current"
+        set count (math $count - 1)
+    end
+    test $count -gt 0; and echo $tokens[$count]
+end
+
+function __hz_diff_position_is_revision
+    __hz_command_is diff; or return 1
+
+    set -l current (commandline -ct)
+    string match -q -- '-*' "$current"; and return 1
+
+    set -l previous (__hz_previous_token)
+    contains -- "$previous" -r --repo -b --base --pr --patch; and return 1
+    return 0
+end
+
 complete -c hz -e
 complete -c hzcd -e
 complete -c hzlocal -e
@@ -104,37 +184,38 @@ complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm
 complete -c hz -n "__hz_needs_worktree_subcommand" -a "new path cd list ls remove rm handoff"
 complete -c hz -n "__hz_needs_ts_subcommand" -a "add update rm remove list available clean path doctor"
 
-complete -c hz -n "__fish_seen_subcommand_from cd path handoff setup cleanup" -a "(__hz_complete_worktree_targets)"
-complete -c hz -n "__fish_seen_subcommand_from rm remove" -a "(__hz_complete_removable_worktrees)"
-complete -c hz -n "__fish_seen_subcommand_from init install shell" -a "zsh bash fish"
-
-complete -c hz -n "__fish_seen_subcommand_from new path cd list ls remove rm handoff init setup cleanup diff" -s r -l repo -r -F
-complete -c hz -n "__fish_seen_subcommand_from new" -s p -l path -r -F
-complete -c hz -n "__fish_seen_subcommand_from new" -s B -l base -r
-complete -c hz -n "__fish_seen_subcommand_from new" -s b -l branch -r
-complete -c hz -n "__fish_seen_subcommand_from new handoff" -l max-detached -r
-complete -c hz -n "__fish_seen_subcommand_from new" -l no-setup
-complete -c hz -n "__fish_seen_subcommand_from new path cd list ls remove rm handoff" -s j -l json
-complete -c hz -n "__fish_seen_subcommand_from new remove rm" -s d -l debug
-complete -c hz -n "__fish_seen_subcommand_from remove rm" -s f -l force
-complete -c hz -n "__fish_seen_subcommand_from remove rm" -l yes
-complete -c hz -n "__fish_seen_subcommand_from remove rm" -l no-cleanup
-complete -c hz -n "__fish_seen_subcommand_from handoff" -s b -l branch
-complete -c hz -n "__fish_seen_subcommand_from handoff" -s n -l new
-complete -c hz -n "__fish_seen_subcommand_from diff" -s b -l base -r
-complete -c hz -n "__fish_seen_subcommand_from diff" -l staged
-complete -c hz -n "__fish_seen_subcommand_from diff" -l unstaged
-complete -c hz -n "__fish_seen_subcommand_from diff" -l no-untracked
-complete -c hz -n "__fish_seen_subcommand_from diff" -l patch -r -F
-complete -c hz -n "__fish_seen_subcommand_from diff" -l no-watch
-complete -c hz -n "__fish_seen_subcommand_from diff" -l no-syntax
-complete -c hz -n "__fish_seen_subcommand_from diff" -s s -l stat
-complete -c hz -n "__fish_seen_subcommand_from ts tree-sitter" -s h -l help
-complete -c hz -n "__fish_seen_subcommand_from ts tree-sitter; and __fish_seen_subcommand_from available" -l installed
-complete -c hz -n "__fish_seen_subcommand_from ts tree-sitter; and __fish_seen_subcommand_from available" -l enabled
-complete -c hz -n "__fish_seen_subcommand_from ts tree-sitter; and __fish_seen_subcommand_from update" -l all
-complete -c hz -n "not __fish_seen_subcommand_from ts tree-sitter; and __fish_seen_subcommand_from update" -l target-version -r
-complete -c hz -n "not __fish_seen_subcommand_from ts tree-sitter; and __fish_seen_subcommand_from update" -l install-dir -r -F
+complete -c hz -n "__hz_command_is cd path handoff setup cleanup" -a "(__hz_complete_worktree_targets)"
+complete -c hz -n "__hz_command_is rm remove" -a "(__hz_complete_removable_worktrees)"
+complete -c hz -n "__hz_top_command_is init install shell" -a "zsh bash fish"
+complete -c hz -n "__hz_diff_position_is_revision" -a "(__hz_complete_git_refs)"
+complete -c hz -n "__hz_command_is new path cd list ls remove rm handoff init setup cleanup diff" -s r -l repo -r -F
+complete -c hz -n "__hz_command_is new" -s p -l path -r -F
+complete -c hz -n "__hz_command_is new" -s B -l base -r -a "(__hz_complete_git_refs)"
+complete -c hz -n "__hz_command_is new" -s b -l branch -r -a "(__hz_complete_git_refs)"
+complete -c hz -n "__hz_command_is new handoff" -l max-detached -r
+complete -c hz -n "__hz_command_is new" -l no-setup
+complete -c hz -n "__hz_command_is new path cd list ls remove rm handoff" -s j -l json
+complete -c hz -n "__hz_command_is new remove rm" -s d -l debug
+complete -c hz -n "__hz_command_is remove rm" -s f -l force
+complete -c hz -n "__hz_command_is remove rm" -l yes
+complete -c hz -n "__hz_command_is remove rm" -l no-cleanup
+complete -c hz -n "__hz_command_is handoff" -s b -l branch
+complete -c hz -n "__hz_command_is handoff" -s n -l new
+complete -c hz -n "__hz_command_is diff" -s b -l base -r -a "(__hz_complete_git_refs)"
+complete -c hz -n "__hz_command_is diff" -l pr -r
+complete -c hz -n "__hz_command_is diff" -l staged
+complete -c hz -n "__hz_command_is diff" -l unstaged
+complete -c hz -n "__hz_command_is diff" -l no-untracked
+complete -c hz -n "__hz_command_is diff" -l patch -r -F
+complete -c hz -n "__hz_command_is diff" -l no-watch
+complete -c hz -n "__hz_command_is diff" -l no-syntax
+complete -c hz -n "__hz_command_is diff" -s s -l stat
+complete -c hz -n "__hz_top_command_is ts tree-sitter" -s h -l help
+complete -c hz -n "__hz_ts_subcommand_is available" -l installed
+complete -c hz -n "__hz_ts_subcommand_is available" -l enabled
+complete -c hz -n "__hz_ts_subcommand_is update" -l all
+complete -c hz -n "__hz_top_command_is update" -l target-version -r
+complete -c hz -n "__hz_top_command_is update" -l install-dir -r -F
 complete -c hz -s h -l help
 complete -c hz -s V -l version
 
