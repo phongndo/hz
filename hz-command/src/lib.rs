@@ -4,6 +4,7 @@ use std::{
     io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
+    sync::Arc,
 };
 
 use hz_core::{HzError, HzResult};
@@ -171,6 +172,268 @@ pub fn run_lifecycle_for_entry(
 
 pub fn diff(input: DiffOptions) -> HzResult<String> {
     hz_diff::render(input)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitHubPullRequest {
+    owner: String,
+    repo: String,
+    number: u64,
+}
+
+pub fn github_pr_diff_options(
+    repo: Option<PathBuf>,
+    target: &str,
+    stat: bool,
+) -> HzResult<DiffOptions> {
+    let pull_request = github_pull_request_from_target(repo.as_deref(), target)?;
+    let label = github_pull_request_label(&pull_request);
+    let patch = fetch_github_pull_request_diff(&pull_request)?;
+
+    Ok(DiffOptions {
+        repo,
+        source: DiffSource::Patch(PatchSource::Text {
+            label,
+            patch: Arc::from(patch),
+        }),
+        scope: DiffScope::All,
+        include_untracked: false,
+        stat,
+    })
+}
+
+fn github_pull_request_from_target(
+    repo: Option<&Path>,
+    target: &str,
+) -> HzResult<GitHubPullRequest> {
+    if let Ok(number) = target.parse::<u64>() {
+        if number == 0 {
+            return Err(HzError::Usage(
+                "pull request number must be greater than zero".to_owned(),
+            ));
+        }
+
+        return local_github_pull_request(repo, number);
+    }
+
+    github_pull_request_from_url(target).ok_or_else(|| {
+        HzError::Usage("expected a pull request number or GitHub pull request URL".to_owned())
+    })
+}
+
+fn local_github_pull_request(repo: Option<&Path>, number: u64) -> HzResult<GitHubPullRequest> {
+    let root = hz_git::repository_root(repo)?;
+    let remote_url = hz_git::remote_url(&root, "origin")?;
+    let (owner, repo) = github_repo_from_remote_url(&remote_url).ok_or_else(|| {
+        HzError::Usage(format!(
+            "origin remote is not a GitHub repository URL: {remote_url}"
+        ))
+    })?;
+
+    Ok(GitHubPullRequest {
+        owner,
+        repo,
+        number,
+    })
+}
+
+fn github_pull_request_from_url(url: &str) -> Option<GitHubPullRequest> {
+    let url = url.trim();
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let path = without_scheme.strip_prefix("github.com/")?;
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let mut segments = path.split('/');
+    let owner = segments.next()?;
+    let repo = segments.next()?;
+    if segments.next()? != "pull" {
+        return None;
+    }
+    let number = segments.next()?.parse::<u64>().ok()?;
+    if number == 0 || !valid_github_path_segment(owner) || !valid_github_path_segment(repo) {
+        return None;
+    }
+
+    Some(GitHubPullRequest {
+        owner: owner.to_owned(),
+        repo: repo.to_owned(),
+        number,
+    })
+}
+
+fn github_repo_from_remote_url(url: &str) -> Option<(String, String)> {
+    let url = url.trim();
+    let path = if let Some(path) = url.strip_prefix("git@github.com:") {
+        path
+    } else if let Some(path) = url.strip_prefix("ssh://git@github.com/") {
+        path
+    } else {
+        let without_scheme = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))?;
+        let (authority, path) = without_scheme.split_once('/')?;
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        if host != "github.com" {
+            return None;
+        }
+
+        path
+    };
+    let path = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches('/');
+    let mut segments = path.split('/');
+    let owner = segments.next()?;
+    let repo = segments.next()?;
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+
+    if segments.next().is_some()
+        || !valid_github_path_segment(owner)
+        || !valid_github_path_segment(repo)
+    {
+        return None;
+    }
+
+    Some((owner.to_owned(), repo.to_owned()))
+}
+
+fn valid_github_path_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn github_pull_request_label(pull_request: &GitHubPullRequest) -> String {
+    format!(
+        "github pr {}/{}#{}",
+        pull_request.owner, pull_request.repo, pull_request.number
+    )
+}
+
+fn github_pull_request_diff_url(pull_request: &GitHubPullRequest) -> String {
+    format!(
+        "https://github.com/{}/{}/pull/{}.diff",
+        pull_request.owner, pull_request.repo, pull_request.number
+    )
+}
+
+fn fetch_github_pull_request_diff(pull_request: &GitHubPullRequest) -> HzResult<String> {
+    let token = github_token();
+    let config = github_curl_config(
+        &github_pull_request_diff_url(pull_request),
+        token.as_deref(),
+    );
+    let mut child = ProcessCommand::new("curl")
+        .args(["--config", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == ErrorKind::NotFound {
+                HzError::Usage("curl is required to fetch GitHub pull requests".to_owned())
+            } else {
+                HzError::Io(error)
+            }
+        })?;
+
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| HzError::Usage("failed to open curl config stdin".to_owned()))?
+        .write_all(config.as_bytes())?;
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().map_err(HzError::Io)?;
+
+    if !output.status.success() {
+        return Err(github_fetch_error(pull_request, &output, token.is_some()));
+    }
+
+    github_diff_from_stdout(output.stdout)
+}
+
+fn github_diff_from_stdout(stdout: Vec<u8>) -> HzResult<String> {
+    String::from_utf8(stdout).map_err(|_| {
+        HzError::Usage("GitHub pull request diff response was not valid UTF-8".to_owned())
+    })
+}
+
+fn github_curl_config(url: &str, token: Option<&str>) -> String {
+    let mut config = String::from("fail\nlocation\nsilent\nshow-error\n");
+    push_curl_config_value(&mut config, "connect-timeout", "10");
+    push_curl_config_value(&mut config, "max-time", "60");
+    push_curl_config_value(&mut config, "header", "User-Agent: hz");
+    if let Some(token) = token {
+        push_curl_config_value(
+            &mut config,
+            "header",
+            &format!("Authorization: Bearer {token}"),
+        );
+    }
+    push_curl_config_value(&mut config, "url", url);
+    config
+}
+
+fn push_curl_config_value(config: &mut String, key: &str, value: &str) {
+    config.push_str(key);
+    config.push_str(" = \"");
+    for ch in value.chars() {
+        match ch {
+            '\\' => config.push_str("\\\\"),
+            '"' => config.push_str("\\\""),
+            '\n' => config.push_str("\\n"),
+            '\r' => config.push_str("\\r"),
+            '\t' => config.push_str("\\t"),
+            _ => config.push(ch),
+        }
+    }
+    config.push_str("\"\n");
+}
+
+fn github_token() -> Option<String> {
+    env::var("GH_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty())
+        .or_else(|| {
+            env::var("GITHUB_TOKEN")
+                .ok()
+                .filter(|token| !token.is_empty())
+        })
+}
+
+fn github_fetch_error(
+    pull_request: &GitHubPullRequest,
+    output: &std::process::Output,
+    authenticated: bool,
+) -> HzError {
+    let status = output
+        .status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| output.status.to_string());
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let mut message = format!(
+        "failed to fetch GitHub pull request {}/{}#{}: curl exited with status {status}",
+        pull_request.owner, pull_request.repo, pull_request.number
+    );
+    if !detail.is_empty() {
+        message.push_str(&format!(": {detail}"));
+    }
+    if !authenticated {
+        message.push_str(
+            "; set GH_TOKEN or GITHUB_TOKEN for private repositories or higher rate limits",
+        );
+    }
+
+    HzError::Usage(message)
 }
 
 pub fn syntax_add(languages: &[String]) -> HzResult<SyntaxAddResult> {
@@ -946,6 +1209,119 @@ mod tests {
     }
 
     #[test]
+    fn github_pull_request_url_parses() {
+        assert_eq!(
+            github_pull_request_from_url("https://github.com/owner/repo/pull/123/files?plain=1"),
+            Some(GitHubPullRequest {
+                owner: "owner".to_owned(),
+                repo: "repo".to_owned(),
+                number: 123,
+            })
+        );
+        assert_eq!(
+            github_pull_request_from_url("github.com/owner/repo/pull/456"),
+            Some(GitHubPullRequest {
+                owner: "owner".to_owned(),
+                repo: "repo".to_owned(),
+                number: 456,
+            })
+        );
+
+        assert_eq!(
+            github_pull_request_from_url("https://example.com/owner/repo/pull/1"),
+            None
+        );
+        assert_eq!(
+            github_pull_request_from_url("https://github.com/owner/repo/issues/1"),
+            None
+        );
+        assert_eq!(
+            github_pull_request_from_url("https://github.com/owner/repo/pull/0"),
+            None
+        );
+    }
+
+    #[test]
+    fn github_remote_url_parses_common_git_url_forms() {
+        for remote in [
+            "git@github.com:owner/repo.git",
+            "ssh://git@github.com/owner/repo.git",
+            "https://github.com/owner/repo.git",
+            "https://github.com/owner/repo",
+            "https://x-access-token:secret@github.com/owner/repo.git",
+            "https://user:password@github.com/owner/repo",
+        ] {
+            assert_eq!(
+                github_repo_from_remote_url(remote),
+                Some(("owner".to_owned(), "repo".to_owned()))
+            );
+        }
+
+        assert_eq!(
+            github_repo_from_remote_url("https://example.com/owner/repo.git"),
+            None
+        );
+        assert_eq!(
+            github_repo_from_remote_url("https://github.com/owner"),
+            None
+        );
+        assert_eq!(
+            github_repo_from_remote_url("https://token@example.com/owner/repo.git"),
+            None
+        );
+        assert_eq!(
+            github_repo_from_remote_url("https://example.com/path@github.com/owner/repo.git"),
+            None
+        );
+    }
+
+    #[test]
+    fn github_curl_config_includes_timeouts_and_escapes_values() {
+        let config = github_curl_config(
+            "https://github.com/owner/repo/pull/1.diff",
+            Some("tok\"en\n"),
+        );
+
+        assert!(config.contains("connect-timeout = \"10\"\n"));
+        assert!(config.contains("max-time = \"60\"\n"));
+        assert!(config.contains("header = \"User-Agent: hz\"\n"));
+        assert!(config.contains("header = \"Authorization: Bearer tok\\\"en\\n\"\n"));
+        assert!(config.contains("url = \"https://github.com/owner/repo/pull/1.diff\"\n"));
+    }
+
+    #[test]
+    fn github_diff_stdout_rejects_invalid_utf8() {
+        assert_eq!(github_diff_from_stdout(b"diff".to_vec()).unwrap(), "diff");
+
+        let error = github_diff_from_stdout(vec![0xff]).unwrap_err();
+
+        assert!(error.to_string().contains("valid UTF-8"));
+    }
+
+    #[test]
+    fn github_pull_request_number_uses_origin_remote() {
+        let repo = test_repo("hz-github-pr-origin-test");
+        git(
+            &["remote", "add", "origin", "git@github.com:owner/repo.git"],
+            &repo,
+        );
+
+        let pull_request = github_pull_request_from_target(Some(&repo), "42")
+            .expect("pull request should be inferred from origin");
+
+        assert_eq!(
+            pull_request,
+            GitHubPullRequest {
+                owner: "owner".to_owned(),
+                repo: "repo".to_owned(),
+                number: 42,
+            }
+        );
+
+        fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
     fn zsh_init_line_is_rc_file_friendly() {
         assert_eq!(shell_init_line(Shell::Zsh), r#"eval "$(hz shell zsh)""#);
     }
@@ -978,6 +1354,7 @@ mod tests {
         assert!(script.contains("_hz_complete_command_options \"$cmd\""));
         assert!(script.contains("_hz_complete_command_positionals \"$cmd\""));
         assert!(script.contains("_hz_complete_option_value \"$cmd\""));
+        assert!(script.contains("_hz_git_refs"));
         assert!(script.contains("compinit -C"));
         assert!(script.contains("shift words"));
         assert!(script.contains("shift 2 words"));
@@ -994,6 +1371,7 @@ mod tests {
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
+        assert!(script.contains("--pr"));
         assert!(script.contains("--patch"));
         assert!(script.contains("--staged"));
         assert!(script.contains("--unstaged"));
@@ -1011,7 +1389,11 @@ mod tests {
         assert!(script.contains("case --json --path-only --help -h -j"));
         assert!(script.contains("or return"));
         assert!(script.contains("command hz __complete removable-worktrees"));
-        assert!(script.contains("complete -c hz -n \"__fish_seen_subcommand_from rm remove\""));
+        assert!(script.contains("__hz_command_is"));
+        assert!(script.contains("__hz_top_command_is update"));
+        assert!(script.contains("__hz_diff_position_is_revision"));
+        assert!(script.contains("__hz_complete_git_refs"));
+        assert!(script.contains("complete -c hz -n \"__hz_command_is remove rm\""));
         assert!(script.contains("init install setup cleanup shell update"));
         assert!(script.contains("ts tree-sitter"));
         assert!(script.contains("__hz_needs_ts_subcommand"));
@@ -1023,6 +1405,7 @@ mod tests {
         assert!(script.contains("-l no-cleanup"));
         assert!(script.contains("-l max-detached"));
         assert!(script.contains("-l target-version"));
+        assert!(script.contains("-l pr"));
         assert!(script.contains("-l patch"));
         assert!(script.contains("-l staged"));
         assert!(script.contains("-l unstaged"));
@@ -1053,6 +1436,9 @@ mod tests {
         assert!(script.contains("complete -F _hz_completion hz"));
         assert!(script.contains("_hz_dynamic_reply worktree-targets"));
         assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
+        assert!(script.contains("_hz_complete_option_value"));
+        assert!(script.contains("_hz_git_ref_reply"));
+        assert!(script.contains("-b|--branch"));
         assert!(script.contains("init install setup cleanup shell update"));
         assert!(script.contains("ts tree-sitter"));
         assert!(script.contains("_hz_complete_ts_args"));
@@ -1063,6 +1449,7 @@ mod tests {
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
         assert!(script.contains("--target-version"));
+        assert!(script.contains("--pr"));
         assert!(script.contains("--patch"));
         assert!(script.contains("--staged"));
         assert!(script.contains("--unstaged"));

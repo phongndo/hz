@@ -84,6 +84,37 @@ _hz_removable_worktrees() {
   compadd -a targets
 }
 
+_hz_current_repo_arg() {
+  local index word
+  for (( index = 2; index < CURRENT; index++ )); do
+    word="${words[$index]}"
+    case "$word" in
+      -r|--repo)
+        if (( index + 1 < CURRENT )); then
+          print -r -- "${words[$(( index + 1 ))]}"
+          return
+        fi
+        ;;
+      --repo=*)
+        print -r -- "${word#--repo=}"
+        return
+        ;;
+    esac
+  done
+}
+
+_hz_git_refs() {
+  local repo
+  local -a refs
+  repo="$(_hz_current_repo_arg)"
+  if [[ -n "$repo" ]]; then
+    refs=("${(@f)$(command git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null)}")
+  else
+    refs=("${(@f)$(command git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null)}")
+  fi
+  compadd -a refs
+}
+
 _hz_complete_main() {
   local -a commands
   commands=(
@@ -170,7 +201,7 @@ _hz_complete_option_value() {
     -B|--base)
       case "$cmd" in
         new|diff)
-          _message 'branch or revision'
+          _hz_git_refs
           return 0
           ;;
       esac
@@ -178,7 +209,7 @@ _hz_complete_option_value() {
     -b|--branch)
       case "$cmd" in
         new|diff)
-          _message 'branch'
+          _hz_git_refs
           return 0
           ;;
       esac
@@ -206,6 +237,12 @@ _hz_complete_option_value() {
     --patch)
       if [[ "$cmd" == "diff" ]]; then
         _files
+        return 0
+      fi
+      ;;
+    --pr)
+      if [[ "$cmd" == "diff" ]]; then
+        _message 'pull request number or URL'
         return 0
       fi
       ;;
@@ -246,7 +283,7 @@ _hz_complete_command_options() {
       compadd -- --target-version --install-dir -h --help
       ;;
     diff)
-      compadd -- -r --repo -b --base --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help
+      compadd -- -r --repo -b --base --pr --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help
       ;;
   esac
 }
@@ -295,6 +332,11 @@ _hz_complete_command_positionals() {
     init|install|shell)
       _arguments \
         '1:shell:_hz_complete_shells'
+      ;;
+    diff)
+      _arguments \
+        '1:revision:_hz_git_refs' \
+        '2:revision:_hz_git_refs'
       ;;
   esac
 }

@@ -87,9 +87,125 @@ _hz_dynamic_reply() {
   _hz_reply "$candidates" "$current"
 }
 
+_hz_complete_files() {
+  local current="$1"
+  COMPREPLY+=( $(compgen -f -- "$current") )
+}
+
+_hz_complete_dirs() {
+  local current="$1"
+  COMPREPLY+=( $(compgen -d -- "$current") )
+}
+
+_hz_repo_arg() {
+  local index word
+  for ((index = 2; index < COMP_CWORD; index++)); do
+    word="${COMP_WORDS[index]}"
+    case "$word" in
+      -r|--repo)
+        if ((index + 1 < COMP_CWORD)); then
+          printf '%s' "${COMP_WORDS[index+1]}"
+          return
+        fi
+        ;;
+      --repo=*)
+        printf '%s' "${word#--repo=}"
+        return
+        ;;
+    esac
+  done
+}
+
+_hz_git_refs() {
+  local repo
+  repo="$(_hz_repo_arg)"
+  if [[ -n "$repo" ]]; then
+    command git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null
+  else
+    command git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null
+  fi
+}
+
+_hz_git_ref_reply() {
+  local current="$1"
+  local candidates
+  candidates="$(_hz_git_refs)" || return
+  _hz_reply "$candidates" "$current"
+}
+
+_hz_complete_option_value() {
+  local cmd="$1"
+  local current="${COMP_WORDS[COMP_CWORD]}"
+  local previous="${COMP_WORDS[COMP_CWORD-1]}"
+
+  case "$previous" in
+    -r|--repo)
+      case "$cmd" in
+        new|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init|diff)
+          _hz_complete_dirs "$current"
+          return 0
+          ;;
+      esac
+      ;;
+    -p|--path)
+      if [[ "$cmd" == "new" ]]; then
+        _hz_complete_dirs "$current"
+        return 0
+      fi
+      ;;
+    --install-dir)
+      if [[ "$cmd" == "update" ]]; then
+        _hz_complete_dirs "$current"
+        return 0
+      fi
+      ;;
+    -B|--base)
+      case "$cmd" in
+        new|diff)
+          _hz_git_ref_reply "$current"
+          return 0
+          ;;
+      esac
+      ;;
+    -b|--branch)
+      case "$cmd" in
+        new|diff)
+          _hz_git_ref_reply "$current"
+          return 0
+          ;;
+      esac
+      ;;
+    --patch)
+      if [[ "$cmd" == "diff" ]]; then
+        _hz_complete_files "$current"
+        return 0
+      fi
+      ;;
+    --pr)
+      [[ "$cmd" == "diff" ]] && return 0
+      ;;
+    --target-version)
+      [[ "$cmd" == "update" ]] && return 0
+      ;;
+    --max-detached)
+      case "$cmd" in
+        new|handoff)
+          return 0
+          ;;
+      esac
+      ;;
+  esac
+
+  return 1
+}
+
 _hz_complete_command_args() {
   local cmd="$1"
   local current="$2"
+
+  if _hz_complete_option_value "$cmd"; then
+    return
+  fi
 
   case "$cmd" in
     new)
@@ -144,7 +260,11 @@ _hz_complete_command_args() {
       [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir -h --help" "$current"
       ;;
     diff)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -b --base --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help" "$current"
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-r --repo -b --base --pr --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help" "$current"
+      else
+        _hz_git_ref_reply "$current"
+      fi
       ;;
   esac
 }
@@ -205,6 +325,10 @@ _hzcd_completion() {
   local current="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=()
 
+  if _hz_complete_option_value cd; then
+    return
+  fi
+
   if [[ "$current" == -* ]]; then
     _hz_reply "-r --repo -j --json -h --help" "$current"
   else
@@ -215,6 +339,11 @@ _hzcd_completion() {
 _hzlocal_completion() {
   local current="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=()
+
+  if _hz_complete_option_value cd; then
+    return
+  fi
+
   [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json -h --help" "$current"
 }
 
