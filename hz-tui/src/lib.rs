@@ -5822,7 +5822,7 @@ fn skip_display_prefix(text: &str, columns: usize) -> (&str, usize) {
     for (index, ch) in text.char_indices() {
         let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
         if skipped >= columns {
-            if byte_index > 0 && ch_width == 0 {
+            if ch_width == 0 {
                 byte_index = index + ch.len_utf8();
                 continue;
             }
@@ -5941,6 +5941,24 @@ mod tests {
 
         assert_eq!(app.layout, DiffLayoutMode::Split);
         assert_eq!(app.horizontal_scroll, 40);
+    }
+
+    #[test]
+    fn responsive_layout_clamps_horizontal_scroll_without_layout_change() {
+        let long_line = "a".repeat(100);
+        let changeset = changeset_with_line_text(&long_line);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Split);
+
+        app.apply_responsive_layout(MIN_SPLIT_WIDTH);
+        assert_eq!(app.layout, DiffLayoutMode::Split);
+        app.set_horizontal_scroll(usize::MAX);
+        let previous_scroll = app.horizontal_scroll;
+
+        app.apply_responsive_layout(MIN_SPLIT_WIDTH + 40);
+
+        assert_eq!(app.layout, DiffLayoutMode::Split);
+        assert!(app.max_horizontal_scroll() < previous_scroll);
+        assert_eq!(app.horizontal_scroll, app.max_horizontal_scroll());
     }
 
     #[test]
@@ -6280,6 +6298,7 @@ mod tests {
         assert_eq!(fit("界a", 2), "界");
         assert_eq!(fit_padded("e\u{301}", 2), "e\u{301} ");
         assert_eq!(fit_padded_from("abcdef", 2, 3), "cde");
+        assert_eq!(skip_display_prefix("e\u{301}f", 1), ("f", 1));
         assert_eq!(right_aligned("界", "x", 5), "界  x");
     }
 
