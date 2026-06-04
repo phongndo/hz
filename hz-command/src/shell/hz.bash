@@ -144,7 +144,11 @@ _hz_complete_command_args() {
       [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir -h --help" "$current"
       ;;
     diff)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -b --base --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help" "$current"
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-r --repo -b --base --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help" "$current"
+      else
+        _hz_reply "pr" "$current"
+      fi
       ;;
   esac
 }

@@ -175,6 +175,25 @@ pub fn current_branch(repo: &Path) -> HzResult<Option<String>> {
     }
 }
 
+pub fn remote_url(repo: &Path, remote: &str) -> HzResult<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["remote", "get-url", remote])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to read git remote URL", &output));
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if url.is_empty() {
+        return Err(HzError::Usage(format!("git remote {remote} URL was empty")));
+    }
+
+    Ok(url)
+}
+
 pub fn branch_exists(repo: &Path, branch: &str) -> HzResult<bool> {
     let output = Command::new("git")
         .arg("-C")

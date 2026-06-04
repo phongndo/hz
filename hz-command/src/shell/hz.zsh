@@ -296,6 +296,11 @@ _hz_complete_command_positionals() {
       _arguments \
         '1:shell:_hz_complete_shells'
       ;;
+    diff)
+      _arguments \
+        '1:revision or pr command:(pr)' \
+        '2:revision or pull request'
+      ;;
   esac
 }
 

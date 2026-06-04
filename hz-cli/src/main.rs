@@ -103,7 +103,15 @@ examples:
   hz update --install-dir ~/.local/bin"
     )]
     Update(UpdateArgs),
-    #[command(about = "Review a Git diff")]
+    #[command(
+        about = "Review a Git diff",
+        after_help = "\
+examples:
+  hz diff
+  hz diff --base main
+  hz diff pr 123
+  hz diff pr https://github.com/owner/repo/pull/123"
+    )]
     Diff(DiffArgs),
     #[command(
         name = "ts",
@@ -465,6 +473,10 @@ fn tree_sitter_available_filter(
 }
 
 fn diff_options(args: DiffArgs) -> HzResult<hz_command::DiffOptions> {
+    if args.revs.first().map(String::as_str) == Some("pr") {
+        return pr_diff_options(args);
+    }
+
     if let Some(patch) = args.patch {
         if args.base.is_some() || !args.revs.is_empty() {
             return Err(hz_core::HzError::Usage(
@@ -521,6 +533,28 @@ fn diff_options(args: DiffArgs) -> HzResult<hz_command::DiffOptions> {
         include_untracked: !args.no_untracked,
         stat: args.stat,
     })
+}
+
+fn pr_diff_options(args: DiffArgs) -> HzResult<hz_command::DiffOptions> {
+    if args.base.is_some() || args.staged || args.unstaged || args.no_untracked {
+        return Err(hz_core::HzError::Usage(
+            "--base, --staged, --unstaged, and --no-untracked do not apply to hz diff pr"
+                .to_owned(),
+        ));
+    }
+    if args.patch.is_some() {
+        return Err(hz_core::HzError::Usage(
+            "--patch does not apply to hz diff pr".to_owned(),
+        ));
+    }
+
+    let [_, target] = args.revs.as_slice() else {
+        return Err(hz_core::HzError::Usage(
+            "usage: hz diff pr <number|url>".to_owned(),
+        ));
+    };
+
+    hz_command::github_pr_diff_options(args.repo, target, args.stat)
 }
 
 fn patch_source(path: PathBuf) -> HzResult<hz_command::DiffSource> {
@@ -3185,6 +3219,15 @@ mod tests {
         let cli = Cli::try_parse_from(["hz", "diff", "main", "feature"]).unwrap();
         match cli.command {
             Some(Command::Diff(args)) => assert_eq!(args.revs, ["main", "feature"]),
+            command => panic!("expected diff command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "diff", "pr", "123", "--stat"]).unwrap();
+        match cli.command {
+            Some(Command::Diff(args)) => {
+                assert_eq!(args.revs, ["pr", "123"]);
+                assert!(args.stat);
+            }
             command => panic!("expected diff command, got {command:?}"),
         }
 
