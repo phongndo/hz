@@ -243,7 +243,8 @@ GitHub PR fetching uses `curl`; set `GH_TOKEN` or `GITHUB_TOKEN` for private
 repositories or higher GitHub rate limits.
 Working tree diffs live-reload as files or Git state change; use `--no-watch` to
 disable filesystem watching. Use `s` to toggle split/unified, `j/k` to scroll,
-`n/p` for files, `]/[` for hunks, `r` to reload, and `q` to quit.
+`h/l` or `←/→` to scroll long lines horizontally, `n/p` for files, `]/[` for
+hunks, `r` to reload, and `q` to quit.
 
 Syntax highlighting is Tree-sitter based. Common languages are bundled for
 zero-config highlighting; `hz ts add <language>` installs extra languages.
