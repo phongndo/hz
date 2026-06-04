@@ -167,7 +167,7 @@ _hz_complete_option_value() {
           ;;
       esac
       ;;
-    -b)
+    -b|--branch)
       case "$cmd" in
         new|diff)
           _hz_git_ref_reply "$current"

@@ -1438,6 +1438,7 @@ mod tests {
         assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
         assert!(script.contains("_hz_complete_option_value"));
         assert!(script.contains("_hz_git_ref_reply"));
+        assert!(script.contains("-b|--branch"));
         assert!(script.contains("init install setup cleanup shell update"));
         assert!(script.contains("ts tree-sitter"));
         assert!(script.contains("_hz_complete_ts_args"));
