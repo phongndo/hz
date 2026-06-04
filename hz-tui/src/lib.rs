@@ -6864,6 +6864,50 @@ base0F = "ffffff"
     }
 
     #[test]
+    fn branch_full_file_source_uses_merge_base_and_head_revision() {
+        let repo = std::env::temp_dir();
+        let file = hz_diff::DiffFile {
+            old_path: Some("old.rs".to_owned()),
+            new_path: Some("new.rs".to_owned()),
+            status: hz_diff::FileStatus::Modified,
+            hunks: Vec::new(),
+            additions: 0,
+            deletions: 0,
+            is_binary: false,
+        };
+        let base = "origin/main".to_owned();
+        let head = "feature/full-file".to_owned();
+        let branch = DiffOptions {
+            source: DiffSource::Branch {
+                base: base.clone(),
+                head: head.clone(),
+            },
+            scope: DiffScope::All,
+            ..DiffOptions::default()
+        };
+
+        assert_eq!(
+            full_file_source(&repo, &branch, &file, DiffSide::Old)
+                .unwrap()
+                .kind,
+            FullFileSourceKind::GitMergeBase {
+                base,
+                head: head.clone(),
+                path: "old.rs".to_owned(),
+            }
+        );
+        assert_eq!(
+            full_file_source(&repo, &branch, &file, DiffSide::New)
+                .unwrap()
+                .kind,
+            FullFileSourceKind::GitRevision {
+                rev: head,
+                path: "new.rs".to_owned(),
+            }
+        );
+    }
+
+    #[test]
     fn full_file_source_loads_worktree_index_and_revision_contents() {
         let repo = temp_test_dir("full-file-source");
         fs::create_dir_all(&repo).expect("repo directory should be created");
