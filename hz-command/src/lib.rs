@@ -265,11 +265,24 @@ fn github_pull_request_from_url(url: &str) -> Option<GitHubPullRequest> {
 
 fn github_repo_from_remote_url(url: &str) -> Option<(String, String)> {
     let url = url.trim();
-    let path = url
-        .strip_prefix("git@github.com:")
-        .or_else(|| url.strip_prefix("ssh://git@github.com/"))
-        .or_else(|| url.strip_prefix("https://github.com/"))
-        .or_else(|| url.strip_prefix("http://github.com/"))?;
+    let path = if let Some(path) = url.strip_prefix("git@github.com:") {
+        path
+    } else if let Some(path) = url.strip_prefix("ssh://git@github.com/") {
+        path
+    } else {
+        let without_scheme = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))?;
+        let (authority, path) = without_scheme.split_once('/')?;
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        if host != "github.com" {
+            return None;
+        }
+
+        path
+    };
     let path = path
         .split(['?', '#'])
         .next()
@@ -338,23 +351,25 @@ fn fetch_github_pull_request_diff(pull_request: &GitHubPullRequest) -> HzResult<
         .write_all(config.as_bytes())?;
     drop(child.stdin.take());
 
-    let output = child.wait_with_output().map_err(|error| {
-        if error.kind() == ErrorKind::NotFound {
-            HzError::Usage("curl is required to fetch GitHub pull requests".to_owned())
-        } else {
-            HzError::Io(error)
-        }
-    })?;
+    let output = child.wait_with_output().map_err(HzError::Io)?;
 
     if !output.status.success() {
         return Err(github_fetch_error(pull_request, &output, token.is_some()));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    github_diff_from_stdout(output.stdout)
+}
+
+fn github_diff_from_stdout(stdout: Vec<u8>) -> HzResult<String> {
+    String::from_utf8(stdout).map_err(|_| {
+        HzError::Usage("GitHub pull request diff response was not valid UTF-8".to_owned())
+    })
 }
 
 fn github_curl_config(url: &str, token: Option<&str>) -> String {
     let mut config = String::from("fail\nlocation\nsilent\nshow-error\n");
+    push_curl_config_value(&mut config, "connect-timeout", "10");
+    push_curl_config_value(&mut config, "max-time", "60");
     push_curl_config_value(&mut config, "header", "User-Agent: hz");
     if let Some(token) = token {
         push_curl_config_value(
@@ -1233,6 +1248,8 @@ mod tests {
             "ssh://git@github.com/owner/repo.git",
             "https://github.com/owner/repo.git",
             "https://github.com/owner/repo",
+            "https://x-access-token:secret@github.com/owner/repo.git",
+            "https://user:password@github.com/owner/repo",
         ] {
             assert_eq!(
                 github_repo_from_remote_url(remote),
@@ -1248,6 +1265,37 @@ mod tests {
             github_repo_from_remote_url("https://github.com/owner"),
             None
         );
+        assert_eq!(
+            github_repo_from_remote_url("https://token@example.com/owner/repo.git"),
+            None
+        );
+        assert_eq!(
+            github_repo_from_remote_url("https://example.com/path@github.com/owner/repo.git"),
+            None
+        );
+    }
+
+    #[test]
+    fn github_curl_config_includes_timeouts_and_escapes_values() {
+        let config = github_curl_config(
+            "https://github.com/owner/repo/pull/1.diff",
+            Some("tok\"en\n"),
+        );
+
+        assert!(config.contains("connect-timeout = \"10\"\n"));
+        assert!(config.contains("max-time = \"60\"\n"));
+        assert!(config.contains("header = \"User-Agent: hz\"\n"));
+        assert!(config.contains("header = \"Authorization: Bearer tok\\\"en\\n\"\n"));
+        assert!(config.contains("url = \"https://github.com/owner/repo/pull/1.diff\"\n"));
+    }
+
+    #[test]
+    fn github_diff_stdout_rejects_invalid_utf8() {
+        assert_eq!(github_diff_from_stdout(b"diff".to_vec()).unwrap(), "diff");
+
+        let error = github_diff_from_stdout(vec![0xff]).unwrap_err();
+
+        assert!(error.to_string().contains("valid UTF-8"));
     }
 
     #[test]
@@ -1322,6 +1370,7 @@ mod tests {
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
+        assert!(script.contains("--pr"));
         assert!(script.contains("--patch"));
         assert!(script.contains("--staged"));
         assert!(script.contains("--unstaged"));
@@ -1351,6 +1400,7 @@ mod tests {
         assert!(script.contains("-l no-cleanup"));
         assert!(script.contains("-l max-detached"));
         assert!(script.contains("-l target-version"));
+        assert!(script.contains("-l pr"));
         assert!(script.contains("-l patch"));
         assert!(script.contains("-l staged"));
         assert!(script.contains("-l unstaged"));
@@ -1391,6 +1441,7 @@ mod tests {
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
         assert!(script.contains("--target-version"));
+        assert!(script.contains("--pr"));
         assert!(script.contains("--patch"));
         assert!(script.contains("--staged"));
         assert!(script.contains("--unstaged"));

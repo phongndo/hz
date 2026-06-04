@@ -209,6 +209,12 @@ _hz_complete_option_value() {
         return 0
       fi
       ;;
+    --pr)
+      if [[ "$cmd" == "diff" ]]; then
+        _message 'pull request number or URL'
+        return 0
+      fi
+      ;;
   esac
 
   return 1
@@ -246,7 +252,7 @@ _hz_complete_command_options() {
       compadd -- --target-version --install-dir -h --help
       ;;
     diff)
-      compadd -- -r --repo -b --base --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help
+      compadd -- -r --repo -b --base --pr --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help
       ;;
   esac
 }
@@ -298,8 +304,8 @@ _hz_complete_command_positionals() {
       ;;
     diff)
       _arguments \
-        '1:revision or pr command:(pr)' \
-        '2:revision or pull request'
+        '1:revision' \
+        '2:revision'
       ;;
   esac
 }

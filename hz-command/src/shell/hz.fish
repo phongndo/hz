@@ -107,8 +107,6 @@ complete -c hz -n "__hz_needs_ts_subcommand" -a "add update rm remove list avail
 complete -c hz -n "__fish_seen_subcommand_from cd path handoff setup cleanup" -a "(__hz_complete_worktree_targets)"
 complete -c hz -n "__fish_seen_subcommand_from rm remove" -a "(__hz_complete_removable_worktrees)"
 complete -c hz -n "__fish_seen_subcommand_from init install shell" -a "zsh bash fish"
-complete -c hz -n "__fish_seen_subcommand_from diff" -a "pr"
-
 complete -c hz -n "__fish_seen_subcommand_from new path cd list ls remove rm handoff init setup cleanup diff" -s r -l repo -r -F
 complete -c hz -n "__fish_seen_subcommand_from new" -s p -l path -r -F
 complete -c hz -n "__fish_seen_subcommand_from new" -s B -l base -r
@@ -123,6 +121,7 @@ complete -c hz -n "__fish_seen_subcommand_from remove rm" -l no-cleanup
 complete -c hz -n "__fish_seen_subcommand_from handoff" -s b -l branch
 complete -c hz -n "__fish_seen_subcommand_from handoff" -s n -l new
 complete -c hz -n "__fish_seen_subcommand_from diff" -s b -l base -r
+complete -c hz -n "__fish_seen_subcommand_from diff" -l pr -r
 complete -c hz -n "__fish_seen_subcommand_from diff" -l staged
 complete -c hz -n "__fish_seen_subcommand_from diff" -l unstaged
 complete -c hz -n "__fish_seen_subcommand_from diff" -l no-untracked

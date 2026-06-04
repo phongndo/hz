@@ -109,8 +109,8 @@ examples:
 examples:
   hz diff
   hz diff --base main
-  hz diff pr 123
-  hz diff pr https://github.com/owner/repo/pull/123"
+  hz diff --pr 123
+  hz diff --pr https://github.com/owner/repo/pull/123"
     )]
     Diff(DiffArgs),
     #[command(
@@ -301,6 +301,13 @@ enum ShellArg {
 struct DiffArgs {
     #[arg(value_name = "REV", num_args = 0..=2)]
     revs: Vec<String>,
+    /// Fetch and review a GitHub pull request by number or URL.
+    #[arg(
+        long,
+        value_name = "NUMBER|URL",
+        conflicts_with_all = ["base", "revs", "staged", "unstaged", "no_untracked", "patch"]
+    )]
+    pr: Option<String>,
     #[arg(short = 'r', long)]
     repo: Option<PathBuf>,
     #[arg(short = 'b', long)]
@@ -472,9 +479,9 @@ fn tree_sitter_available_filter(
     }
 }
 
-fn diff_options(args: DiffArgs) -> HzResult<hz_command::DiffOptions> {
-    if args.revs.first().map(String::as_str) == Some("pr") {
-        return pr_diff_options(args);
+fn diff_options(mut args: DiffArgs) -> HzResult<hz_command::DiffOptions> {
+    if let Some(target) = args.pr.take() {
+        return pr_diff_options(args, &target);
     }
 
     if let Some(patch) = args.patch {
@@ -535,24 +542,22 @@ fn diff_options(args: DiffArgs) -> HzResult<hz_command::DiffOptions> {
     })
 }
 
-fn pr_diff_options(args: DiffArgs) -> HzResult<hz_command::DiffOptions> {
-    if args.base.is_some() || args.staged || args.unstaged || args.no_untracked {
+fn pr_diff_options(args: DiffArgs, target: &str) -> HzResult<hz_command::DiffOptions> {
+    if args.base.is_some() || !args.revs.is_empty() {
         return Err(hz_core::HzError::Usage(
-            "--base, --staged, --unstaged, and --no-untracked do not apply to hz diff pr"
-                .to_owned(),
+            "use --pr without revisions or --base".to_owned(),
+        ));
+    }
+    if args.staged || args.unstaged || args.no_untracked {
+        return Err(hz_core::HzError::Usage(
+            "--staged, --unstaged, and --no-untracked do not apply to hz diff --pr".to_owned(),
         ));
     }
     if args.patch.is_some() {
         return Err(hz_core::HzError::Usage(
-            "--patch does not apply to hz diff pr".to_owned(),
+            "--patch does not apply to hz diff --pr".to_owned(),
         ));
     }
-
-    let [_, target] = args.revs.as_slice() else {
-        return Err(hz_core::HzError::Usage(
-            "usage: hz diff pr <number|url>".to_owned(),
-        ));
-    };
 
     hz_command::github_pr_diff_options(args.repo, target, args.stat)
 }
@@ -3222,11 +3227,21 @@ mod tests {
             command => panic!("expected diff command, got {command:?}"),
         }
 
-        let cli = Cli::try_parse_from(["hz", "diff", "pr", "123", "--stat"]).unwrap();
+        let cli = Cli::try_parse_from(["hz", "diff", "--pr", "123", "--stat"]).unwrap();
         match cli.command {
             Some(Command::Diff(args)) => {
-                assert_eq!(args.revs, ["pr", "123"]);
+                assert_eq!(args.pr.as_deref(), Some("123"));
+                assert!(args.revs.is_empty());
                 assert!(args.stat);
+            }
+            command => panic!("expected diff command, got {command:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["hz", "diff", "pr", "feature"]).unwrap();
+        match cli.command {
+            Some(Command::Diff(args)) => {
+                assert_eq!(args.revs, ["pr", "feature"]);
+                assert_eq!(args.pr, None);
             }
             command => panic!("expected diff command, got {command:?}"),
         }
@@ -3247,6 +3262,8 @@ mod tests {
         assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "main"]).is_err());
         assert!(Cli::try_parse_from(["hz", "diff", "--staged", "--base", "main"]).is_err());
         assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "--base", "main"]).is_err());
+        assert!(Cli::try_parse_from(["hz", "diff", "--pr", "123", "main"]).is_err());
+        assert!(Cli::try_parse_from(["hz", "diff", "--pr", "123", "--patch", "x.diff"]).is_err());
     }
 
     #[test]

@@ -145,9 +145,7 @@ _hz_complete_command_args() {
       ;;
     diff)
       if [[ "$current" == -* ]]; then
-        _hz_reply "-r --repo -b --base --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help" "$current"
-      else
-        _hz_reply "pr" "$current"
+        _hz_reply "-r --repo -b --base --pr --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help" "$current"
       fi
       ;;
   esac

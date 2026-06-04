@@ -218,8 +218,8 @@ hz diff --unstaged
 hz diff --no-untracked
 hz diff --base main
 hz diff main feature
-hz diff pr 123
-hz diff pr https://github.com/owner/repo/pull/123
+hz diff --pr 123
+hz diff --pr https://github.com/owner/repo/pull/123
 hz diff --patch changes.diff
 cat changes.diff | hz diff --patch -
 hz diff --no-watch
@@ -232,12 +232,13 @@ hz ts rm ruby
 ```
 
 The default view is all working tree changes against `HEAD`, including
-untracked files. `hz diff pr <number>` reviews a pull request from the current
-repository's `origin` GitHub remote. `hz diff pr <url>` reviews any GitHub pull
-request URL without requiring a local repository. Patch mode reads an existing
-unified diff from a file or stdin without requiring a Git repository. The viewer
-uses split mode on wide terminals and unified mode on narrower terminals, and
-switches as the terminal is resized.
+untracked files. `hz diff --pr <number>` reviews a pull request from the current
+repository's `origin` GitHub remote. `hz diff --pr <url>` reviews any GitHub pull
+request URL without requiring a local repository. Positional revisions remain
+literal, so refs named `pr` can still be compared normally. Patch mode reads an
+existing unified diff from a file or stdin without requiring a Git repository.
+The viewer uses split mode on wide terminals and unified mode on narrower
+terminals, and switches as the terminal is resized.
 GitHub PR fetching uses `curl`; set `GH_TOKEN` or `GITHUB_TOKEN` for private
 repositories or higher GitHub rate limits.
 Working tree diffs live-reload as files or Git state change; use `--no-watch` to
