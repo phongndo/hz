@@ -4312,7 +4312,6 @@ fn render_split_line(
         left_syntax.as_ref(),
         &left_inline,
         SplitCellRender {
-            empty_kind: right_line.as_ref().map(|line| line.kind),
             side: SplitSide::Old,
             row_index,
             width: left_width,
@@ -4324,7 +4323,6 @@ fn render_split_line(
         right_syntax.as_ref(),
         &right_inline,
         SplitCellRender {
-            empty_kind: left_line.as_ref().map(|line| line.kind),
             side: SplitSide::New,
             row_index,
             width: right_width,
@@ -4342,7 +4340,6 @@ enum SplitSide {
 
 #[derive(Debug, Clone, Copy)]
 struct SplitCellRender {
-    empty_kind: Option<DiffLineKind>,
     side: SplitSide,
     row_index: usize,
     width: usize,
@@ -4356,7 +4353,6 @@ fn split_cell_spans(
     render: SplitCellRender,
 ) -> Vec<Span<'static>> {
     let SplitCellRender {
-        empty_kind,
         side,
         row_index,
         width,
@@ -4368,7 +4364,7 @@ fn split_cell_spans(
     }
 
     let Some(line) = line else {
-        let empty_kind = empty_kind.unwrap_or(DiffLineKind::Context);
+        let empty_kind = DiffLineKind::Context;
         let indicator_width = 1.min(width);
         let gutter_width = GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
         let content_width = width.saturating_sub(indicator_width + gutter_width);
@@ -4667,13 +4663,12 @@ mod tests {
     }
 
     #[test]
-    fn split_empty_cells_keep_hunk_indicator_and_hatched_fill() {
+    fn split_empty_cells_use_default_gutter_and_hatched_fill() {
         let spans = split_cell_spans(
             None,
             None,
             &[],
             SplitCellRender {
-                empty_kind: Some(DiffLineKind::Addition),
                 side: SplitSide::Old,
                 row_index: 0,
                 width: 12,
@@ -4683,16 +4678,10 @@ mod tests {
 
         assert_eq!(span_text(&spans), "▌        ╱  ");
         assert_eq!(spans[0].content.as_ref(), DIFF_INDICATOR);
-        assert_eq!(spans[0].style.fg, Some(DiffTheme::default().addition_fg));
-        assert_eq!(
-            spans[0].style.bg,
-            Some(DiffTheme::default().addition_gutter_bg)
-        );
+        assert_eq!(spans[0].style.fg, Some(DiffTheme::default().muted));
+        assert_eq!(spans[0].style.bg, Some(DiffTheme::default().gutter_bg));
         assert_eq!(spans[1].content.as_ref(), "       ");
-        assert_eq!(
-            spans[1].style.bg,
-            Some(DiffTheme::default().addition_gutter_bg)
-        );
+        assert_eq!(spans[1].style.bg, Some(DiffTheme::default().gutter_bg));
         assert_eq!(spans[2].style.fg, Some(DiffTheme::default().empty_diff));
     }
 
