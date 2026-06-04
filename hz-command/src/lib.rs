@@ -1354,6 +1354,7 @@ mod tests {
         assert!(script.contains("_hz_complete_command_options \"$cmd\""));
         assert!(script.contains("_hz_complete_command_positionals \"$cmd\""));
         assert!(script.contains("_hz_complete_option_value \"$cmd\""));
+        assert!(script.contains("_hz_git_refs"));
         assert!(script.contains("compinit -C"));
         assert!(script.contains("shift words"));
         assert!(script.contains("shift 2 words"));
@@ -1388,7 +1389,11 @@ mod tests {
         assert!(script.contains("case --json --path-only --help -h -j"));
         assert!(script.contains("or return"));
         assert!(script.contains("command hz __complete removable-worktrees"));
-        assert!(script.contains("complete -c hz -n \"__fish_seen_subcommand_from rm remove\""));
+        assert!(script.contains("__hz_command_is"));
+        assert!(script.contains("__hz_top_command_is update"));
+        assert!(script.contains("__hz_diff_position_is_revision"));
+        assert!(script.contains("__hz_complete_git_refs"));
+        assert!(script.contains("complete -c hz -n \"__hz_command_is remove rm\""));
         assert!(script.contains("init install setup cleanup shell update"));
         assert!(script.contains("ts tree-sitter"));
         assert!(script.contains("__hz_needs_ts_subcommand"));
@@ -1431,6 +1436,8 @@ mod tests {
         assert!(script.contains("complete -F _hz_completion hz"));
         assert!(script.contains("_hz_dynamic_reply worktree-targets"));
         assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
+        assert!(script.contains("_hz_complete_option_value"));
+        assert!(script.contains("_hz_git_ref_reply"));
         assert!(script.contains("init install setup cleanup shell update"));
         assert!(script.contains("ts tree-sitter"));
         assert!(script.contains("_hz_complete_ts_args"));
