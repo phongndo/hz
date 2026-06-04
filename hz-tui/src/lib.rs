@@ -1107,7 +1107,6 @@ pub fn run_diff_with_live_updates_and_syntax(
     live_updates: bool,
     syntax_enabled: bool,
 ) -> HzResult<()> {
-    let options = default_tui_diff_options(options);
     let changeset = hz_diff::load_review_ref(&options)?;
 
     let mut cleanup = TerminalCleanup::install()?;
@@ -2963,18 +2962,6 @@ fn default_branch_base(options: &DiffOptions, repo: &Path) -> Option<String> {
         .or_else(|| git_local_branch_candidate(repo))
 }
 
-fn default_tui_diff_options(mut options: DiffOptions) -> DiffOptions {
-    if matches!(&options.source, DiffSource::Worktree)
-        && options.scope == DiffScope::All
-        && let Ok(repo) = hz_git::repository_root(options.repo.as_deref())
-        && let Some(base) = default_branch_base(&options, &repo)
-    {
-        options.source = DiffSource::Base(base);
-    }
-
-    options
-}
-
 fn comparison_branches(repo: &Path, selected_refs: &[Option<&str>]) -> Vec<String> {
     let mut branches = git_branches(repo);
     for selected in selected_refs
@@ -4240,10 +4227,10 @@ impl DiffApp {
         }
 
         let mut choices = Vec::with_capacity(4);
+        choices.extend(WORKTREE_DIFF_CHOICES);
         if self.branch_base.is_some() {
             choices.push(DiffChoice::Branch);
         }
-        choices.extend(WORKTREE_DIFF_CHOICES);
         choices
     }
 
@@ -5795,6 +5782,26 @@ mod tests {
             head: "feature/ui".to_owned(),
         };
         assert_eq!(diff_comparison_label(&options), "feature/ui → origin/main");
+    }
+
+    #[test]
+    fn diff_menu_lists_all_changes_first() {
+        let mut app = DiffApp::new(
+            DiffOptions::default(),
+            changeset_with_context_lines(1),
+            DiffLayoutMode::Unified,
+        );
+        app.branch_base = Some("origin/main".to_owned());
+
+        assert_eq!(
+            app.diff_menu_choices(),
+            vec![
+                DiffChoice::All,
+                DiffChoice::Unstaged,
+                DiffChoice::Staged,
+                DiffChoice::Branch,
+            ]
+        );
     }
 
     #[test]
