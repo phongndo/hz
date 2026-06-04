@@ -23,6 +23,10 @@ pub enum DiffSource {
     #[default]
     Worktree,
     Base(String),
+    Branch {
+        base: String,
+        head: String,
+    },
     Range {
         left: String,
         right: String,
@@ -387,6 +391,7 @@ fn git_diff_args(options: &DiffOptions) -> Vec<String> {
             DiffScope::Unstaged => {}
         },
         DiffSource::Base(base) => args.push(format!("{base}...HEAD")),
+        DiffSource::Branch { base, head } => args.push(format!("{base}...{head}")),
         DiffSource::Range { left, right } => {
             args.push(left.clone());
             args.push(right.clone());
@@ -411,6 +416,7 @@ fn diff_title(options: &DiffOptions) -> String {
             DiffScope::Unstaged => "unstaged changes".to_owned(),
         },
         DiffSource::Base(base) => format!("{base}...HEAD"),
+        DiffSource::Branch { base, head } => format!("{base}...{head}"),
         DiffSource::Range { left, right } => format!("{left}..{right}"),
         DiffSource::Patch(PatchSource::File(path)) => format!("patch {}", path.display()),
         DiffSource::Patch(PatchSource::Stdin(_)) => "patch stdin".to_owned(),
