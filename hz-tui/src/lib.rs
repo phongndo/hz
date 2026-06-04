@@ -54,6 +54,7 @@ const MOUSE_SCROLL_ACCEL_A: f64 = 0.4;
 const MOUSE_SCROLL_ACCEL_TAU: f64 = 4.0;
 const MOUSE_SCROLL_MAX_MULTIPLIER: f64 = 3.0;
 const MOUSE_SCROLL_REFERENCE_INTERVAL_MS: f64 = 100.0;
+const HORIZONTAL_SCROLL_STEP: usize = 8;
 const MIN_SPLIT_WIDTH: u16 = 120;
 const GUTTER_WIDTH: usize = 7;
 const UNIFIED_GUTTER_WIDTH: usize = 13;
@@ -3522,7 +3523,10 @@ struct DiffApp {
     model: UiModel,
     layout: DiffLayoutMode,
     scroll: usize,
+    horizontal_scroll: usize,
     viewport_rows: usize,
+    viewport_width: usize,
+    max_line_width: usize,
     selected_file: usize,
     diff_menu_open: bool,
     branch_menu_open: Option<BranchMenu>,
@@ -3625,6 +3629,7 @@ impl DiffApp {
                 SyntaxRuntime::start_with_languages(languages, syntax_limits)
             }
         };
+        let max_line_width = changeset_max_line_width(&changeset);
         Self {
             options,
             changeset,
@@ -3632,7 +3637,10 @@ impl DiffApp {
             model,
             layout,
             scroll: 0,
+            horizontal_scroll: 0,
             viewport_rows: 1,
+            viewport_width: 1,
+            max_line_width,
             selected_file: 0,
             diff_menu_open: false,
             branch_menu_open: None,
@@ -3738,6 +3746,12 @@ impl DiffApp {
             KeyCode::Esc | KeyCode::Char('q') => return Ok(true),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_by(1),
             KeyCode::Up | KeyCode::Char('k') => self.scroll_by(-1),
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.scroll_horizontally_by(-(HORIZONTAL_SCROLL_STEP as isize));
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.scroll_horizontally_by(HORIZONTAL_SCROLL_STEP as isize);
+            }
             KeyCode::PageDown | KeyCode::Char('d') => self.scroll_by(20),
             KeyCode::PageUp | KeyCode::Char('u') => self.scroll_by(-20),
             KeyCode::Home | KeyCode::Char('g') => self.set_scroll(0),
@@ -3803,6 +3817,12 @@ impl DiffApp {
                     .mouse_scroll
                     .scroll_delta(MouseScrollDirection::Up, Instant::now());
                 self.scroll_by(delta);
+            }
+            MouseEventKind::ScrollLeft => {
+                self.scroll_horizontally_by(-(HORIZONTAL_SCROLL_STEP as isize));
+            }
+            MouseEventKind::ScrollRight => {
+                self.scroll_horizontally_by(HORIZONTAL_SCROLL_STEP as isize);
             }
             _ => {}
         }
@@ -4333,6 +4353,23 @@ impl DiffApp {
         self.set_scroll(next);
     }
 
+    fn scroll_horizontally_by(&mut self, delta: isize) {
+        let next = if delta < 0 {
+            self.horizontal_scroll.saturating_sub(delta.unsigned_abs())
+        } else {
+            self.horizontal_scroll.saturating_add(delta as usize)
+        };
+        self.set_horizontal_scroll(next);
+    }
+
+    fn set_horizontal_scroll(&mut self, scroll: usize) {
+        let previous_scroll = self.horizontal_scroll;
+        self.horizontal_scroll = scroll.min(self.max_horizontal_scroll());
+        if self.horizontal_scroll != previous_scroll {
+            self.dirty = true;
+        }
+    }
+
     fn set_scroll(&mut self, scroll: usize) {
         let previous_scroll = self.scroll;
         let previous_file = self.selected_file;
@@ -4349,6 +4386,11 @@ impl DiffApp {
         max_scroll_for_viewport(self.model.len(), self.viewport_rows)
     }
 
+    fn max_horizontal_scroll(&self) -> usize {
+        self.max_line_width
+            .saturating_sub(diff_content_width(self.layout, self.viewport_width))
+    }
+
     fn set_viewport_rows(&mut self, rows: usize) {
         let rows = rows.max(1);
         if self.viewport_rows == rows {
@@ -4357,6 +4399,16 @@ impl DiffApp {
 
         self.viewport_rows = rows;
         self.set_scroll(self.scroll);
+    }
+
+    fn set_viewport_width(&mut self, width: usize) {
+        let width = width.max(1);
+        if self.viewport_width == width {
+            return;
+        }
+
+        self.viewport_width = width;
+        self.set_horizontal_scroll(self.horizontal_scroll);
     }
 
     fn prepare_syntax_for_viewport(&mut self, visible_rows: usize) {
@@ -4571,7 +4623,9 @@ impl DiffApp {
     }
 
     fn apply_responsive_layout(&mut self, width: u16) {
+        self.viewport_width = (width as usize).max(1);
         self.set_layout(default_layout_for_width(width), true);
+        self.set_horizontal_scroll(self.horizontal_scroll);
         self.dirty = true;
     }
 
@@ -4582,6 +4636,7 @@ impl DiffApp {
 
         self.layout = layout;
         self.model = UiModel::new(&self.changeset, self.layout);
+        self.set_horizontal_scroll(self.horizontal_scroll);
         let scroll = self
             .model
             .file_start_row(self.selected_file)
@@ -4659,6 +4714,7 @@ impl DiffApp {
         );
         self.branch_menu_scroll = self.branch_menu_scroll.min(self.max_branch_menu_scroll());
         self.stats = changeset.stats();
+        self.max_line_width = changeset_max_line_width(&changeset);
         self.changeset = changeset;
         self.generation = self.generation.wrapping_add(1);
         self.inline_cache.clear();
@@ -4673,6 +4729,7 @@ impl DiffApp {
             .map(|start| start.saturating_add(relative_scroll))
             .unwrap_or_default();
         self.set_scroll(scroll);
+        self.set_horizontal_scroll(self.horizontal_scroll);
         if let Some(notice) = notice {
             self.set_notice(notice);
         }
@@ -4684,6 +4741,40 @@ fn max_scroll_for_viewport(row_count: usize, viewport_rows: usize) -> usize {
     row_count.saturating_sub(viewport_rows.max(1))
 }
 
+fn changeset_max_line_width(changeset: &Changeset) -> usize {
+    changeset
+        .files
+        .iter()
+        .flat_map(|file| file.hunks.iter())
+        .flat_map(|hunk| hunk.lines.iter())
+        .map(|line| line.text.width())
+        .max()
+        .unwrap_or_default()
+}
+
+fn diff_content_width(layout: DiffLayoutMode, width: usize) -> usize {
+    match layout {
+        DiffLayoutMode::Unified => unified_content_width(width),
+        DiffLayoutMode::Split => {
+            let left_width = width / 2;
+            let right_width = width.saturating_sub(left_width);
+            split_cell_content_width(left_width).min(split_cell_content_width(right_width))
+        }
+    }
+}
+
+fn unified_content_width(width: usize) -> usize {
+    let indicator_width = 1.min(width);
+    let gutter_width = UNIFIED_GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
+    width.saturating_sub(indicator_width + gutter_width)
+}
+
+fn split_cell_content_width(width: usize) -> usize {
+    let indicator_width = 1.min(width);
+    let gutter_width = GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
+    width.saturating_sub(indicator_width + gutter_width)
+}
+
 fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
     let area = frame.area();
     let vertical = Layout::default()
@@ -4692,6 +4783,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
         .split(area);
 
     app.set_viewport_rows(vertical[1].height as usize);
+    app.set_viewport_width(vertical[1].width as usize);
     draw_header(frame, app, vertical[0]);
     draw_diff(frame, app, vertical[1]);
     draw_diff_menu(frame, app, area);
@@ -5025,6 +5117,7 @@ fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
 
 fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> Line<'static> {
     let theme = app.theme;
+    let horizontal_scroll = app.horizontal_scroll;
     match row {
         UiRow::FileHeader(file_index) => {
             let file = &app.changeset.files[file_index];
@@ -5066,18 +5159,27 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
             let syntax = unified_syntax_side(diff_line.kind)
                 .and_then(|side| app.syntax_line(file, hunk, line, side));
             let inline = app.inline_ranges(file, hunk, line);
-            render_unified_line(
+            render_unified_line_at_scroll(
                 &diff_line,
                 syntax.as_ref(),
                 &inline,
                 row_index,
                 width,
                 theme,
+                horizontal_scroll,
             )
         }
         UiRow::MetaLine { file, hunk, line } => {
             let diff_line = app.changeset.files[file].hunks[hunk].lines[line].clone();
-            render_unified_line(&diff_line, None, &[], row_index, width, theme)
+            render_unified_line_at_scroll(
+                &diff_line,
+                None,
+                &[],
+                row_index,
+                width,
+                theme,
+                horizontal_scroll,
+            )
         }
         UiRow::SplitLine {
             file,
@@ -5088,13 +5190,14 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
     }
 }
 
-fn render_unified_line(
+fn render_unified_line_at_scroll(
     line: &DiffLine,
     syntax: Option<&HighlightedLine>,
     inline: &[InlineRange],
     _row_index: usize,
     width: usize,
     theme: DiffTheme,
+    horizontal_scroll: usize,
 ) -> Line<'static> {
     if width == 0 {
         return Line::default();
@@ -5108,7 +5211,7 @@ fn render_unified_line(
     };
     let indicator_width = 1.min(width);
     let gutter_width = UNIFIED_GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
-    let content_width = width.saturating_sub(indicator_width + gutter_width);
+    let content_width = unified_content_width(width);
     let gutter = format!(
         "{:>5} {:>5} ",
         unified_line_number(line.old_line, line.kind),
@@ -5121,13 +5224,14 @@ fn render_unified_line(
     if gutter_width > 0 {
         spans.extend(gutter_spans(&gutter, sign, gutter_width, line.kind, theme));
     }
-    spans.extend(content_spans(
+    spans.extend(content_spans_at_scroll(
         &line.text,
         syntax,
         inline,
         line.kind,
         content_width,
         theme,
+        horizontal_scroll,
     ));
     Line::from(spans)
 }
@@ -5226,13 +5330,14 @@ fn empty_diff_fill_from(width: usize, row_index: usize, column_offset: usize) ->
         .collect()
 }
 
-fn content_spans(
+fn content_spans_at_scroll(
     text: &str,
     syntax: Option<&HighlightedLine>,
     inline: &[InlineRange],
     kind: DiffLineKind,
     width: usize,
     theme: DiffTheme,
+    horizontal_scroll: usize,
 ) -> Vec<Span<'static>> {
     if width == 0 {
         return Vec::new();
@@ -5242,12 +5347,12 @@ fn content_spans(
     let syntax = syntax.filter(|syntax| syntax_line_matches_text(syntax, text));
     if syntax.is_none() && inline.is_empty() {
         return vec![Span::styled(
-            fit_padded(text, width),
+            fit_padded_from(text, horizontal_scroll, width),
             line_style(kind, theme),
         )];
     }
 
-    let mut writer = ContentSpanWriter::new(&inline, kind, width, theme);
+    let mut writer = ContentSpanWriter::new(&inline, kind, width, theme, horizontal_scroll);
 
     if let Some(syntax) = syntax {
         let mut byte_start = 0usize;
@@ -5292,17 +5397,25 @@ struct ContentSpanWriter<'a> {
     inline: &'a [InlineRange],
     kind: DiffLineKind,
     width: usize,
+    skip: usize,
     used: usize,
     theme: DiffTheme,
 }
 
 impl<'a> ContentSpanWriter<'a> {
-    fn new(inline: &'a [InlineRange], kind: DiffLineKind, width: usize, theme: DiffTheme) -> Self {
+    fn new(
+        inline: &'a [InlineRange],
+        kind: DiffLineKind,
+        width: usize,
+        theme: DiffTheme,
+        horizontal_scroll: usize,
+    ) -> Self {
         Self {
             spans: Vec::new(),
             inline,
             kind,
             width,
+            skip: horizontal_scroll,
             used: 0,
             theme,
         }
@@ -5374,7 +5487,15 @@ impl<'a> ContentSpanWriter<'a> {
 
         let relative_start = byte_start.saturating_sub(segment_byte_start);
         let relative_end = byte_end.saturating_sub(segment_byte_start);
-        let piece = &segment_text[relative_start..relative_end];
+        let mut piece = &segment_text[relative_start..relative_end];
+        if self.skip > 0 {
+            let (visible, skipped) = skip_display_prefix(piece, self.skip);
+            self.skip = self.skip.saturating_sub(skipped);
+            piece = visible;
+            if piece.is_empty() {
+                return true;
+            }
+        }
         let fitted = fit(piece, remaining);
         if fitted.is_empty() {
             return false;
@@ -5462,6 +5583,7 @@ fn render_split_line(
         return Line::default();
     }
     let theme = app.theme;
+    let horizontal_scroll = app.horizontal_scroll;
 
     let (left_line, right_line) = {
         let lines = &app.changeset.files[file].hunks[hunk].lines;
@@ -5481,7 +5603,7 @@ fn render_split_line(
 
     let left_width = width / 2;
     let right_width = width.saturating_sub(left_width);
-    let mut spans = split_cell_spans(
+    let mut spans = split_cell_spans_at_scroll(
         left_line.as_ref(),
         left_syntax.as_ref(),
         &left_inline,
@@ -5491,8 +5613,9 @@ fn render_split_line(
             width: left_width,
             theme,
         },
+        horizontal_scroll,
     );
-    spans.extend(split_cell_spans(
+    spans.extend(split_cell_spans_at_scroll(
         right_line.as_ref(),
         right_syntax.as_ref(),
         &right_inline,
@@ -5502,6 +5625,7 @@ fn render_split_line(
             width: right_width,
             theme,
         },
+        horizontal_scroll,
     ));
     Line::from(spans)
 }
@@ -5520,11 +5644,12 @@ struct SplitCellRender {
     theme: DiffTheme,
 }
 
-fn split_cell_spans(
+fn split_cell_spans_at_scroll(
     line: Option<&DiffLine>,
     syntax: Option<&HighlightedLine>,
     inline: &[InlineRange],
     render: SplitCellRender,
+    horizontal_scroll: usize,
 ) -> Vec<Span<'static>> {
     let SplitCellRender {
         side,
@@ -5541,7 +5666,7 @@ fn split_cell_spans(
         let empty_kind = DiffLineKind::Context;
         let indicator_width = 1.min(width);
         let gutter_width = GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
-        let content_width = width.saturating_sub(indicator_width + gutter_width);
+        let content_width = split_cell_content_width(width);
         let mut spans = Vec::new();
         if indicator_width > 0 {
             spans.push(diff_indicator_span(empty_kind, theme));
@@ -5554,7 +5679,11 @@ fn split_cell_spans(
         }
         if content_width > 0 {
             spans.push(Span::styled(
-                empty_diff_fill_from(content_width, row_index, indicator_width + gutter_width),
+                empty_diff_fill_from(
+                    content_width,
+                    row_index,
+                    indicator_width + gutter_width + horizontal_scroll,
+                ),
                 Style::default().fg(theme.empty_diff).bg(base_bg(theme)),
             ));
         }
@@ -5563,7 +5692,7 @@ fn split_cell_spans(
 
     let indicator_width = 1.min(width);
     let gutter_width = GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
-    let content_width = width.saturating_sub(indicator_width + gutter_width);
+    let content_width = split_cell_content_width(width);
     let line_number = match side {
         SplitSide::Old => line.old_line,
         SplitSide::New => line.new_line,
@@ -5589,13 +5718,14 @@ fn split_cell_spans(
             theme,
         ));
     }
-    spans.extend(content_spans(
+    spans.extend(content_spans_at_scroll(
         &line.text,
         syntax,
         inline,
         line.kind,
         content_width,
         theme,
+        horizontal_scroll,
     ));
     spans
 }
@@ -5652,12 +5782,45 @@ fn progress_label(scroll: usize, max_scroll: usize) -> String {
 }
 
 fn fit_padded(text: &str, width: usize) -> String {
-    let mut out = fit(text, width);
+    fit_padded_from(text, 0, width)
+}
+
+fn fit_padded_from(text: &str, horizontal_scroll: usize, width: usize) -> String {
+    let visible = if horizontal_scroll > 0 {
+        skip_display_prefix(text, horizontal_scroll).0
+    } else {
+        text
+    };
+    let mut out = fit(visible, width);
     let len = UnicodeWidthStr::width(out.as_str());
     if len < width {
         out.push_str(&" ".repeat(width - len));
     }
     out
+}
+
+fn skip_display_prefix(text: &str, columns: usize) -> (&str, usize) {
+    if columns == 0 {
+        return (text, 0);
+    }
+
+    let mut skipped = 0usize;
+    let mut byte_index = 0usize;
+    for (index, ch) in text.char_indices() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if skipped >= columns {
+            if ch_width == 0 {
+                byte_index = index + ch.len_utf8();
+                continue;
+            }
+            break;
+        }
+
+        skipped = skipped.saturating_add(ch_width);
+        byte_index = index + ch.len_utf8();
+    }
+
+    (&text[byte_index..], skipped)
 }
 
 fn right_aligned(left: &str, right: &str, width: usize) -> String {
@@ -5729,6 +5892,60 @@ mod tests {
         app.set_viewport_rows(usize::MAX);
 
         assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn app_clamps_horizontal_scroll_to_diff_content() {
+        let changeset = changeset_with_line_text("abcdefghijkl");
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        app.set_viewport_width(18);
+        assert_eq!(diff_content_width(app.layout, app.viewport_width), 4);
+
+        app.scroll_horizontally_by(HORIZONTAL_SCROLL_STEP as isize);
+        assert_eq!(app.horizontal_scroll, 8);
+
+        app.scroll_horizontally_by(HORIZONTAL_SCROLL_STEP as isize);
+        assert_eq!(app.horizontal_scroll, 8);
+
+        app.scroll_horizontally_by(-(HORIZONTAL_SCROLL_STEP as isize));
+        assert_eq!(app.horizontal_scroll, 0);
+
+        app.set_horizontal_scroll(8);
+        app.set_viewport_width(80);
+        assert_eq!(app.horizontal_scroll, 0);
+    }
+
+    #[test]
+    fn responsive_layout_preserves_valid_horizontal_scroll() {
+        let long_line = "a".repeat(120);
+        let changeset = changeset_with_line_text(&long_line);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.set_viewport_width(80);
+        app.set_horizontal_scroll(40);
+
+        app.apply_responsive_layout(MIN_SPLIT_WIDTH);
+
+        assert_eq!(app.layout, DiffLayoutMode::Split);
+        assert_eq!(app.horizontal_scroll, 40);
+    }
+
+    #[test]
+    fn responsive_layout_clamps_horizontal_scroll_without_layout_change() {
+        let long_line = "a".repeat(100);
+        let changeset = changeset_with_line_text(&long_line);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Split);
+
+        app.apply_responsive_layout(MIN_SPLIT_WIDTH);
+        assert_eq!(app.layout, DiffLayoutMode::Split);
+        app.set_horizontal_scroll(usize::MAX);
+        let previous_scroll = app.horizontal_scroll;
+
+        app.apply_responsive_layout(MIN_SPLIT_WIDTH + 40);
+
+        assert_eq!(app.layout, DiffLayoutMode::Split);
+        assert!(app.max_horizontal_scroll() < previous_scroll);
+        assert_eq!(app.horizontal_scroll, app.max_horizontal_scroll());
     }
 
     #[test]
@@ -6087,6 +6304,8 @@ mod tests {
     fn fit_helpers_use_terminal_display_width() {
         assert_eq!(fit("界a", 2), "界");
         assert_eq!(fit_padded("e\u{301}", 2), "e\u{301} ");
+        assert_eq!(fit_padded_from("abcdef", 2, 3), "cde");
+        assert_eq!(skip_display_prefix("e\u{301}f", 1), ("f", 1));
         assert_eq!(right_aligned("界", "x", 5), "界  x");
     }
 
@@ -6101,13 +6320,14 @@ mod tests {
             }],
         };
 
-        let spans = content_spans(
+        let spans = content_spans_at_scroll(
             "right",
             Some(&syntax),
             &[],
             DiffLineKind::Addition,
             8,
             DiffTheme::default(),
+            0,
         );
         let text = spans
             .iter()
@@ -6127,7 +6347,7 @@ mod tests {
 
     #[test]
     fn split_empty_cells_use_default_gutter_and_hatched_fill() {
-        let spans = split_cell_spans(
+        let spans = split_cell_spans_at_scroll(
             None,
             None,
             &[],
@@ -6137,6 +6357,7 @@ mod tests {
                 width: 12,
                 theme: DiffTheme::default(),
             },
+            0,
         );
 
         assert_eq!(span_text(&spans), "▌        ╱  ");
@@ -6158,7 +6379,7 @@ mod tests {
             text: "same".to_owned(),
         };
 
-        let rendered = render_unified_line(&line, None, &[], 0, 24, theme);
+        let rendered = render_unified_line_at_scroll(&line, None, &[], 0, 24, theme, 0);
 
         assert_eq!(rendered.spans[0].style.fg, Some(theme.muted));
         assert_eq!(rendered.spans[0].style.bg, Some(theme.gutter_bg));
@@ -6176,7 +6397,7 @@ mod tests {
             text: "added".to_owned(),
         };
 
-        let rendered = render_unified_line(&line, None, &[], 0, 24, theme);
+        let rendered = render_unified_line_at_scroll(&line, None, &[], 0, 24, theme, 0);
 
         assert_eq!(rendered.spans[0].style.bg, Some(theme.addition_gutter_bg));
         assert_eq!(rendered.spans[1].style.fg, Some(theme.addition_fg));
@@ -6207,6 +6428,32 @@ mod tests {
     }
 
     #[test]
+    fn unified_diff_content_scrolls_horizontally() {
+        let line = DiffLine {
+            kind: DiffLineKind::Context,
+            old_line: Some(1),
+            new_line: Some(1),
+            text: "abcdef".to_owned(),
+        };
+
+        let rendered =
+            render_unified_line_at_scroll(&line, None, &[], 0, 18, DiffTheme::default(), 2);
+
+        assert!(line_text(&rendered).ends_with("cdef"));
+    }
+
+    #[test]
+    fn split_diff_content_scrolls_horizontally() {
+        let changeset = changeset_with_line_text("abcdef");
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Split);
+        app.horizontal_scroll = 2;
+
+        let rendered = render_split_line(&mut app, 0, 0, Some(0), Some(0), 0, 24);
+
+        assert_eq!(line_text(&rendered), "▌    1  cdef▌    1  cdef");
+    }
+
+    #[test]
     fn diff_lines_start_with_change_indicator() {
         let line = DiffLine {
             kind: DiffLineKind::Addition,
@@ -6215,7 +6462,8 @@ mod tests {
             text: "new".to_owned(),
         };
 
-        let rendered = render_unified_line(&line, None, &[], 0, 24, DiffTheme::default());
+        let rendered =
+            render_unified_line_at_scroll(&line, None, &[], 0, 24, DiffTheme::default(), 0);
 
         assert_eq!(rendered.spans[0].content.as_ref(), DIFF_INDICATOR);
         assert_eq!(
@@ -6316,7 +6564,7 @@ mod tests {
     #[test]
     fn transparent_background_resets_diff_and_inline_backgrounds() {
         let theme = DiffTheme::catppuccin_mocha().with_transparent_background(true);
-        let spans = content_spans(
+        let spans = content_spans_at_scroll(
             "changed",
             None,
             &[InlineRange {
@@ -6326,6 +6574,7 @@ mod tests {
             DiffLineKind::Addition,
             8,
             theme,
+            0,
         );
 
         assert_eq!(row_bg(DiffLineKind::Addition, theme), Color::Reset);
@@ -6458,7 +6707,7 @@ base0F = "ffffff"
             ],
         };
 
-        let spans = content_spans(
+        let spans = content_spans_at_scroll(
             text,
             Some(&syntax),
             &[InlineRange {
@@ -6468,6 +6717,7 @@ base0F = "ffffff"
             DiffLineKind::Addition,
             20,
             DiffTheme::default(),
+            0,
         );
         let number = spans
             .iter()
@@ -6988,6 +7238,35 @@ base0F = "ffffff"
                     new_start: 1,
                     new_count: line_count,
                     lines,
+                }],
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            }],
+            raw_patch: String::new(),
+        }
+    }
+
+    fn changeset_with_line_text(text: &str) -> Changeset {
+        Changeset {
+            repo: PathBuf::from("/repo"),
+            title: "test".to_owned(),
+            files: vec![hz_diff::DiffFile {
+                old_path: Some("file.rs".to_owned()),
+                new_path: Some("file.rs".to_owned()),
+                status: hz_diff::FileStatus::Modified,
+                hunks: vec![hz_diff::DiffHunk {
+                    header: "@@ -1 +1 @@".to_owned(),
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![DiffLine {
+                        kind: DiffLineKind::Context,
+                        old_line: Some(1),
+                        new_line: Some(1),
+                        text: text.to_owned(),
+                    }],
                 }],
                 additions: 0,
                 deletions: 0,
