@@ -1438,6 +1438,145 @@ struct InlineLineEmphasis {
     ranges: Vec<InlineRange>,
 }
 
+#[derive(Debug)]
+struct InlineHunkEmphasisCache {
+    lines: Vec<Option<InlineLineEmphasis>>,
+    blocks: Vec<InlineChangedBlock>,
+}
+
+#[derive(Debug)]
+struct InlineChangedBlock {
+    start: usize,
+    end: usize,
+    deletions: Vec<usize>,
+    additions: Vec<usize>,
+}
+
+impl InlineHunkEmphasisCache {
+    fn new(lines: &[DiffLine]) -> Self {
+        let mut blocks = Vec::new();
+        let mut index = 0usize;
+
+        while index < lines.len() {
+            if !matches!(
+                lines[index].kind,
+                DiffLineKind::Deletion | DiffLineKind::Addition
+            ) {
+                index += 1;
+                continue;
+            }
+
+            let start = index;
+            let mut deletions = Vec::new();
+            let mut additions = Vec::new();
+            while index < lines.len()
+                && matches!(
+                    lines[index].kind,
+                    DiffLineKind::Deletion | DiffLineKind::Addition
+                )
+            {
+                match lines[index].kind {
+                    DiffLineKind::Deletion => deletions.push(index),
+                    DiffLineKind::Addition => additions.push(index),
+                    DiffLineKind::Context | DiffLineKind::Meta => {}
+                }
+                index += 1;
+            }
+            blocks.push(InlineChangedBlock {
+                start,
+                end: index,
+                deletions,
+                additions,
+            });
+        }
+
+        Self {
+            lines: vec![None; lines.len()],
+            blocks,
+        }
+    }
+
+    fn ranges_for_line(&mut self, lines: &[DiffLine], line: usize) -> Vec<InlineRange> {
+        if let Some(Some(emphasis)) = self.lines.get(line) {
+            return emphasis.ranges.clone();
+        }
+
+        self.compute_line(lines, line);
+        self.lines
+            .get(line)
+            .and_then(|emphasis| emphasis.as_ref())
+            .map(|emphasis| emphasis.ranges.clone())
+            .unwrap_or_default()
+    }
+
+    fn compute_line(&mut self, lines: &[DiffLine], line: usize) {
+        let Some(diff_line) = lines.get(line) else {
+            return;
+        };
+        if !matches!(
+            diff_line.kind,
+            DiffLineKind::Deletion | DiffLineKind::Addition
+        ) {
+            self.set_emphasis(line, Vec::new());
+            return;
+        }
+
+        let Some(block) = self
+            .blocks
+            .iter()
+            .find(|block| line >= block.start && line < block.end)
+        else {
+            self.set_emphasis(line, Vec::new());
+            return;
+        };
+
+        if block.deletions.is_empty() || block.additions.is_empty() {
+            let (start, end) = (block.start, block.end);
+            for line in start..end {
+                self.set_emphasis(line, Vec::new());
+            }
+            return;
+        }
+
+        let (old_index, new_index) = match diff_line.kind {
+            DiffLineKind::Deletion => {
+                let Ok(pair_index) = block.deletions.binary_search(&line) else {
+                    self.set_emphasis(line, Vec::new());
+                    return;
+                };
+                let Some(new_index) = block.additions.get(pair_index).copied() else {
+                    self.set_emphasis(line, Vec::new());
+                    return;
+                };
+                (line, new_index)
+            }
+            DiffLineKind::Addition => {
+                let Ok(pair_index) = block.additions.binary_search(&line) else {
+                    self.set_emphasis(line, Vec::new());
+                    return;
+                };
+                let Some(old_index) = block.deletions.get(pair_index).copied() else {
+                    self.set_emphasis(line, Vec::new());
+                    return;
+                };
+                (old_index, line)
+            }
+            DiffLineKind::Context | DiffLineKind::Meta => unreachable!(),
+        };
+
+        let (old_ranges, new_ranges) =
+            changed_token_ranges(&lines[old_index].text, &lines[new_index].text);
+        self.set_emphasis(old_index, old_ranges);
+        self.set_emphasis(new_index, new_ranges);
+    }
+
+    fn set_emphasis(&mut self, line: usize, ranges: Vec<InlineRange>) {
+        if let Some(emphasis) = self.lines.get_mut(line) {
+            *emphasis = Some(InlineLineEmphasis { ranges });
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SyntaxSkipReason {
     InvalidPosition,
@@ -1530,6 +1669,15 @@ where
 
         self.touch(key);
         self.entries.get(key)
+    }
+
+    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        if !self.entries.contains_key(key) {
+            return None;
+        }
+
+        self.touch(key);
+        self.entries.get_mut(key)
     }
 
     fn touch(&mut self, key: &K) {
@@ -2502,6 +2650,7 @@ fn unified_syntax_side(kind: DiffLineKind) -> Option<DiffSide> {
     }
 }
 
+#[cfg(test)]
 fn compute_hunk_inline_emphasis(lines: &[DiffLine]) -> Vec<InlineLineEmphasis> {
     let mut emphasis = vec![InlineLineEmphasis::default(); lines.len()];
     let mut index = 0usize;
@@ -2533,6 +2682,7 @@ fn compute_hunk_inline_emphasis(lines: &[DiffLine]) -> Vec<InlineLineEmphasis> {
     emphasis
 }
 
+#[cfg(test)]
 fn compute_changed_block_inline_emphasis(
     lines: &[DiffLine],
     deletions: &[usize],
@@ -2604,6 +2754,10 @@ enum InlineCharClass {
 }
 
 fn inline_tokens(text: &str) -> Vec<InlineToken> {
+    if text.is_ascii() {
+        return inline_tokens_ascii(text);
+    }
+
     let mut tokens = Vec::new();
     let mut chars = text.char_indices().peekable();
 
@@ -2630,6 +2784,41 @@ fn inline_tokens(text: &str) -> Vec<InlineToken> {
     }
 
     tokens
+}
+
+fn inline_tokens_ascii(text: &str) -> Vec<InlineToken> {
+    let bytes = text.as_bytes();
+    let mut tokens = Vec::new();
+    let mut start = 0usize;
+
+    while start < bytes.len() {
+        let class = inline_ascii_class(bytes[start]);
+        let mut end = start + 1;
+
+        if class != InlineCharClass::Other {
+            while end < bytes.len() && inline_ascii_class(bytes[end]) == class {
+                end += 1;
+            }
+        }
+
+        tokens.push(InlineToken {
+            byte_start: start,
+            byte_end: end,
+        });
+        start = end;
+    }
+
+    tokens
+}
+
+fn inline_ascii_class(byte: u8) -> InlineCharClass {
+    if byte.is_ascii_whitespace() || byte == 0x0B {
+        InlineCharClass::Whitespace
+    } else if byte == b'_' || byte.is_ascii_alphanumeric() {
+        InlineCharClass::Word
+    } else {
+        InlineCharClass::Other
+    }
 }
 
 fn inline_char_class(ch: char) -> InlineCharClass {
@@ -3160,9 +3349,32 @@ struct UiModel {
 
 impl UiModel {
     fn new(changeset: &Changeset, layout: DiffLayoutMode) -> Self {
-        let mut rows = Vec::new();
+        let total_hunks = changeset
+            .files
+            .iter()
+            .map(|file| file.hunks.len())
+            .sum::<usize>();
+        let total_hunk_lines = changeset
+            .files
+            .iter()
+            .flat_map(|file| file.hunks.iter())
+            .map(|hunk| hunk.lines.len())
+            .sum::<usize>();
+        let binary_or_empty_rows = changeset
+            .files
+            .iter()
+            .filter(|file| file.is_binary || file.hunks.is_empty())
+            .count();
+        let mut rows = Vec::with_capacity(
+            changeset
+                .files
+                .len()
+                .saturating_add(binary_or_empty_rows)
+                .saturating_add(total_hunks.saturating_mul(2))
+                .saturating_add(total_hunk_lines),
+        );
         let mut file_start_rows = Vec::with_capacity(changeset.files.len());
-        let mut hunk_start_rows = Vec::new();
+        let mut hunk_start_rows = Vec::with_capacity(total_hunks);
 
         for (file_index, file) in changeset.files.iter().enumerate() {
             file_start_rows.push(rows.len());
@@ -3543,7 +3755,7 @@ struct DiffApp {
     theme: DiffTheme,
     syntax_limits: SyntaxLimits,
     syntax: Option<SyntaxRuntime>,
-    inline_cache: LruCache<InlineHunkKey, Vec<InlineLineEmphasis>>,
+    inline_cache: LruCache<InlineHunkKey, InlineHunkEmphasisCache>,
     generation: u64,
     dirty: bool,
 }
@@ -4569,20 +4781,29 @@ impl DiffApp {
             hunk,
         };
         if !self.inline_cache.contains_key(&key) {
-            let emphasis = self
+            let cache = self
                 .changeset
                 .files
                 .get(file)
                 .and_then(|file_diff| file_diff.hunks.get(hunk))
-                .map(|hunk_diff| compute_hunk_inline_emphasis(&hunk_diff.lines))
-                .unwrap_or_default();
-            self.inline_cache.insert(key, emphasis);
+                .map(|hunk_diff| InlineHunkEmphasisCache::new(&hunk_diff.lines))
+                .unwrap_or_else(|| InlineHunkEmphasisCache::new(&[]));
+            self.inline_cache.insert(key, cache);
         }
 
+        let Some(lines) = self
+            .changeset
+            .files
+            .get(file)
+            .and_then(|file_diff| file_diff.hunks.get(hunk))
+            .map(|hunk_diff| hunk_diff.lines.as_slice())
+        else {
+            return Vec::new();
+        };
+
         self.inline_cache
-            .get(&key)
-            .and_then(|hunk_emphasis| hunk_emphasis.get(line))
-            .map(|line_emphasis| line_emphasis.ranges.clone())
+            .get_mut(&key)
+            .map(|hunk_emphasis| hunk_emphasis.ranges_for_line(lines, line))
             .unwrap_or_default()
     }
 
@@ -5786,15 +6007,29 @@ fn fit_padded(text: &str, width: usize) -> String {
 }
 
 fn fit_padded_from(text: &str, horizontal_scroll: usize, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
     let visible = if horizontal_scroll > 0 {
         skip_display_prefix(text, horizontal_scroll).0
     } else {
         text
     };
+    if is_single_width_ascii(visible) {
+        let used = visible.len().min(width);
+        let mut out = String::with_capacity(width);
+        out.push_str(&visible[..used]);
+        if used < width {
+            out.extend(std::iter::repeat_n(' ', width - used));
+        }
+        return out;
+    }
+
     let mut out = fit(visible, width);
     let len = UnicodeWidthStr::width(out.as_str());
     if len < width {
-        out.push_str(&" ".repeat(width - len));
+        out.reserve(width - len);
+        out.extend(std::iter::repeat_n(' ', width - len));
     }
     out
 }
@@ -5802,6 +6037,10 @@ fn fit_padded_from(text: &str, horizontal_scroll: usize, width: usize) -> String
 fn skip_display_prefix(text: &str, columns: usize) -> (&str, usize) {
     if columns == 0 {
         return (text, 0);
+    }
+    if is_single_width_ascii(text) {
+        let skipped = columns.min(text.len());
+        return (&text[skipped..], skipped);
     }
 
     let mut skipped = 0usize;
@@ -5841,6 +6080,10 @@ fn fit(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
+    if is_single_width_ascii(text) {
+        return text[..text.len().min(width)].to_owned();
+    }
+
     let mut out = String::new();
     let mut used = 0;
     for ch in text.chars() {
@@ -5852,6 +6095,10 @@ fn fit(text: &str, width: usize) -> String {
         out.push(ch);
     }
     out
+}
+
+fn is_single_width_ascii(text: &str) -> bool {
+    text.bytes().all(|byte| (b' '..=b'~').contains(&byte))
 }
 
 #[cfg(test)]
@@ -6305,6 +6552,7 @@ mod tests {
         assert_eq!(fit("界a", 2), "界");
         assert_eq!(fit_padded("e\u{301}", 2), "e\u{301} ");
         assert_eq!(fit_padded_from("abcdef", 2, 3), "cde");
+        assert_eq!(skip_display_prefix("abcdef", 2), ("cdef", 2));
         assert_eq!(skip_display_prefix("e\u{301}f", 1), ("f", 1));
         assert_eq!(right_aligned("界", "x", 5), "界  x");
     }
@@ -6655,6 +6903,91 @@ base0F = "ffffff"
         let emphasis = compute_hunk_inline_emphasis(&lines);
 
         assert!(emphasis[0].ranges.is_empty());
+    }
+
+    #[test]
+    fn lazy_inline_emphasis_matches_eager_emphasis() {
+        let lines = vec![
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(1),
+                new_line: None,
+                text: "let count = 1;".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(1),
+                text: "let total = 2;".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(2),
+                new_line: None,
+                text: "removed only".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Context,
+                old_line: Some(3),
+                new_line: Some(2),
+                text: "context".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(3),
+                text: "added only".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(4),
+                new_line: None,
+                text: "alpha beta".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(5),
+                new_line: None,
+                text: "gamma".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(4),
+                text: "alpha zeta".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(5),
+                text: "delta".to_owned(),
+            },
+        ];
+        let expected = compute_hunk_inline_emphasis(&lines);
+        let mut cache = InlineHunkEmphasisCache::new(&lines);
+
+        for index in [7, 5, 2, 4, 0, 1, 8, 6, 3] {
+            assert_eq!(
+                cache.ranges_for_line(&lines, index),
+                expected[index].ranges,
+                "lazy emphasis should match eager emphasis for line {index}"
+            );
+            assert_eq!(
+                cache.ranges_for_line(&lines, index),
+                expected[index].ranges,
+                "cached emphasis should be stable for line {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_ascii_tokenizer_treats_vertical_tab_as_whitespace() {
+        let tokens = inline_tokens("a \x0B\tb");
+
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[1].byte_start, 1);
+        assert_eq!(tokens[1].byte_end, 4);
+        assert_eq!(inline_ascii_class(0x0B), InlineCharClass::Whitespace);
     }
 
     #[test]

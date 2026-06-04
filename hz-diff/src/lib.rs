@@ -795,7 +795,7 @@ impl DiffHunkBuilder {
             new_line: new_start,
             additions: 0,
             deletions: 0,
-            lines: Vec::new(),
+            lines: Vec::with_capacity(old_count.saturating_add(new_count)),
         }
     }
 
