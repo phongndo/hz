@@ -2812,7 +2812,7 @@ fn inline_tokens_ascii(text: &str) -> Vec<InlineToken> {
 }
 
 fn inline_ascii_class(byte: u8) -> InlineCharClass {
-    if byte.is_ascii_whitespace() {
+    if byte.is_ascii_whitespace() || byte == 0x0B {
         InlineCharClass::Whitespace
     } else if byte == b'_' || byte.is_ascii_alphanumeric() {
         InlineCharClass::Word
@@ -3370,7 +3370,7 @@ impl UiModel {
                 .files
                 .len()
                 .saturating_add(binary_or_empty_rows)
-                .saturating_add(total_hunks)
+                .saturating_add(total_hunks.saturating_mul(2))
                 .saturating_add(total_hunk_lines),
         );
         let mut file_start_rows = Vec::with_capacity(changeset.files.len());
@@ -6038,6 +6038,10 @@ fn skip_display_prefix(text: &str, columns: usize) -> (&str, usize) {
     if columns == 0 {
         return (text, 0);
     }
+    if is_single_width_ascii(text) {
+        let skipped = columns.min(text.len());
+        return (&text[skipped..], skipped);
+    }
 
     let mut skipped = 0usize;
     let mut byte_index = 0usize;
@@ -6548,6 +6552,7 @@ mod tests {
         assert_eq!(fit("界a", 2), "界");
         assert_eq!(fit_padded("e\u{301}", 2), "e\u{301} ");
         assert_eq!(fit_padded_from("abcdef", 2, 3), "cde");
+        assert_eq!(skip_display_prefix("abcdef", 2), ("cdef", 2));
         assert_eq!(skip_display_prefix("e\u{301}f", 1), ("f", 1));
         assert_eq!(right_aligned("界", "x", 5), "界  x");
     }
@@ -6898,6 +6903,91 @@ base0F = "ffffff"
         let emphasis = compute_hunk_inline_emphasis(&lines);
 
         assert!(emphasis[0].ranges.is_empty());
+    }
+
+    #[test]
+    fn lazy_inline_emphasis_matches_eager_emphasis() {
+        let lines = vec![
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(1),
+                new_line: None,
+                text: "let count = 1;".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(1),
+                text: "let total = 2;".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(2),
+                new_line: None,
+                text: "removed only".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Context,
+                old_line: Some(3),
+                new_line: Some(2),
+                text: "context".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(3),
+                text: "added only".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(4),
+                new_line: None,
+                text: "alpha beta".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Deletion,
+                old_line: Some(5),
+                new_line: None,
+                text: "gamma".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(4),
+                text: "alpha zeta".to_owned(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(5),
+                text: "delta".to_owned(),
+            },
+        ];
+        let expected = compute_hunk_inline_emphasis(&lines);
+        let mut cache = InlineHunkEmphasisCache::new(&lines);
+
+        for index in [7, 5, 2, 4, 0, 1, 8, 6, 3] {
+            assert_eq!(
+                cache.ranges_for_line(&lines, index),
+                expected[index].ranges,
+                "lazy emphasis should match eager emphasis for line {index}"
+            );
+            assert_eq!(
+                cache.ranges_for_line(&lines, index),
+                expected[index].ranges,
+                "cached emphasis should be stable for line {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_ascii_tokenizer_treats_vertical_tab_as_whitespace() {
+        let tokens = inline_tokens("a \x0B\tb");
+
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[1].byte_start, 1);
+        assert_eq!(tokens[1].byte_end, 4);
+        assert_eq!(inline_ascii_class(0x0B), InlineCharClass::Whitespace);
     }
 
     #[test]
