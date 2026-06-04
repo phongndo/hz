@@ -68,6 +68,8 @@ const MAX_INLINE_DIFF_TOKENS: usize = 256;
 const MAX_INLINE_DIFF_CACHE_ENTRIES: usize = 512;
 const MAX_BRANCH_MENU_ROWS: usize = 10;
 const BRANCH_COMPARISON_SEPARATOR: &str = " → ";
+const CURRENT_BRANCH_MARKER: &str = "●";
+const BASE_BRANCH_MARKER: &str = "⌂";
 
 fn line_gutter_fg(kind: DiffLineKind, theme: DiffTheme) -> Color {
     match kind {
@@ -3591,7 +3593,11 @@ impl DiffApp {
         let branch_head = branch_head_from_options(&options, current_head.as_deref());
         let comparison_branches = comparison_branches(
             &changeset.repo,
-            &[branch_head.as_deref(), branch_base.as_deref()],
+            &[
+                current_head.as_deref(),
+                branch_head.as_deref(),
+                branch_base.as_deref(),
+            ],
         );
         let (settings, mut notice) = load_syntax_settings_for_diff(matches!(
             syntax_mode,
@@ -4067,19 +4073,20 @@ impl DiffApp {
     }
 
     fn branch_pin_rank(&self, menu: BranchMenu, branch: &str) -> usize {
-        let current = self.branch_head.as_deref().or(self.current_head.as_deref());
+        let current = self.current_head.as_deref();
+        let base = self.branch_base.as_deref();
         match menu {
             BranchMenu::Head => {
                 if current == Some(branch) {
                     0
-                } else if branch == "origin/main" {
+                } else if base == Some(branch) {
                     1
                 } else {
                     2
                 }
             }
             BranchMenu::Base => {
-                if branch == "origin/main" {
+                if base == Some(branch) {
                     0
                 } else if current == Some(branch) {
                     1
@@ -4149,12 +4156,45 @@ impl DiffApp {
 
     fn branch_selector_text(&self, menu: BranchMenu) -> Option<String> {
         let branch = self.branch_ref(menu)?;
+        let label = self.branch_label(menu, branch);
         if self.branch_menu_open == Some(menu) {
-            let width = branch.width().max(self.branch_menu_input.width());
+            let width = label.width().max(self.branch_menu_input.width());
             return Some(format!("{} ▾", fit_padded(&self.branch_menu_input, width)));
         }
 
-        Some(format!("{branch} ▾"))
+        Some(format!("{label} ▾"))
+    }
+
+    fn branch_label(&self, menu: BranchMenu, branch: &str) -> String {
+        match self.branch_marker(menu, branch) {
+            Some(marker) => format!("{marker} {branch}"),
+            None => branch.to_owned(),
+        }
+    }
+
+    fn branch_marker(&self, menu: BranchMenu, branch: &str) -> Option<&'static str> {
+        let current = self.current_head.as_deref();
+        let base = self.branch_base.as_deref();
+        match menu {
+            BranchMenu::Head => {
+                if current == Some(branch) {
+                    Some(CURRENT_BRANCH_MARKER)
+                } else if base == Some(branch) {
+                    Some(BASE_BRANCH_MARKER)
+                } else {
+                    None
+                }
+            }
+            BranchMenu::Base => {
+                if base == Some(branch) {
+                    Some(BASE_BRANCH_MARKER)
+                } else if current == Some(branch) {
+                    Some(CURRENT_BRANCH_MARKER)
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     fn branch_selector_width(&self, menu: BranchMenu) -> Option<u16> {
@@ -4164,7 +4204,7 @@ impl DiffApp {
 
     fn branch_menu_width(&self) -> u16 {
         let branch_width = branch_menu_width(&self.comparison_branches) as usize;
-        let input_width = self.branch_menu_input.width().saturating_add(4).max(20);
+        let input_width = self.branch_menu_input.width().saturating_add(6).max(20);
         branch_width.max(input_width) as u16
     }
 
@@ -4624,7 +4664,11 @@ impl DiffApp {
             .or_else(|| self.current_head.clone());
         self.comparison_branches = comparison_branches(
             &changeset.repo,
-            &[self.branch_head.as_deref(), self.branch_base.as_deref()],
+            &[
+                self.current_head.as_deref(),
+                self.branch_head.as_deref(),
+                self.branch_base.as_deref(),
+            ],
         );
         self.branch_menu_scroll = self.branch_menu_scroll.min(self.max_branch_menu_scroll());
         self.stats = changeset.stats();
@@ -4844,7 +4888,11 @@ fn draw_branch_menu(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
                 } else {
                     " "
                 };
-                let text = fit_padded(&format!(" {marker} {branch}"), width as usize);
+                let branch_marker = app.branch_marker(menu, branch).unwrap_or(" ");
+                let text = fit_padded(
+                    &format!(" {marker} {branch_marker} {branch}"),
+                    width as usize,
+                );
                 let mut style = if active || highlighted {
                     Style::default()
                         .fg(app.theme.header)
@@ -4933,7 +4981,7 @@ fn diff_menu_width(choices: &[DiffChoice]) -> u16 {
 fn branch_menu_width(branches: &[String]) -> u16 {
     branches
         .iter()
-        .map(|branch| branch.width() + 4)
+        .map(|branch| branch.width() + 6)
         .max()
         .unwrap_or_default() as u16
 }
@@ -5824,14 +5872,15 @@ mod tests {
         );
         app.branch_head = Some("feature/ui".to_owned());
         app.branch_base = Some("origin/main".to_owned());
+        app.current_head = Some("feature/ui".to_owned());
 
         assert_eq!(
             app.branch_selector_text(BranchMenu::Head).as_deref(),
-            Some("feature/ui ▾")
+            Some("● feature/ui ▾")
         );
         assert_eq!(
             app.branch_selector_text(BranchMenu::Base).as_deref(),
-            Some("origin/main ▾")
+            Some("⌂ origin/main ▾")
         );
         assert_eq!(
             app.branch_selector_at(diff_selector_width(&app.options)),
@@ -5840,16 +5889,16 @@ mod tests {
 
         app.toggle_branch_menu(BranchMenu::Head);
         let empty_input = app.branch_selector_text(BranchMenu::Head).unwrap();
-        assert_eq!(empty_input.width(), "feature/ui ▾".width());
+        assert_eq!(empty_input.width(), "● feature/ui ▾".width());
         assert!(empty_input.trim_start().starts_with('▾'));
         app.push_branch_input('f');
         let typed_input = app.branch_selector_text(BranchMenu::Head).unwrap();
-        assert_eq!(typed_input.width(), "feature/ui ▾".width());
+        assert_eq!(typed_input.width(), "● feature/ui ▾".width());
         assert!(typed_input.starts_with('f'));
         app.close_branch_menu();
         assert_eq!(
             app.branch_selector_text(BranchMenu::Head).as_deref(),
-            Some("feature/ui ▾")
+            Some("● feature/ui ▾")
         );
     }
 
@@ -5924,9 +5973,9 @@ mod tests {
     }
 
     #[test]
-    fn branch_combo_pins_origin_main_and_current_head_before_recent_order() {
+    fn branch_combo_pins_current_head_and_base_before_recent_order() {
         let options = DiffOptions {
-            source: DiffSource::Base("origin/main".to_owned()),
+            source: DiffSource::Base("release".to_owned()),
             ..DiffOptions::default()
         };
         let mut app = DiffApp::new(
@@ -5936,23 +5985,25 @@ mod tests {
         );
         app.branch_head = Some("feature/header".to_owned());
         app.current_head = Some("feature/header".to_owned());
+        app.branch_base = Some("release".to_owned());
         app.comparison_branches = vec![
             "recent".to_owned(),
             "old".to_owned(),
             "origin/main".to_owned(),
+            "release".to_owned(),
             "feature/header".to_owned(),
         ];
 
         app.branch_menu_open = Some(BranchMenu::Base);
         assert_eq!(
             app.filtered_branches(),
-            vec!["origin/main", "feature/header", "recent", "old"]
+            vec!["release", "feature/header", "recent", "old", "origin/main"]
         );
 
         app.branch_menu_open = Some(BranchMenu::Head);
         assert_eq!(
             app.filtered_branches(),
-            vec!["feature/header", "origin/main", "recent", "old"]
+            vec!["feature/header", "release", "recent", "old", "origin/main"]
         );
     }
 
