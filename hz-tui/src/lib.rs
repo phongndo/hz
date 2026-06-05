@@ -68,6 +68,9 @@ const MAX_INLINE_DIFF_LINE_BYTES: usize = 4 * 1024;
 const MAX_INLINE_DIFF_TOKENS: usize = 256;
 const MAX_INLINE_DIFF_CACHE_ENTRIES: usize = 512;
 const MAX_BRANCH_MENU_ROWS: usize = 10;
+const FILE_SIDEBAR_MIN_WIDTH: u16 = 20;
+const FILE_SIDEBAR_MAX_WIDTH: u16 = 40;
+const FILE_SIDEBAR_MIN_DIFF_WIDTH: u16 = 30;
 const BRANCH_COMPARISON_SEPARATOR: &str = " → ";
 const CURRENT_BRANCH_MARKER: &str = "●";
 const BASE_BRANCH_MARKER: &str = "⌂";
@@ -3740,6 +3743,9 @@ struct DiffApp {
     viewport_width: usize,
     max_line_width: usize,
     selected_file: usize,
+    file_sidebar_open: bool,
+    file_sidebar_scroll: usize,
+    file_sidebar_render_width: u16,
     diff_menu_open: bool,
     branch_menu_open: Option<BranchMenu>,
     branch_menu_input: String,
@@ -3854,6 +3860,9 @@ impl DiffApp {
             viewport_width: 1,
             max_line_width,
             selected_file: 0,
+            file_sidebar_open: false,
+            file_sidebar_scroll: 0,
+            file_sidebar_render_width: 0,
             diff_menu_open: false,
             branch_menu_open: None,
             branch_menu_input: String::new(),
@@ -3970,6 +3979,7 @@ impl DiffApp {
             KeyCode::End | KeyCode::Char('G') => self.set_scroll(self.max_scroll()),
             KeyCode::Char('n') | KeyCode::Char('J') => self.move_file(1),
             KeyCode::Char('p') | KeyCode::Char('K') => self.move_file(-1),
+            KeyCode::Char('b') => self.toggle_file_sidebar(),
             KeyCode::Char(']') => self.next_hunk(),
             KeyCode::Char('[') => self.previous_hunk(),
             KeyCode::Char('s') => self.toggle_layout(),
@@ -4019,26 +4029,51 @@ impl DiffApp {
                 self.handle_click(mouse.column, mouse.row);
             }
             MouseEventKind::ScrollDown => {
+                if self.is_file_sidebar_position(mouse.column, mouse.row) {
+                    self.mouse_scroll.reset();
+                    self.scroll_file_sidebar_by(1);
+                    return Ok(());
+                }
                 let delta = self
                     .mouse_scroll
                     .scroll_delta(MouseScrollDirection::Down, Instant::now());
                 self.scroll_by(delta);
             }
             MouseEventKind::ScrollUp => {
+                if self.is_file_sidebar_position(mouse.column, mouse.row) {
+                    self.mouse_scroll.reset();
+                    self.scroll_file_sidebar_by(-1);
+                    return Ok(());
+                }
                 let delta = self
                     .mouse_scroll
                     .scroll_delta(MouseScrollDirection::Up, Instant::now());
                 self.scroll_by(delta);
             }
             MouseEventKind::ScrollLeft => {
+                if self.is_file_sidebar_position(mouse.column, mouse.row) {
+                    self.mouse_scroll.reset();
+                    return Ok(());
+                }
                 self.scroll_horizontally_by(-(HORIZONTAL_SCROLL_STEP as isize));
             }
             MouseEventKind::ScrollRight => {
+                if self.is_file_sidebar_position(mouse.column, mouse.row) {
+                    self.mouse_scroll.reset();
+                    return Ok(());
+                }
                 self.scroll_horizontally_by(HORIZONTAL_SCROLL_STEP as isize);
             }
             _ => {}
         }
         Ok(())
+    }
+
+    fn is_file_sidebar_position(&self, column: u16, row: u16) -> bool {
+        self.file_sidebar_open
+            && self.file_sidebar_render_width > 0
+            && column < self.file_sidebar_render_width
+            && row > 0
     }
 
     fn handle_click(&mut self, column: u16, row: u16) {
@@ -4093,7 +4128,25 @@ impl DiffApp {
             self.toggle_diff_menu();
         } else if let Some(menu) = clicked_branch_selector {
             self.toggle_branch_menu(menu);
+        } else {
+            self.handle_file_sidebar_click(column, row);
         }
+    }
+
+    fn handle_file_sidebar_click(&mut self, column: u16, row: u16) -> bool {
+        if !self.is_file_sidebar_position(column, row) {
+            return false;
+        }
+
+        let file = self
+            .file_sidebar_scroll
+            .saturating_add(usize::from(row - 1));
+        if file >= self.changeset.files.len() {
+            return false;
+        }
+
+        self.select_file(file);
+        true
     }
 
     fn toggle_diff_menu(&mut self) {
@@ -4611,6 +4664,7 @@ impl DiffApp {
 
         self.viewport_rows = rows;
         self.set_scroll(self.scroll);
+        self.clamp_file_sidebar_scroll(self.visible_file_sidebar_rows());
     }
 
     fn set_viewport_width(&mut self, width: usize) {
@@ -4621,6 +4675,31 @@ impl DiffApp {
 
         self.viewport_width = width;
         self.set_horizontal_scroll(self.horizontal_scroll);
+    }
+
+    fn scroll_file_sidebar_by(&mut self, delta: isize) {
+        let next = if delta < 0 {
+            self.file_sidebar_scroll
+                .saturating_sub(delta.unsigned_abs())
+        } else {
+            self.file_sidebar_scroll.saturating_add(delta as usize)
+        };
+        self.set_file_sidebar_scroll(next);
+    }
+
+    fn set_file_sidebar_scroll(&mut self, scroll: usize) {
+        let previous_scroll = self.file_sidebar_scroll;
+        self.file_sidebar_scroll =
+            scroll.min(self.max_file_sidebar_scroll(self.visible_file_sidebar_rows()));
+        if self.file_sidebar_scroll != previous_scroll {
+            self.dirty = true;
+        }
+    }
+
+    fn clamp_file_sidebar_scroll(&mut self, visible_rows: usize) {
+        self.file_sidebar_scroll = self
+            .file_sidebar_scroll
+            .min(self.max_file_sidebar_scroll(visible_rows));
     }
 
     fn prepare_syntax_for_viewport(&mut self, visible_rows: usize) {
@@ -4819,12 +4898,65 @@ impl DiffApp {
         }
         .min(self.changeset.files.len() - 1);
 
+        self.select_file(next);
+    }
+
+    fn select_file(&mut self, file: usize) {
+        if self.changeset.files.is_empty() {
+            return;
+        }
+
+        let next = file.min(self.changeset.files.len() - 1);
         self.selected_file = next;
         if let Some(row) = self.model.file_start_row(next) {
             self.set_scroll(row);
         } else {
             self.dirty = true;
         }
+        self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
+    }
+
+    fn toggle_file_sidebar(&mut self) {
+        self.file_sidebar_open = !self.file_sidebar_open;
+        self.diff_menu_open = false;
+        self.close_branch_menu();
+        self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
+        self.set_notice(if self.file_sidebar_open {
+            "file sidebar"
+        } else {
+            "diff only"
+        });
+    }
+
+    fn visible_file_sidebar_rows(&self) -> usize {
+        self.viewport_rows
+    }
+
+    fn ensure_file_sidebar_selection_visible(&mut self, visible_rows: usize) {
+        if self.changeset.files.is_empty() || visible_rows == 0 {
+            self.file_sidebar_scroll = 0;
+            return;
+        }
+
+        if self.selected_file < self.file_sidebar_scroll {
+            self.file_sidebar_scroll = self.selected_file;
+        } else if self.selected_file >= self.file_sidebar_scroll.saturating_add(visible_rows) {
+            self.file_sidebar_scroll = self
+                .selected_file
+                .saturating_add(1)
+                .saturating_sub(visible_rows);
+        }
+
+        self.file_sidebar_scroll = self
+            .file_sidebar_scroll
+            .min(self.max_file_sidebar_scroll(visible_rows));
+    }
+
+    fn max_file_sidebar_scroll(&self, visible_rows: usize) -> usize {
+        self.changeset
+            .files
+            .len()
+            .saturating_sub(visible_rows.max(1))
     }
 
     fn next_hunk(&mut self) {
@@ -4951,6 +5083,7 @@ impl DiffApp {
             .unwrap_or_default();
         self.set_scroll(scroll);
         self.set_horizontal_scroll(self.horizontal_scroll);
+        self.clamp_file_sidebar_scroll(self.visible_file_sidebar_rows());
         if let Some(notice) = notice {
             self.set_notice(notice);
         }
@@ -5002,11 +5135,34 @@ fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(area);
+    let sidebar_width = file_sidebar_width(app, vertical[1].width);
+    app.file_sidebar_render_width = sidebar_width;
+    let (sidebar_area, diff_area) = if sidebar_width > 0 {
+        (
+            Some(Rect {
+                x: vertical[1].x,
+                y: vertical[1].y,
+                width: sidebar_width,
+                height: vertical[1].height,
+            }),
+            Rect {
+                x: vertical[1].x.saturating_add(sidebar_width),
+                y: vertical[1].y,
+                width: vertical[1].width.saturating_sub(sidebar_width),
+                height: vertical[1].height,
+            },
+        )
+    } else {
+        (None, vertical[1])
+    };
 
-    app.set_viewport_rows(vertical[1].height as usize);
-    app.set_viewport_width(vertical[1].width as usize);
+    app.set_viewport_rows(diff_area.height as usize);
+    app.set_viewport_width(diff_area.width as usize);
     draw_header(frame, app, vertical[0]);
-    draw_diff(frame, app, vertical[1]);
+    if let Some(sidebar_area) = sidebar_area {
+        draw_file_sidebar(frame, app, sidebar_area);
+    }
+    draw_diff(frame, app, diff_area);
     draw_diff_menu(frame, app, area);
     draw_branch_menu(frame, app, area);
 }
@@ -5285,6 +5441,243 @@ fn branch_menu_width(branches: &[String]) -> u16 {
         .map(|branch| branch.width() + 6)
         .max()
         .unwrap_or_default() as u16
+}
+
+fn file_sidebar_width(app: &DiffApp, area_width: u16) -> u16 {
+    if !app.file_sidebar_open {
+        return 0;
+    }
+
+    let max_width = area_width.saturating_sub(FILE_SIDEBAR_MIN_DIFF_WIDTH);
+    if max_width < FILE_SIDEBAR_MIN_WIDTH {
+        return 0;
+    }
+
+    file_sidebar_desired_width(app).min(max_width)
+}
+
+fn file_sidebar_desired_width(app: &DiffApp) -> u16 {
+    let content_width = app
+        .changeset
+        .files
+        .iter()
+        .map(|file| {
+            let stats = file_sidebar_stats(file);
+            let stats_width = if stats.is_empty() {
+                0
+            } else {
+                stats.width().saturating_add(2)
+            };
+            status_code(file.status)
+                .width()
+                .saturating_add(2)
+                .saturating_add(file.display_path().width())
+                .saturating_add(stats_width)
+        })
+        .max()
+        .unwrap_or_else(|| " Files".width());
+    let desired = content_width.saturating_add(1).min(usize::from(u16::MAX)) as u16;
+    desired.clamp(FILE_SIDEBAR_MIN_WIDTH, FILE_SIDEBAR_MAX_WIDTH)
+}
+
+fn draw_file_sidebar(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    app.clamp_file_sidebar_scroll(area.height as usize);
+    frame.render_widget(
+        Paragraph::new(Text::from(file_sidebar_lines(
+            app,
+            area.width as usize,
+            area.height as usize,
+        )))
+        .style(Style::default().bg(base_bg(app.theme))),
+        area,
+    );
+}
+
+fn file_sidebar_lines(app: &DiffApp, width: usize, height: usize) -> Vec<Line<'static>> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+
+    let theme = app.theme;
+    let mut lines = Vec::with_capacity(height);
+    let visible_files = height;
+    let content_width = width.saturating_sub(1);
+    for file_index in app.file_sidebar_scroll..app.file_sidebar_scroll.saturating_add(visible_files)
+    {
+        let Some(file) = app.changeset.files.get(file_index) else {
+            lines.push(file_sidebar_line(
+                "",
+                Style::default().bg(base_bg(theme)),
+                width,
+                theme,
+            ));
+            continue;
+        };
+
+        lines.push(file_sidebar_entry_line(
+            file,
+            file_index == app.selected_file,
+            content_width,
+            theme,
+        ));
+    }
+
+    lines
+}
+
+fn file_sidebar_entry_line(
+    file: &hz_diff::DiffFile,
+    selected: bool,
+    content_width: usize,
+    theme: DiffTheme,
+) -> Line<'static> {
+    let width = content_width.saturating_add(1);
+    if width == 0 {
+        return Line::default();
+    }
+
+    let bg = if selected {
+        header_bg(theme)
+    } else {
+        base_bg(theme)
+    };
+    let mut base_style = file_sidebar_style(file.status, theme).bg(bg);
+    if selected {
+        base_style = Style::default()
+            .fg(theme.header)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD);
+    }
+
+    if file.is_binary || (file.additions == 0 && file.deletions == 0) {
+        let text = file_sidebar_entry(file, content_width);
+        return file_sidebar_line(&text, base_style, width, theme);
+    }
+
+    let left = format!(" {} {}", status_code(file.status), file.display_path());
+    let additions = format!("+{}", file.additions);
+    let deletions = format!("-{}", file.deletions);
+    let stats_width = additions
+        .width()
+        .saturating_add(1)
+        .saturating_add(deletions.width());
+    let gap_width = usize::from(content_width > stats_width);
+    let left_width = content_width
+        .saturating_sub(stats_width)
+        .saturating_sub(gap_width);
+
+    let mut spans = Vec::new();
+    if left_width > 0 {
+        spans.push(Span::styled(fit_padded(&left, left_width), base_style));
+    }
+    if gap_width > 0 {
+        spans.push(Span::styled(" ", base_style));
+    }
+
+    let mut remaining = content_width.saturating_sub(left_width + gap_width);
+    push_sidebar_stat_span(
+        &mut spans,
+        &additions,
+        sidebar_stat_style(theme.addition_fg, selected, bg),
+        &mut remaining,
+    );
+    if remaining > 0 {
+        spans.push(Span::styled(" ", base_style));
+        remaining -= 1;
+    }
+    push_sidebar_stat_span(
+        &mut spans,
+        &deletions,
+        sidebar_stat_style(theme.deletion_fg, selected, bg),
+        &mut remaining,
+    );
+    if remaining > 0 {
+        spans.push(Span::styled(" ".repeat(remaining), base_style));
+    }
+    spans.push(file_sidebar_separator(theme));
+
+    Line::from(spans)
+}
+
+fn push_sidebar_stat_span(
+    spans: &mut Vec<Span<'static>>,
+    text: &str,
+    style: Style,
+    remaining: &mut usize,
+) {
+    if *remaining == 0 {
+        return;
+    }
+
+    let text = fit(text, *remaining);
+    if text.is_empty() {
+        return;
+    }
+
+    *remaining = (*remaining).saturating_sub(text.width());
+    spans.push(Span::styled(text, style));
+}
+
+fn sidebar_stat_style(color: Color, selected: bool, bg: Color) -> Style {
+    let mut style = Style::default().fg(color).bg(bg);
+    if selected {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    style
+}
+
+fn file_sidebar_entry(file: &hz_diff::DiffFile, width: usize) -> String {
+    let left = format!(" {} {}", status_code(file.status), file.display_path());
+    let stats = file_sidebar_stats(file);
+    if stats.is_empty() {
+        fit_padded(&left, width)
+    } else {
+        right_aligned(&left, &stats, width)
+    }
+}
+
+fn file_sidebar_stats(file: &hz_diff::DiffFile) -> String {
+    if file.is_binary {
+        "binary".to_owned()
+    } else if file.additions == 0 && file.deletions == 0 {
+        String::new()
+    } else {
+        format!("+{} -{}", file.additions, file.deletions)
+    }
+}
+
+fn file_sidebar_line(text: &str, style: Style, width: usize, theme: DiffTheme) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+
+    if width == 1 {
+        return Line::from(file_sidebar_separator(theme));
+    }
+
+    Line::from(vec![
+        Span::styled(fit_padded(text, width - 1), style),
+        file_sidebar_separator(theme),
+    ])
+}
+
+fn file_sidebar_separator(theme: DiffTheme) -> Span<'static> {
+    Span::styled("│", Style::default().fg(theme.muted).bg(base_bg(theme)))
+}
+
+fn file_sidebar_style(status: FileStatus, theme: DiffTheme) -> Style {
+    let color = match status {
+        FileStatus::Added | FileStatus::Copied => theme.addition_fg,
+        FileStatus::Deleted => theme.deletion_fg,
+        FileStatus::Renamed | FileStatus::TypeChanged => theme.hunk,
+        FileStatus::Modified => theme.file,
+        FileStatus::Unknown => theme.muted,
+    };
+    Style::default().fg(color)
 }
 
 fn format_count(count: usize) -> String {
@@ -6193,6 +6586,142 @@ mod tests {
         assert_eq!(app.layout, DiffLayoutMode::Split);
         assert!(app.max_horizontal_scroll() < previous_scroll);
         assert_eq!(app.horizontal_scroll, app.max_horizontal_scroll());
+    }
+
+    #[test]
+    fn b_key_toggles_file_sidebar() {
+        let changeset = changeset_with_context_lines(1);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        assert!(!app.file_sidebar_open);
+
+        let should_quit = app
+            .handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
+            .expect("b should be handled");
+        assert!(!should_quit);
+        assert!(app.file_sidebar_open);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
+            .expect("b should be handled");
+        assert!(!app.file_sidebar_open);
+    }
+
+    #[test]
+    fn file_sidebar_tracks_selected_file() {
+        let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.file_sidebar_open = true;
+        app.set_viewport_rows(4);
+
+        app.selected_file = 4;
+        app.ensure_file_sidebar_selection_visible(app.visible_file_sidebar_rows());
+
+        assert_eq!(app.selected_file, 4);
+        assert_eq!(app.file_sidebar_scroll, 1);
+
+        app.selected_file = 1;
+        app.ensure_file_sidebar_selection_visible(app.visible_file_sidebar_rows());
+
+        assert_eq!(app.selected_file, 1);
+        assert_eq!(app.file_sidebar_scroll, 1);
+    }
+
+    #[test]
+    fn diff_scroll_does_not_move_file_sidebar_scroll() {
+        let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.file_sidebar_open = true;
+        app.set_viewport_rows(4);
+        app.set_file_sidebar_scroll(1);
+
+        app.set_scroll(0);
+
+        assert_eq!(app.selected_file, 0);
+        assert_eq!(app.file_sidebar_scroll, 1);
+    }
+
+    #[test]
+    fn mouse_wheel_over_file_sidebar_scrolls_sidebar_only() {
+        let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.file_sidebar_open = true;
+        app.file_sidebar_render_width = 20;
+        app.set_viewport_rows(4);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("sidebar scroll should be handled");
+
+        assert_eq!(app.scroll, 0);
+        assert_eq!(app.file_sidebar_scroll, 1);
+    }
+
+    #[test]
+    fn horizontal_mouse_wheel_over_file_sidebar_is_ignored() {
+        let changeset = changeset_with_line_text("abcdefghijkl");
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.file_sidebar_open = true;
+        app.file_sidebar_render_width = 20;
+        app.set_viewport_width(18);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollRight,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("sidebar horizontal scroll should be ignored");
+
+        assert_eq!(app.horizontal_scroll, 0);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollRight,
+            column: 21,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("diff horizontal scroll should still work");
+
+        assert_eq!(app.horizontal_scroll, HORIZONTAL_SCROLL_STEP);
+    }
+
+    #[test]
+    fn file_sidebar_renders_changed_file_summary() {
+        let mut changeset = changeset_with_files(&["src/lib.rs", "README.md"]);
+        changeset.files[1].status = FileStatus::Added;
+        changeset.files[1].additions = 12;
+        changeset.files[1].deletions = 0;
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.file_sidebar_open = true;
+        app.selected_file = 1;
+
+        let lines = file_sidebar_lines(&app, 24, 2);
+        let additions = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "+12")
+            .expect("additions should render as their own span");
+        let deletions = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "-0")
+            .expect("deletions should render as their own span");
+
+        assert!(line_text(&lines[0]).contains(" M src/lib.rs"));
+        assert!(line_text(&lines[1]).contains(" A README.md"));
+        assert!(line_text(&lines[1]).contains("+12 -0"));
+        assert_eq!(additions.style.fg, Some(DiffTheme::default().addition_fg));
+        assert_eq!(deletions.style.fg, Some(DiffTheme::default().deletion_fg));
+        assert!(
+            lines[1].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 
     #[test]
@@ -7605,6 +8134,41 @@ base0F = "ffffff"
                 deletions: 0,
                 is_binary: false,
             }],
+            raw_patch: String::new(),
+        }
+    }
+
+    fn changeset_with_files(paths: &[&str]) -> Changeset {
+        let files = paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| hz_diff::DiffFile {
+                old_path: Some((*path).to_owned()),
+                new_path: Some((*path).to_owned()),
+                status: hz_diff::FileStatus::Modified,
+                hunks: vec![hz_diff::DiffHunk {
+                    header: "@@ -1 +1 @@".to_owned(),
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![DiffLine {
+                        kind: DiffLineKind::Context,
+                        old_line: Some(1),
+                        new_line: Some(1),
+                        text: format!("line {index}"),
+                    }],
+                }],
+                additions: index + 1,
+                deletions: index,
+                is_binary: false,
+            })
+            .collect();
+
+        Changeset {
+            repo: PathBuf::from("/repo"),
+            title: "test".to_owned(),
+            files,
             raw_patch: String::new(),
         }
     }
