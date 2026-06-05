@@ -208,7 +208,7 @@ inline_background = "strong"       # none, subtle, or strong
 sign_style = "bold"                # normal or bold
 
 [limits]
-max_source_kib = 128
+max_source_kib = 1024
 max_line_kib = 8
 cache_entries = 512
 queue_entries = 512

@@ -95,7 +95,7 @@ target/release/hz-bench measure \
 
 Tuned defaults after measurement:
 
-- max hunk bytes: `128 KiB` unchanged; large hunks stay on the cheap fallback path.
+- max source/hunk bytes: `1024 KiB`; large enough for common compiler-sized files while very large hunks stay on the cheap fallback path.
 - max line bytes: `8 KiB` unchanged; minified/generated single-line files stay cheap.
 - cache entries: increased from `256` to `512`; many-small syntax runs can keep all measured hunk sides hot.
 - queue capacity: increased from `128` to `512`; visible plus one viewport prefetch avoids dropped/rejected syntax jobs in the many-small syntax run.

@@ -19,7 +19,7 @@ const COLORSCHEME_DIR: &str = "colorscheme";
 const LANGUAGE_PACK_VERSION: &str = "1.9.0-rc.17";
 const ARTIFACT_SOURCE: &str = "github:kreuzberg-dev/tree-sitter-language-pack";
 
-pub const DEFAULT_MAX_HIGHLIGHT_SOURCE_BYTES: usize = 128 * 1024;
+pub const DEFAULT_MAX_HIGHLIGHT_SOURCE_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_HIGHLIGHT_LINE_BYTES: usize = 8 * 1024;
 pub const DEFAULT_HIGHLIGHT_CACHE_ENTRIES: usize = 512;
 pub const DEFAULT_HIGHLIGHT_QUEUE_ENTRIES: usize = 512;
