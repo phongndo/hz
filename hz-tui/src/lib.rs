@@ -3951,20 +3951,15 @@ impl DiffApp {
 
         self.mouse_scroll.reset();
 
-        if is_plain_char_key(key, '?') {
-            self.toggle_help_menu();
-            return Ok(false);
-        }
-
         if self.help_menu_open {
-            match key.code {
-                KeyCode::Esc => {
-                    self.close_help_menu();
-                    return Ok(false);
-                }
-                KeyCode::Char('q') => return Ok(true),
-                _ => return Ok(false),
+            if key.code == KeyCode::Esc || is_plain_char_key(key, '?') {
+                self.close_help_menu();
+                return Ok(false);
             }
+            if key.code == KeyCode::Char('q') {
+                return Ok(true);
+            }
+            return Ok(false);
         }
 
         if self.branch_menu_open.is_some() {
@@ -4026,6 +4021,11 @@ impl DiffApp {
                 }
                 _ => {}
             }
+        }
+
+        if is_plain_char_key(key, '?') {
+            self.toggle_help_menu();
+            return Ok(false);
         }
 
         if self.diff_menu_open {
@@ -7196,6 +7196,26 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE))
             .expect("? should be handled");
         assert!(!app.help_menu_open);
+    }
+
+    #[test]
+    fn question_mark_key_filters_branch_menu() {
+        let options = DiffOptions {
+            source: DiffSource::Base("main".to_owned()),
+            ..DiffOptions::default()
+        };
+        let changeset = changeset_with_context_lines(1);
+        let mut app = DiffApp::new(options, changeset, DiffLayoutMode::Unified);
+        app.branch_menu_open = Some(BranchMenu::Head);
+        app.comparison_branches = vec!["main".to_owned(), "feature/header".to_owned()];
+
+        let should_quit = app
+            .handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT))
+            .expect("? should be handled by branch filter");
+
+        assert!(!should_quit);
+        assert!(!app.help_menu_open);
+        assert_eq!(app.branch_menu_input, "?");
     }
 
     #[test]
