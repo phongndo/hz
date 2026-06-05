@@ -40,7 +40,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::{Color, Line, Modifier, Span, Style, Text},
-    widgets::{Clear, Paragraph},
+    widgets::{Block, BorderType, Clear, Padding, Paragraph},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -80,6 +80,48 @@ const STATUSLINE_ACCENT_FG: Color = Color::Rgb(0x24, 0x24, 0x2b);
 const STATUSLINE_INFO_BG: Color = Color::Rgb(0x48, 0x49, 0x52);
 const STATUSLINE_INFO_FG: Color = Color::Rgb(0xd7, 0xd6, 0xe8);
 const STATUSLINE_SELECTOR_GAP: &str = " ";
+const HELP_MENU_WIDTH: u16 = 90;
+const HELP_MENU_HORIZONTAL_PADDING: u16 = 2;
+const HELP_MENU_VERTICAL_PADDING: u16 = 1;
+const HELP_MENU_TWO_COLUMN_MIN_WIDTH: usize = 64;
+const HELP_MENU_COLUMN_GAP: usize = 4;
+const HELP_KEY_COLUMN_WIDTH: usize = 17;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HelpMenuRow {
+    Section(&'static str),
+    Binding(&'static str, &'static str),
+}
+
+const HELP_MENU_LEFT_ROWS: &[HelpMenuRow] = &[
+    HelpMenuRow::Section("Global"),
+    HelpMenuRow::Binding("?", "toggle this help"),
+    HelpMenuRow::Binding("q", "quit"),
+    HelpMenuRow::Binding("Ctrl-C", "force quit"),
+    HelpMenuRow::Binding("Esc", "close menu / quit"),
+    HelpMenuRow::Section("Navigate"),
+    HelpMenuRow::Binding("j/k, ↑/↓", "scroll"),
+    HelpMenuRow::Binding("d/u, PgDn/PgUp", "page"),
+    HelpMenuRow::Binding("g/G, Home/End", "top / bottom"),
+    HelpMenuRow::Binding("h/l, ←/→", "horizontal"),
+    HelpMenuRow::Binding("n/p, J/K", "file"),
+    HelpMenuRow::Binding("]/[", "hunk"),
+];
+
+const HELP_MENU_RIGHT_ROWS: &[HelpMenuRow] = &[
+    HelpMenuRow::Section("Actions"),
+    HelpMenuRow::Binding("b", "toggle file sidebar"),
+    HelpMenuRow::Binding("s", "split / unified"),
+    HelpMenuRow::Binding("r", "reload diff"),
+    HelpMenuRow::Section("Branch filter"),
+    HelpMenuRow::Binding("type", "filter branches"),
+    HelpMenuRow::Binding("Enter", "select branch"),
+    HelpMenuRow::Binding("Tab/Shift-Tab", "cycle matches"),
+    HelpMenuRow::Binding("Backspace", "delete char"),
+    HelpMenuRow::Binding("Ctrl-U", "clear filter"),
+    HelpMenuRow::Binding("↑/↓, PgUp/PgDn", "move"),
+    HelpMenuRow::Binding("Home/End", "first / last match"),
+];
 
 fn line_gutter_fg(kind: DiffLineKind, theme: DiffTheme) -> Color {
     match kind {
@@ -3646,6 +3688,12 @@ fn handle_event(app: &mut DiffApp, event: Event) -> HzResult<bool> {
     }
 }
 
+fn is_plain_char_key(key: KeyEvent, character: char) -> bool {
+    key.code == KeyCode::Char(character)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MouseScrollDirection {
     Up,
@@ -3754,6 +3802,7 @@ struct DiffApp {
     file_sidebar_width: Option<u16>,
     file_sidebar_render_width: u16,
     file_sidebar_resizing: bool,
+    help_menu_open: bool,
     diff_menu_open: bool,
     branch_menu_open: Option<BranchMenu>,
     branch_menu_input: String,
@@ -3873,6 +3922,7 @@ impl DiffApp {
             file_sidebar_width: None,
             file_sidebar_render_width: 0,
             file_sidebar_resizing: false,
+            help_menu_open: false,
             diff_menu_open: false,
             branch_menu_open: None,
             branch_menu_input: String::new(),
@@ -3900,6 +3950,22 @@ impl DiffApp {
         }
 
         self.mouse_scroll.reset();
+
+        if is_plain_char_key(key, '?') {
+            self.toggle_help_menu();
+            return Ok(false);
+        }
+
+        if self.help_menu_open {
+            match key.code {
+                KeyCode::Esc => {
+                    self.close_help_menu();
+                    return Ok(false);
+                }
+                KeyCode::Char('q') => return Ok(true),
+                _ => return Ok(false),
+            }
+        }
 
         if self.branch_menu_open.is_some() {
             match key.code {
@@ -4000,6 +4066,18 @@ impl DiffApp {
         Ok(false)
     }
 
+    fn toggle_help_menu(&mut self) {
+        self.help_menu_open = !self.help_menu_open;
+        self.dirty = true;
+    }
+
+    fn close_help_menu(&mut self) {
+        if self.help_menu_open {
+            self.help_menu_open = false;
+            self.dirty = true;
+        }
+    }
+
     fn set_notice(&mut self, text: impl Into<String>) {
         self.notice = Some(Notice {
             text: text.into(),
@@ -4020,6 +4098,14 @@ impl DiffApp {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> HzResult<()> {
+        if self.help_menu_open {
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.close_help_menu();
+            }
+            self.mouse_scroll.reset();
+            return Ok(());
+        }
+
         if self.file_sidebar_resizing {
             match mouse.kind {
                 MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Moved => {
@@ -5233,6 +5319,7 @@ fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
     draw_diff(frame, app, diff_area);
     draw_diff_menu(frame, app, area);
     draw_branch_menu(frame, app, area);
+    draw_help_menu(frame, app, area);
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
@@ -5596,6 +5683,174 @@ fn draw_branch_menu(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
         Paragraph::new(Text::from(lines)).style(Style::default().bg(header_bg(app.theme))),
         menu_area,
     );
+}
+
+fn draw_help_menu(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
+    if !app.help_menu_open || area.width < 4 || area.height < 3 {
+        return;
+    }
+
+    let width = HELP_MENU_WIDTH.min(area.width);
+    let content_width = width
+        .saturating_sub(2)
+        .saturating_sub(HELP_MENU_HORIZONTAL_PADDING.saturating_mul(2))
+        as usize;
+    let desired_height = (help_menu_content_rows(content_width) as u16)
+        .saturating_add(2)
+        .saturating_add(HELP_MENU_VERTICAL_PADDING.saturating_mul(2));
+    let height = desired_height.min(area.height);
+    if height == 0 {
+        return;
+    }
+
+    let menu_area = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+
+    let block = help_menu_block(app.theme);
+    let inner = block.inner(menu_area);
+
+    frame.render_widget(Clear, menu_area);
+    frame.render_widget(block, menu_area);
+    frame.render_widget(
+        Paragraph::new(Text::from(help_menu_lines(
+            inner.width as usize,
+            inner.height as usize,
+            app.theme,
+        )))
+        .style(Style::default().bg(help_menu_bg(app.theme))),
+        inner,
+    );
+}
+
+fn help_menu_block(theme: DiffTheme) -> Block<'static> {
+    let bg = help_menu_bg(theme);
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.muted).bg(bg))
+        .style(Style::default().bg(bg))
+        .padding(Padding::new(
+            HELP_MENU_HORIZONTAL_PADDING,
+            HELP_MENU_HORIZONTAL_PADDING,
+            HELP_MENU_VERTICAL_PADDING,
+            HELP_MENU_VERTICAL_PADDING,
+        ))
+        .title(Line::from(Span::styled(
+            " keybindings ",
+            Style::default()
+                .fg(help_menu_title_color(theme))
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        )))
+}
+
+fn help_menu_bg(theme: DiffTheme) -> Color {
+    base_bg(theme)
+}
+
+fn help_menu_title_color(theme: DiffTheme) -> Color {
+    theme.syntax.keyword.unwrap_or(theme.hunk)
+}
+
+fn help_menu_section_color(theme: DiffTheme) -> Color {
+    theme.syntax.keyword.unwrap_or(theme.hunk)
+}
+
+fn help_menu_key_color(theme: DiffTheme) -> Color {
+    theme.syntax.function.unwrap_or(theme.header)
+}
+
+fn help_menu_description_color(theme: DiffTheme) -> Color {
+    theme.foreground
+}
+
+fn help_menu_lines(width: usize, height: usize, theme: DiffTheme) -> Vec<Line<'static>> {
+    if help_menu_uses_two_columns(width) {
+        return (0..height.min(help_menu_content_rows(width)))
+            .map(|index| help_menu_columns_line(index, width, theme))
+            .collect();
+    }
+
+    HELP_MENU_LEFT_ROWS
+        .iter()
+        .chain(HELP_MENU_RIGHT_ROWS)
+        .take(height)
+        .map(|row| Line::from(help_menu_row_spans(*row, width, theme)))
+        .collect()
+}
+
+fn help_menu_columns_line(index: usize, width: usize, theme: DiffTheme) -> Line<'static> {
+    let gap_width = HELP_MENU_COLUMN_GAP.min(width);
+    let left_width = width.saturating_sub(gap_width) / 2;
+    let right_width = width.saturating_sub(left_width).saturating_sub(gap_width);
+    let bg = help_menu_bg(theme);
+
+    let mut spans = help_menu_row_at(HELP_MENU_LEFT_ROWS, index)
+        .map(|row| help_menu_row_spans(row, left_width, theme))
+        .unwrap_or_else(|| help_menu_empty_spans(left_width, bg));
+    spans.push(Span::styled(" ".repeat(gap_width), Style::default().bg(bg)));
+    spans.extend(
+        help_menu_row_at(HELP_MENU_RIGHT_ROWS, index)
+            .map(|row| help_menu_row_spans(row, right_width, theme))
+            .unwrap_or_else(|| help_menu_empty_spans(right_width, bg)),
+    );
+
+    Line::from(spans)
+}
+
+fn help_menu_row_at(rows: &[HelpMenuRow], index: usize) -> Option<HelpMenuRow> {
+    rows.get(index).copied()
+}
+
+fn help_menu_content_rows(width: usize) -> usize {
+    if help_menu_uses_two_columns(width) {
+        HELP_MENU_LEFT_ROWS.len().max(HELP_MENU_RIGHT_ROWS.len())
+    } else {
+        HELP_MENU_LEFT_ROWS.len() + HELP_MENU_RIGHT_ROWS.len()
+    }
+}
+
+fn help_menu_uses_two_columns(width: usize) -> bool {
+    width >= HELP_MENU_TWO_COLUMN_MIN_WIDTH
+}
+
+fn help_menu_row_spans(row: HelpMenuRow, width: usize, theme: DiffTheme) -> Vec<Span<'static>> {
+    let bg = help_menu_bg(theme);
+    match row {
+        HelpMenuRow::Section(section) => vec![Span::styled(
+            fit_padded(&format!("  {section}"), width),
+            Style::default()
+                .fg(help_menu_section_color(theme))
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        )],
+        HelpMenuRow::Binding(keys, description) => {
+            let key_width = HELP_KEY_COLUMN_WIDTH.min(width);
+            let description_width = width.saturating_sub(key_width);
+            vec![
+                Span::styled(
+                    fit_padded(&format!("  {keys}"), key_width),
+                    Style::default()
+                        .fg(help_menu_key_color(theme))
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    fit_padded(description, description_width),
+                    Style::default()
+                        .fg(help_menu_description_color(theme))
+                        .bg(bg),
+                ),
+            ]
+        }
+    }
+}
+
+fn help_menu_empty_spans(width: usize, bg: Color) -> Vec<Span<'static>> {
+    vec![Span::styled(" ".repeat(width), Style::default().bg(bg))]
 }
 
 fn diff_selector_text(options: &DiffOptions) -> String {
@@ -6923,6 +7178,88 @@ mod tests {
         .expect("drag should no longer resize after sidebar closes");
 
         assert_eq!(app.file_sidebar_width, Some(30));
+    }
+
+    #[test]
+    fn question_mark_key_toggles_help_menu() {
+        let changeset = changeset_with_context_lines(1);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        assert!(!app.help_menu_open);
+
+        let should_quit = app
+            .handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT))
+            .expect("? should be handled");
+        assert!(!should_quit);
+        assert!(app.help_menu_open);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE))
+            .expect("? should be handled");
+        assert!(!app.help_menu_open);
+    }
+
+    #[test]
+    fn help_menu_esc_closes_without_quitting() {
+        let changeset = changeset_with_context_lines(1);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.help_menu_open = true;
+        app.dirty = false;
+
+        let should_quit = app
+            .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .expect("Esc should close help");
+
+        assert!(!should_quit);
+        assert!(!app.help_menu_open);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn help_menu_lines_list_keybindings() {
+        let width = 80;
+        let lines = help_menu_lines(width, help_menu_content_rows(width), DiffTheme::default());
+        let text: Vec<_> = lines.iter().map(line_text).collect();
+
+        assert_eq!(lines.len(), help_menu_content_rows(width));
+        assert!(text.iter().any(|line| line.contains("?")));
+        assert!(text.iter().any(|line| line.contains("q")));
+        assert!(text.iter().any(|line| line.contains("Ctrl-C")));
+        assert!(text.iter().any(|line| line.contains("j/k")));
+        assert!(text.iter().any(|line| line.contains("n/p")));
+        assert!(text.iter().any(|line| line.contains("]/[")));
+        assert!(text.iter().any(|line| line.contains("Backspace")));
+        assert!(text.iter().any(|line| line.contains("Ctrl-U")));
+    }
+
+    #[test]
+    fn help_menu_uses_diff_theme_colors() {
+        let default_theme = DiffTheme::default();
+        let section_color = Color::Rgb(10, 11, 12);
+        let key_color = Color::Rgb(13, 14, 15);
+        let theme = DiffTheme {
+            background: Color::Rgb(1, 2, 3),
+            header: Color::Rgb(4, 5, 6),
+            foreground: Color::Rgb(7, 8, 9),
+            syntax: SyntaxPalette {
+                keyword: Some(section_color),
+                function: Some(key_color),
+                ..default_theme.syntax
+            },
+            ..default_theme
+        };
+
+        assert_eq!(help_menu_bg(theme), theme.background);
+        assert_eq!(help_menu_title_color(theme), section_color);
+
+        let section = help_menu_row_spans(HelpMenuRow::Section("Section"), 20, theme);
+        assert_eq!(section[0].style.fg, Some(section_color));
+        assert_eq!(section[0].style.bg, Some(theme.background));
+
+        let binding = help_menu_row_spans(HelpMenuRow::Binding("?", "help"), 20, theme);
+        assert_eq!(binding[0].style.fg, Some(key_color));
+        assert_eq!(binding[0].style.bg, Some(theme.background));
+        assert_eq!(binding[1].style.fg, Some(theme.foreground));
+        assert_eq!(binding[1].style.bg, Some(theme.background));
     }
 
     #[test]
