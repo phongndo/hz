@@ -5775,17 +5775,31 @@ fn file_sidebar_entry_line(
     } else {
         base_bg(theme)
     };
-    let mut base_style = file_sidebar_style(file.status, theme).bg(bg);
-    if selected {
-        base_style = Style::default()
-            .fg(theme.header)
-            .bg(bg)
-            .add_modifier(Modifier::BOLD);
-    }
+    let status_style = file_sidebar_status_style(file.status, selected, bg, theme);
+    let body_style = file_sidebar_body_style(selected, bg, theme);
 
     if file.is_binary || (file.additions == 0 && file.deletions == 0) {
-        let text = file_sidebar_entry(file, content_width);
-        return file_sidebar_line(&text, base_style, width, theme);
+        let stats = file_sidebar_stats(file);
+        let stats_width = stats.width();
+        let gap_width = usize::from(!stats.is_empty() && content_width > stats_width);
+        let left_width = content_width
+            .saturating_sub(stats_width)
+            .saturating_sub(gap_width);
+        let stats_width = content_width.saturating_sub(left_width + gap_width);
+
+        let mut spans = file_sidebar_left_spans(file, left_width, status_style, body_style);
+        if gap_width > 0 {
+            spans.push(Span::styled(" ", body_style));
+        }
+        if stats_width > 0 {
+            spans.push(Span::styled(fit(&stats, stats_width), body_style));
+        }
+        let used = spans_width(&spans);
+        if used < content_width {
+            spans.push(Span::styled(" ".repeat(content_width - used), body_style));
+        }
+        spans.push(file_sidebar_separator(theme));
+        return Line::from(spans);
     }
 
     let additions = format!("+{}", file.additions);
@@ -5801,13 +5815,15 @@ fn file_sidebar_entry_line(
 
     let mut spans = Vec::new();
     if left_width > 0 {
-        spans.push(Span::styled(
-            file_sidebar_left_text(file, left_width),
-            base_style,
+        spans.extend(file_sidebar_left_spans(
+            file,
+            left_width,
+            status_style,
+            body_style,
         ));
     }
     if gap_width > 0 {
-        spans.push(Span::styled(" ", base_style));
+        spans.push(Span::styled(" ", body_style));
     }
 
     let mut remaining = content_width.saturating_sub(left_width + gap_width);
@@ -5818,7 +5834,7 @@ fn file_sidebar_entry_line(
         &mut remaining,
     );
     if remaining > 0 {
-        spans.push(Span::styled(" ", base_style));
+        spans.push(Span::styled(" ", body_style));
         remaining -= 1;
     }
     push_sidebar_stat_span(
@@ -5828,7 +5844,7 @@ fn file_sidebar_entry_line(
         &mut remaining,
     );
     if remaining > 0 {
-        spans.push(Span::styled(" ".repeat(remaining), base_style));
+        spans.push(Span::styled(" ".repeat(remaining), body_style));
     }
     spans.push(file_sidebar_separator(theme));
 
@@ -5854,6 +5870,10 @@ fn push_sidebar_stat_span(
     spans.push(Span::styled(text, style));
 }
 
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|span| span.content.as_ref().width()).sum()
+}
+
 fn sidebar_stat_style(color: Color, selected: bool, bg: Color) -> Style {
     let mut style = Style::default().fg(color).bg(bg);
     if selected {
@@ -5862,43 +5882,62 @@ fn sidebar_stat_style(color: Color, selected: bool, bg: Color) -> Style {
     style
 }
 
-fn file_sidebar_entry(file: &hz_diff::DiffFile, width: usize) -> String {
-    let stats = file_sidebar_stats(file);
-    if stats.is_empty() {
-        file_sidebar_left_text(file, width)
-    } else {
-        let stats_width = stats.width();
-        let gap_width = usize::from(width > stats_width);
-        let left_width = width.saturating_sub(stats_width).saturating_sub(gap_width);
-        let stats_width = width.saturating_sub(left_width + gap_width);
-        let mut text = file_sidebar_left_text(file, left_width);
-        if gap_width > 0 {
-            text.push(' ');
-        }
-        text.push_str(&fit(&stats, stats_width));
-        fit_padded(&text, width)
+fn file_sidebar_status_style(
+    status: FileStatus,
+    selected: bool,
+    bg: Color,
+    theme: DiffTheme,
+) -> Style {
+    let mut style = file_sidebar_style(status, theme)
+        .bg(bg)
+        .add_modifier(Modifier::BOLD);
+    if selected {
+        style = style.add_modifier(Modifier::BOLD);
     }
+    style
 }
 
-fn file_sidebar_left_text(file: &hz_diff::DiffFile, width: usize) -> String {
+fn file_sidebar_body_style(selected: bool, bg: Color, theme: DiffTheme) -> Style {
+    let mut style = Style::default()
+        .fg(if selected {
+            theme.header
+        } else {
+            theme.foreground
+        })
+        .bg(bg);
+    if selected {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    style
+}
+
+fn file_sidebar_left_spans(
+    file: &hz_diff::DiffFile,
+    width: usize,
+    status_style: Style,
+    body_style: Style,
+) -> Vec<Span<'static>> {
     if width == 0 {
-        return String::new();
+        return Vec::new();
     }
 
     let prefix = format!(" {} ", status_code(file.status));
     let prefix_width = prefix.width();
     if prefix_width >= width {
-        return fit_padded(&prefix, width);
+        return vec![Span::styled(fit_padded(&prefix, width), status_style)];
     }
 
     let path_width = width - prefix_width;
-    fit_padded(
-        &format!(
-            "{prefix}{}",
-            fit_with_ellipsis(file.display_path(), path_width)
+    vec![
+        Span::styled(prefix, status_style),
+        Span::styled(
+            fit_padded(
+                &fit_with_ellipsis(file.display_path(), path_width),
+                path_width,
+            ),
+            body_style,
         ),
-        width,
-    )
+    ]
 }
 
 fn fit_with_ellipsis(text: &str, width: usize) -> String {
@@ -5948,8 +5987,7 @@ fn file_sidebar_style(status: FileStatus, theme: DiffTheme) -> Style {
     let color = match status {
         FileStatus::Added | FileStatus::Copied => theme.addition_fg,
         FileStatus::Deleted => theme.deletion_fg,
-        FileStatus::Renamed | FileStatus::TypeChanged => theme.hunk,
-        FileStatus::Modified => theme.file,
+        FileStatus::Modified | FileStatus::Renamed | FileStatus::TypeChanged => theme.hunk,
         FileStatus::Unknown => theme.muted,
     };
     Style::default().fg(color)
@@ -6010,12 +6048,7 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
     match row {
         UiRow::FileHeader(file_index) => {
             let file = &app.changeset.files[file_index];
-            let text = right_aligned(
-                &format!("{} {}", status_code(file.status), file.display_path()),
-                &format!("+{} -{}", file.additions, file.deletions),
-                width,
-            );
-            Line::from(Span::styled(text, Style::default().fg(theme.file)))
+            file_header_line(file, width, theme)
         }
         UiRow::BinaryFile(file_index) => {
             let file = &app.changeset.files[file_index];
@@ -6038,10 +6071,7 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
         }
         UiRow::HunkHeader { file, hunk } => {
             let hunk = &app.changeset.files[file].hunks[hunk];
-            Line::from(Span::styled(
-                fit_padded(&hunk.header, width),
-                Style::default().fg(theme.hunk),
-            ))
+            hunk_header_line(hunk, width, theme)
         }
         UiRow::UnifiedLine { file, hunk, line } => {
             let diff_line = app.changeset.files[file].hunks[hunk].lines[line].clone();
@@ -6077,6 +6107,471 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
             right,
         } => render_split_line(app, file, hunk, left, right, row_index, width),
     }
+}
+
+fn file_header_line(file: &hz_diff::DiffFile, width: usize, theme: DiffTheme) -> Line<'static> {
+    Line::from(file_header_spans(file, width, theme))
+}
+
+fn file_header_spans(
+    file: &hz_diff::DiffFile,
+    width: usize,
+    theme: DiffTheme,
+) -> Vec<Span<'static>> {
+    let bg = base_bg(theme);
+    header_spans(
+        status_code(file.status),
+        file.display_path(),
+        &file_delta_parts(file.additions, file.deletions),
+        width,
+        HeaderStyles {
+            prefix: file_sidebar_style(file.status, theme)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+            body: Style::default().fg(theme.foreground).bg(bg),
+            fill: Style::default().bg(bg),
+            addition: Style::default().fg(theme.addition_fg).bg(bg),
+            deletion: Style::default().fg(theme.deletion_fg).bg(bg),
+        },
+    )
+}
+
+fn hunk_header_line(hunk: &hz_diff::DiffHunk, width: usize, theme: DiffTheme) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+
+    let gutter_bg = line_gutter_bg(DiffLineKind::Meta, theme);
+    let content_width = width.saturating_sub(1);
+    let mut spans = Vec::new();
+    spans.push(diff_indicator_span(DiffLineKind::Meta, theme));
+    if content_width > 0 {
+        if content_width == 1 {
+            spans.push(Span::styled(" ", Style::default().bg(gutter_bg)));
+        } else {
+            spans.push(Span::styled(" ", Style::default().bg(gutter_bg)));
+            spans.extend(hunk_header_spans(hunk, content_width - 1, theme, gutter_bg));
+        }
+    }
+
+    Line::from(spans)
+}
+
+fn hunk_header_spans(
+    hunk: &hz_diff::DiffHunk,
+    width: usize,
+    theme: DiffTheme,
+    bg: Color,
+) -> Vec<Span<'static>> {
+    let (additions, deletions) = hunk_change_counts(hunk);
+    hunk_header_spans_with_delta(
+        &hunk_header_location_parts(&hunk.header, theme, bg),
+        hunk_header_context(&hunk.header),
+        &compact_delta_parts(additions, deletions),
+        width,
+        HeaderStyles {
+            prefix: Style::default().fg(theme.muted).bg(bg),
+            body: Style::default().fg(theme.foreground).bg(bg),
+            fill: Style::default().bg(bg),
+            addition: Style::default().fg(theme.addition_fg).bg(bg),
+            deletion: Style::default().fg(theme.deletion_fg).bg(bg),
+        },
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeaderSpanPart {
+    text: String,
+    style: Style,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeltaKind {
+    Addition,
+    Deletion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeltaPart {
+    text: String,
+    kind: DeltaKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HeaderStyles {
+    prefix: Style,
+    body: Style,
+    fill: Style,
+    addition: Style,
+    deletion: Style,
+}
+
+fn file_delta_parts(additions: usize, deletions: usize) -> Vec<DeltaPart> {
+    vec![
+        DeltaPart {
+            text: format!("+{additions}"),
+            kind: DeltaKind::Addition,
+        },
+        DeltaPart {
+            text: format!("-{deletions}"),
+            kind: DeltaKind::Deletion,
+        },
+    ]
+}
+
+fn compact_delta_parts(additions: usize, deletions: usize) -> Vec<DeltaPart> {
+    let mut parts = Vec::with_capacity(2);
+    if additions > 0 {
+        parts.push(DeltaPart {
+            text: format!("+{additions}"),
+            kind: DeltaKind::Addition,
+        });
+    }
+    if deletions > 0 {
+        parts.push(DeltaPart {
+            text: format!("-{deletions}"),
+            kind: DeltaKind::Deletion,
+        });
+    }
+    parts
+}
+
+fn header_spans(
+    prefix: &str,
+    body: &str,
+    delta_parts: &[DeltaPart],
+    width: usize,
+    styles: HeaderStyles,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let delta_width = delta_parts_width(delta_parts);
+    if delta_width >= width {
+        let mut spans = Vec::new();
+        push_fitted_delta_spans(&mut spans, delta_parts, width, styles);
+        return spans;
+    }
+
+    let delta_gap = usize::from(delta_width > 0);
+    let left_width = width.saturating_sub(delta_width).saturating_sub(delta_gap);
+    let fitted = fitted_prefixed_parts(prefix, body, left_width);
+    let mut spans = Vec::new();
+    let left_used = push_prefixed_spans(&mut spans, fitted, styles);
+    let gap = width.saturating_sub(left_used).saturating_sub(delta_width);
+    if gap > 0 {
+        spans.push(Span::styled(" ".repeat(gap), styles.fill));
+    }
+    push_delta_spans(&mut spans, delta_parts, styles);
+    spans
+}
+
+fn hunk_header_spans_with_delta(
+    prefix_parts: &[HeaderSpanPart],
+    body: &str,
+    delta_parts: &[DeltaPart],
+    width: usize,
+    styles: HeaderStyles,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let delta_width = delta_parts_width(delta_parts);
+    if delta_width >= width {
+        let mut spans = Vec::new();
+        push_fitted_delta_spans(&mut spans, delta_parts, width, styles);
+        return spans;
+    }
+
+    let delta_gap = usize::from(delta_width > 0);
+    let left_width = width.saturating_sub(delta_width).saturating_sub(delta_gap);
+    let mut spans = Vec::new();
+    let left_used =
+        push_header_prefix_and_body_spans(&mut spans, prefix_parts, body, left_width, styles);
+    let gap = width.saturating_sub(left_used).saturating_sub(delta_width);
+    if gap > 0 {
+        spans.push(Span::styled(" ".repeat(gap), styles.fill));
+    }
+    push_delta_spans(&mut spans, delta_parts, styles);
+    spans
+}
+
+fn push_header_prefix_and_body_spans(
+    spans: &mut Vec<Span<'static>>,
+    prefix_parts: &[HeaderSpanPart],
+    body: &str,
+    width: usize,
+    styles: HeaderStyles,
+) -> usize {
+    if width == 0 {
+        return 0;
+    }
+
+    let prefix_width = header_span_parts_width(prefix_parts);
+    if prefix_width >= width {
+        return push_fitted_header_span_parts(spans, prefix_parts, width, true, styles.prefix);
+    }
+
+    let mut used = push_header_span_parts(spans, prefix_parts);
+    if body.is_empty() {
+        return used;
+    }
+
+    let body_width = width.saturating_sub(used).saturating_sub(1);
+    if body_width == 0 {
+        return used;
+    }
+
+    spans.push(Span::styled(" ", styles.body));
+    used += 1;
+    let body = fit_with_ellipsis(body, body_width);
+    used += body.width();
+    spans.push(Span::styled(body, styles.body));
+    used
+}
+
+fn header_span_parts_width(parts: &[HeaderSpanPart]) -> usize {
+    parts.iter().map(|part| part.text.width()).sum()
+}
+
+fn push_header_span_parts(spans: &mut Vec<Span<'static>>, parts: &[HeaderSpanPart]) -> usize {
+    let mut used = 0;
+    for part in parts {
+        used += part.text.width();
+        spans.push(Span::styled(part.text.clone(), part.style));
+    }
+    used
+}
+
+fn push_fitted_header_span_parts(
+    spans: &mut Vec<Span<'static>>,
+    parts: &[HeaderSpanPart],
+    width: usize,
+    ellipsis: bool,
+    fallback_style: Style,
+) -> usize {
+    let text = parts
+        .iter()
+        .map(|part| part.text.as_str())
+        .collect::<String>();
+    let text = if ellipsis {
+        fit_with_ellipsis(&text, width)
+    } else {
+        fit(&text, width)
+    };
+    let used = text.width();
+    if !text.is_empty() {
+        spans.push(Span::styled(text, fallback_style));
+    }
+    used
+}
+
+fn delta_parts_width(parts: &[DeltaPart]) -> usize {
+    parts
+        .iter()
+        .map(|part| part.text.width())
+        .sum::<usize>()
+        .saturating_add(parts.len().saturating_sub(1))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FittedPrefixedParts {
+    prefix: String,
+    gap: bool,
+    body: String,
+}
+
+fn fitted_prefixed_parts(prefix: &str, body: &str, width: usize) -> FittedPrefixedParts {
+    if width == 0 {
+        return FittedPrefixedParts {
+            prefix: String::new(),
+            gap: false,
+            body: String::new(),
+        };
+    }
+    if prefix.is_empty() {
+        return FittedPrefixedParts {
+            prefix: String::new(),
+            gap: false,
+            body: fit_with_ellipsis(body, width),
+        };
+    }
+    if body.is_empty() {
+        return FittedPrefixedParts {
+            prefix: fit_with_ellipsis(prefix, width),
+            gap: false,
+            body: String::new(),
+        };
+    }
+
+    let prefix_width = prefix.width();
+    if prefix_width >= width {
+        return FittedPrefixedParts {
+            prefix: fit_with_ellipsis(prefix, width),
+            gap: false,
+            body: String::new(),
+        };
+    }
+
+    let body_width = width.saturating_sub(prefix_width).saturating_sub(1);
+    if body_width == 0 {
+        return FittedPrefixedParts {
+            prefix: fit(prefix, width),
+            gap: false,
+            body: String::new(),
+        };
+    }
+
+    FittedPrefixedParts {
+        prefix: prefix.to_owned(),
+        gap: true,
+        body: fit_with_ellipsis(body, body_width),
+    }
+}
+
+fn push_prefixed_spans(
+    spans: &mut Vec<Span<'static>>,
+    fitted: FittedPrefixedParts,
+    styles: HeaderStyles,
+) -> usize {
+    let mut used = 0;
+    if !fitted.prefix.is_empty() {
+        used += fitted.prefix.width();
+        spans.push(Span::styled(fitted.prefix, styles.prefix));
+    }
+    if fitted.gap {
+        used += 1;
+        spans.push(Span::styled(" ", styles.body));
+    }
+    if !fitted.body.is_empty() {
+        used += fitted.body.width();
+        spans.push(Span::styled(fitted.body, styles.body));
+    }
+    used
+}
+
+fn push_delta_spans(
+    spans: &mut Vec<Span<'static>>,
+    delta_parts: &[DeltaPart],
+    styles: HeaderStyles,
+) {
+    for (index, part) in delta_parts.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" ", styles.fill));
+        }
+        spans.push(Span::styled(
+            part.text.clone(),
+            delta_style(part.kind, styles),
+        ));
+    }
+}
+
+fn push_fitted_delta_spans(
+    spans: &mut Vec<Span<'static>>,
+    delta_parts: &[DeltaPart],
+    width: usize,
+    styles: HeaderStyles,
+) {
+    let mut remaining = width;
+    for (index, part) in delta_parts.iter().enumerate() {
+        if remaining == 0 {
+            return;
+        }
+        if index > 0 {
+            spans.push(Span::styled(" ", styles.fill));
+            remaining = remaining.saturating_sub(1);
+        }
+        if remaining == 0 {
+            return;
+        }
+
+        let text = fit(&part.text, remaining);
+        remaining = remaining.saturating_sub(text.width());
+        if !text.is_empty() {
+            spans.push(Span::styled(text, delta_style(part.kind, styles)));
+        }
+    }
+
+    if remaining > 0 {
+        spans.push(Span::styled(" ".repeat(remaining), styles.fill));
+    }
+}
+
+fn delta_style(kind: DeltaKind, styles: HeaderStyles) -> Style {
+    match kind {
+        DeltaKind::Addition => styles.addition,
+        DeltaKind::Deletion => styles.deletion,
+    }
+}
+
+fn hunk_header_context(header: &str) -> &str {
+    header
+        .splitn(3, "@@")
+        .nth(2)
+        .map(str::trim)
+        .unwrap_or_default()
+}
+
+fn hunk_header_location_parts(header: &str, theme: DiffTheme, bg: Color) -> Vec<HeaderSpanPart> {
+    let mut parts = header.splitn(3, "@@");
+    let Some("") = parts.next() else {
+        return vec![HeaderSpanPart {
+            text: header.trim().to_owned(),
+            style: Style::default().fg(theme.muted).bg(bg),
+        }];
+    };
+    let Some(location) = parts.next() else {
+        return vec![HeaderSpanPart {
+            text: header.trim().to_owned(),
+            style: Style::default().fg(theme.muted).bg(bg),
+        }];
+    };
+
+    let mut coordinates = location.split_whitespace();
+    let old_range = coordinates.next().unwrap_or_default();
+    let new_range = coordinates.next().unwrap_or_default();
+    if old_range.is_empty() || new_range.is_empty() {
+        return vec![HeaderSpanPart {
+            text: format!("@@{location}@@"),
+            style: Style::default().fg(theme.muted).bg(bg),
+        }];
+    }
+
+    vec![
+        HeaderSpanPart {
+            text: "@@ ".to_owned(),
+            style: Style::default().fg(theme.muted).bg(bg),
+        },
+        HeaderSpanPart {
+            text: old_range.to_owned(),
+            style: Style::default().fg(theme.deletion_fg).bg(bg),
+        },
+        HeaderSpanPart {
+            text: " ".to_owned(),
+            style: Style::default().fg(theme.muted).bg(bg),
+        },
+        HeaderSpanPart {
+            text: new_range.to_owned(),
+            style: Style::default().fg(theme.addition_fg).bg(bg),
+        },
+        HeaderSpanPart {
+            text: " @@".to_owned(),
+            style: Style::default().fg(theme.muted).bg(bg),
+        },
+    ]
+}
+
+fn hunk_change_counts(hunk: &hz_diff::DiffHunk) -> (usize, usize) {
+    hunk.lines.iter().fold(
+        (0usize, 0usize),
+        |(additions, deletions), line| match line.kind {
+            DiffLineKind::Addition => (additions + 1, deletions),
+            DiffLineKind::Deletion => (additions, deletions + 1),
+            DiffLineKind::Context | DiffLineKind::Meta => (additions, deletions),
+        },
+    )
 }
 
 fn render_unified_line_at_scroll(
@@ -6738,20 +7233,6 @@ fn skip_display_prefix(text: &str, columns: usize) -> (&str, usize) {
     (&text[byte_index..], skipped)
 }
 
-fn right_aligned(left: &str, right: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-
-    let left_len = UnicodeWidthStr::width(left);
-    let right_len = UnicodeWidthStr::width(right);
-    if left_len + right_len + 1 >= width {
-        return fit(&format!("{left}  {right}"), width);
-    }
-
-    format!("{left}{}{right}", " ".repeat(width - left_len - right_len))
-}
-
 fn fit(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -7053,6 +7534,18 @@ mod tests {
         assert!(line_text(&lines[0]).contains(" M src/lib.rs"));
         assert!(line_text(&lines[1]).contains(" A README.md"));
         assert!(line_text(&lines[1]).contains("+12 -0"));
+        assert_eq!(lines[0].spans[0].content.as_ref(), " M ");
+        assert_eq!(lines[0].spans[0].style.fg, Some(DiffTheme::default().hunk));
+        assert!(
+            lines[0].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(
+            lines[0].spans[1].style.fg,
+            Some(DiffTheme::default().foreground)
+        );
         assert_eq!(additions.style.fg, Some(DiffTheme::default().addition_fg));
         assert_eq!(deletions.style.fg, Some(DiffTheme::default().deletion_fg));
         assert!(
@@ -7510,7 +8003,190 @@ mod tests {
         assert_eq!(fit_padded_from("abcdef", 2, 3), "cde");
         assert_eq!(skip_display_prefix("abcdef", 2), ("cdef", 2));
         assert_eq!(skip_display_prefix("e\u{301}f", 1), ("f", 1));
-        assert_eq!(right_aligned("界", "x", 5), "界  x");
+        assert_eq!(fit_with_ellipsis("abcdef", 5), "ab...");
+    }
+
+    #[test]
+    fn file_header_truncates_path_before_delta() {
+        let file = hz_diff::DiffFile {
+            old_path: Some("src/runtime/test_runner/expect/toMatchInlineSnapshot.rs".to_owned()),
+            new_path: Some("src/runtime/test_runner/expect/toMatchInlineSnapshot.rs".to_owned()),
+            status: FileStatus::Modified,
+            hunks: Vec::new(),
+            additions: 1290,
+            deletions: 3910,
+            is_binary: false,
+        };
+
+        let theme = DiffTheme::default();
+        let line = file_header_line(&file, 32, theme);
+        let text = line_text(&line);
+
+        assert_eq!(text.width(), 32);
+        assert!(text.starts_with("M "));
+        assert!(text.contains("..."));
+        assert!(text.ends_with("+1290 -3910"));
+        assert_eq!(line.spans[0].content.as_ref(), "M");
+        assert_eq!(line.spans[0].style.fg, Some(theme.hunk));
+        assert!(line.spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(line.spans[2].style.fg, Some(theme.foreground));
+
+        let additions = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "+1290")
+            .expect("additions should render as a separate span");
+        let deletions = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "-3910")
+            .expect("deletions should render as a separate span");
+
+        assert_eq!(additions.style.fg, Some(theme.addition_fg));
+        assert_eq!(deletions.style.fg, Some(theme.deletion_fg));
+    }
+
+    #[test]
+    fn hunk_header_uses_raw_location_context_and_delta() {
+        let hunk = hz_diff::DiffHunk {
+            header: "@@ -200,2 +211,3 @@ render_diff_hunk".to_owned(),
+            old_start: 200,
+            old_count: 2,
+            new_start: 211,
+            new_count: 3,
+            lines: vec![
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    old_line: Some(200),
+                    new_line: Some(211),
+                    text: "context".to_owned(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Deletion,
+                    old_line: Some(201),
+                    new_line: None,
+                    text: "old".to_owned(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Addition,
+                    old_line: None,
+                    new_line: Some(212),
+                    text: "new".to_owned(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Addition,
+                    old_line: None,
+                    new_line: Some(213),
+                    text: "again".to_owned(),
+                },
+            ],
+        };
+
+        let theme = DiffTheme::default();
+        let text = line_text(&Line::from(hunk_header_spans(
+            &hunk,
+            48,
+            theme,
+            line_gutter_bg(DiffLineKind::Meta, theme),
+        )));
+
+        assert_eq!(text.width(), 48);
+        assert!(text.starts_with("@@ -200,2 +211,3 @@ render_diff_hunk"));
+        assert!(text.ends_with("+2 -1"));
+    }
+
+    #[test]
+    fn hunk_header_line_matches_unified_gutter() {
+        let hunk = hz_diff::DiffHunk {
+            header: "@@ -200,2 +211,3 @@ render_diff_hunk".to_owned(),
+            old_start: 200,
+            old_count: 2,
+            new_start: 211,
+            new_count: 3,
+            lines: vec![DiffLine {
+                kind: DiffLineKind::Addition,
+                old_line: None,
+                new_line: Some(211),
+                text: "new".to_owned(),
+            }],
+        };
+
+        let theme = DiffTheme::default();
+        let line = hunk_header_line(&hunk, 64, theme);
+        let text = line_text(&line);
+
+        assert_eq!(text.width(), 64);
+        assert!(text.starts_with(&format!("{DIFF_INDICATOR} @@ -200,2 +211,3 @@")));
+        assert!(text.contains("@@ -200,2 +211,3 @@ render_diff_hunk"));
+        assert!(text.ends_with("+1"));
+        let old_range = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "-200,2")
+            .expect("old range should render as a separate span");
+        let new_range = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "+211,3")
+            .expect("new range should render as a separate span");
+        let context = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref().contains("render_diff_hunk"))
+            .expect("context should render as a separate span");
+        let additions = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "+1")
+            .expect("additions should render as a separate span");
+
+        assert_eq!(old_range.style.fg, Some(theme.deletion_fg));
+        assert_eq!(new_range.style.fg, Some(theme.addition_fg));
+        assert_eq!(context.style.fg, Some(theme.foreground));
+        assert_eq!(additions.style.fg, Some(theme.addition_fg));
+        assert!(
+            line.spans
+                .iter()
+                .all(|span| span.style.bg == Some(line_gutter_bg(DiffLineKind::Meta, theme)))
+        );
+    }
+
+    #[test]
+    fn hunk_header_truncates_context_before_delta() {
+        let hunk = hz_diff::DiffHunk {
+            header: "@@ -1 +1 @@ render_diff_hunk_with_a_really_long_name".to_owned(),
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+            lines: vec![
+                DiffLine {
+                    kind: DiffLineKind::Deletion,
+                    old_line: Some(1),
+                    new_line: None,
+                    text: "old".to_owned(),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Addition,
+                    old_line: None,
+                    new_line: Some(1),
+                    text: "new".to_owned(),
+                },
+            ],
+        };
+
+        let theme = DiffTheme::default();
+        let text = line_text(&Line::from(hunk_header_spans(
+            &hunk,
+            32,
+            theme,
+            line_gutter_bg(DiffLineKind::Meta, theme),
+        )));
+
+        assert_eq!(text.width(), 32);
+        assert!(text.starts_with("@@ -1 +1 @@ render"));
+        assert!(text.contains("..."));
+        assert!(text.ends_with("+1 -1"));
     }
 
     #[test]
