@@ -5775,7 +5775,7 @@ fn file_sidebar_entry_line(
     } else {
         base_bg(theme)
     };
-    let status_style = file_sidebar_status_style(file.status, selected, bg, theme);
+    let status_style = file_sidebar_status_style(file.status, bg, theme);
     let body_style = file_sidebar_body_style(selected, bg, theme);
 
     if file.is_binary || (file.additions == 0 && file.deletions == 0) {
@@ -5882,19 +5882,10 @@ fn sidebar_stat_style(color: Color, selected: bool, bg: Color) -> Style {
     style
 }
 
-fn file_sidebar_status_style(
-    status: FileStatus,
-    selected: bool,
-    bg: Color,
-    theme: DiffTheme,
-) -> Style {
-    let mut style = file_sidebar_style(status, theme)
+fn file_sidebar_status_style(status: FileStatus, bg: Color, theme: DiffTheme) -> Style {
+    file_sidebar_style(status, theme)
         .bg(bg)
-        .add_modifier(Modifier::BOLD);
-    if selected {
-        style = style.add_modifier(Modifier::BOLD);
-    }
-    style
+        .add_modifier(Modifier::BOLD)
 }
 
 fn file_sidebar_body_style(selected: bool, bg: Color, theme: DiffTheme) -> Style {
@@ -6146,10 +6137,8 @@ fn hunk_header_line(hunk: &hz_diff::DiffHunk, width: usize, theme: DiffTheme) ->
     let mut spans = Vec::new();
     spans.push(diff_indicator_span(DiffLineKind::Meta, theme));
     if content_width > 0 {
-        if content_width == 1 {
-            spans.push(Span::styled(" ", Style::default().bg(gutter_bg)));
-        } else {
-            spans.push(Span::styled(" ", Style::default().bg(gutter_bg)));
+        spans.push(Span::styled(" ", Style::default().bg(gutter_bg)));
+        if content_width > 1 {
             spans.extend(hunk_header_spans(hunk, content_width - 1, theme, gutter_bg));
         }
     }
@@ -6311,7 +6300,7 @@ fn push_header_prefix_and_body_spans(
 
     let prefix_width = header_span_parts_width(prefix_parts);
     if prefix_width >= width {
-        return push_fitted_header_span_parts(spans, prefix_parts, width, true, styles.prefix);
+        return push_fitted_header_span_parts(spans, prefix_parts, width, true);
     }
 
     let mut used = push_header_span_parts(spans, prefix_parts);
@@ -6350,20 +6339,67 @@ fn push_fitted_header_span_parts(
     parts: &[HeaderSpanPart],
     width: usize,
     ellipsis: bool,
-    fallback_style: Style,
 ) -> usize {
-    let text = parts
-        .iter()
-        .map(|part| part.text.as_str())
-        .collect::<String>();
-    let text = if ellipsis {
-        fit_with_ellipsis(&text, width)
-    } else {
-        fit(&text, width)
-    };
-    let used = text.width();
-    if !text.is_empty() {
-        spans.push(Span::styled(text, fallback_style));
+    if width == 0 {
+        return 0;
+    }
+
+    let source_width = header_span_parts_width(parts);
+    if !ellipsis || source_width <= width {
+        return push_fitted_header_span_part_prefix(spans, parts, width);
+    }
+
+    let ellipsis_width = "...".width();
+    if width <= ellipsis_width {
+        let text = fit("...", width);
+        let used = text.width();
+        if !text.is_empty() {
+            spans.push(Span::styled(
+                text,
+                parts.first().map(|part| part.style).unwrap_or_default(),
+            ));
+        }
+        return used;
+    }
+
+    let prefix_width = width.saturating_sub(ellipsis_width);
+    let used = push_fitted_header_span_part_prefix(spans, parts, prefix_width);
+    let ellipsis_style = spans
+        .last()
+        .map(|span| span.style)
+        .or_else(|| parts.first().map(|part| part.style))
+        .unwrap_or_default();
+    spans.push(Span::styled("...", ellipsis_style));
+    used + ellipsis_width
+}
+
+fn push_fitted_header_span_part_prefix(
+    spans: &mut Vec<Span<'static>>,
+    parts: &[HeaderSpanPart],
+    width: usize,
+) -> usize {
+    let mut used = 0;
+    for part in parts {
+        if used >= width {
+            break;
+        }
+
+        let remaining = width - used;
+        let part_width = part.text.width();
+        if part_width <= remaining {
+            if !part.text.is_empty() {
+                spans.push(Span::styled(part.text.clone(), part.style));
+            }
+            used += part_width;
+            continue;
+        }
+
+        let text = fit(&part.text, remaining);
+        used += text.width();
+        if !text.is_empty() {
+            spans.push(Span::styled(text, part.style));
+        }
+        break;
     }
     used
 }
@@ -8187,6 +8223,49 @@ mod tests {
         assert!(text.starts_with("@@ -1 +1 @@ render"));
         assert!(text.contains("..."));
         assert!(text.ends_with("+1 -1"));
+    }
+
+    #[test]
+    fn hunk_header_truncates_location_without_collapsing_range_styles() {
+        let hunk = hz_diff::DiffHunk {
+            header: "@@ -200,2 +211,3 @@ render_diff_hunk".to_owned(),
+            old_start: 200,
+            old_count: 2,
+            new_start: 211,
+            new_count: 3,
+            lines: vec![DiffLine {
+                kind: DiffLineKind::Context,
+                old_line: Some(200),
+                new_line: Some(211),
+                text: "context".to_owned(),
+            }],
+        };
+
+        let theme = DiffTheme::default();
+        let line = Line::from(hunk_header_spans(
+            &hunk,
+            17,
+            theme,
+            line_gutter_bg(DiffLineKind::Meta, theme),
+        ));
+        let text = line_text(&line);
+
+        assert_eq!(text, "@@ -200,2 +211...");
+        assert_eq!(text.width(), 17);
+
+        let old_range = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "-200,2")
+            .expect("old range should keep its own span when truncated");
+        let new_range = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "+211")
+            .expect("new range should keep its own span when truncated");
+
+        assert_eq!(old_range.style.fg, Some(theme.deletion_fg));
+        assert_eq!(new_range.style.fg, Some(theme.addition_fg));
     }
 
     #[test]
