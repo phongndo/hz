@@ -3745,7 +3745,9 @@ struct DiffApp {
     selected_file: usize,
     file_sidebar_open: bool,
     file_sidebar_scroll: usize,
+    file_sidebar_width: Option<u16>,
     file_sidebar_render_width: u16,
+    file_sidebar_resizing: bool,
     diff_menu_open: bool,
     branch_menu_open: Option<BranchMenu>,
     branch_menu_input: String,
@@ -3862,7 +3864,9 @@ impl DiffApp {
             selected_file: 0,
             file_sidebar_open: false,
             file_sidebar_scroll: 0,
+            file_sidebar_width: None,
             file_sidebar_render_width: 0,
+            file_sidebar_resizing: false,
             diff_menu_open: false,
             branch_menu_open: None,
             branch_menu_input: String::new(),
@@ -4010,6 +4014,21 @@ impl DiffApp {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> HzResult<()> {
+        if self.file_sidebar_resizing {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Moved => {
+                    self.resize_file_sidebar_to_column(mouse.column);
+                    return Ok(());
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.file_sidebar_resizing = false;
+                    self.resize_file_sidebar_to_column(mouse.column);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         if self.branch_menu_open.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollDown => {
@@ -4026,6 +4045,9 @@ impl DiffApp {
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                if self.start_file_sidebar_resize(mouse.column, mouse.row) {
+                    return Ok(());
+                }
                 self.handle_click(mouse.column, mouse.row);
             }
             MouseEventKind::ScrollDown => {
@@ -4074,6 +4096,26 @@ impl DiffApp {
             && self.file_sidebar_render_width > 0
             && column < self.file_sidebar_render_width
             && row > 0
+    }
+
+    fn is_file_sidebar_resize_handle(&self, column: u16, row: u16) -> bool {
+        self.is_file_sidebar_position(column, row)
+            && column.saturating_add(1) == self.file_sidebar_render_width
+    }
+
+    fn start_file_sidebar_resize(&mut self, column: u16, row: u16) -> bool {
+        if !self.is_file_sidebar_resize_handle(column, row) {
+            return false;
+        }
+
+        self.file_sidebar_resizing = true;
+        self.resize_file_sidebar_to_column(column);
+        true
+    }
+
+    fn resize_file_sidebar_to_column(&mut self, column: u16) {
+        let width = column.saturating_add(1);
+        self.set_file_sidebar_width(width);
     }
 
     fn handle_click(&mut self, column: u16, row: u16) {
@@ -4692,6 +4734,23 @@ impl DiffApp {
         self.file_sidebar_scroll =
             scroll.min(self.max_file_sidebar_scroll(self.visible_file_sidebar_rows()));
         if self.file_sidebar_scroll != previous_scroll {
+            self.dirty = true;
+        }
+    }
+
+    fn set_file_sidebar_width(&mut self, width: u16) {
+        let total_width = self
+            .file_sidebar_render_width
+            .saturating_add(self.viewport_width.min(usize::from(u16::MAX)) as u16);
+        let max_width = max_file_sidebar_width(total_width);
+        if max_width == 0 {
+            return;
+        }
+
+        let width = width.clamp(FILE_SIDEBAR_MIN_WIDTH, max_width);
+        if self.file_sidebar_width != Some(width) {
+            self.file_sidebar_width = Some(width);
+            self.set_horizontal_scroll(self.horizontal_scroll);
             self.dirty = true;
         }
     }
@@ -5448,12 +5507,23 @@ fn file_sidebar_width(app: &DiffApp, area_width: u16) -> u16 {
         return 0;
     }
 
-    let max_width = area_width.saturating_sub(FILE_SIDEBAR_MIN_DIFF_WIDTH);
-    if max_width < FILE_SIDEBAR_MIN_WIDTH {
+    let max_width = max_file_sidebar_width(area_width);
+    if max_width == 0 {
         return 0;
     }
 
-    file_sidebar_desired_width(app).min(max_width)
+    app.file_sidebar_width
+        .unwrap_or_else(|| file_sidebar_desired_width(app))
+        .clamp(FILE_SIDEBAR_MIN_WIDTH, max_width)
+}
+
+fn max_file_sidebar_width(area_width: u16) -> u16 {
+    let max_width = area_width.saturating_sub(FILE_SIDEBAR_MIN_DIFF_WIDTH);
+    if max_width < FILE_SIDEBAR_MIN_WIDTH {
+        0
+    } else {
+        max_width
+    }
 }
 
 fn file_sidebar_desired_width(app: &DiffApp) -> u16 {
@@ -5558,7 +5628,6 @@ fn file_sidebar_entry_line(
         return file_sidebar_line(&text, base_style, width, theme);
     }
 
-    let left = format!(" {} {}", status_code(file.status), file.display_path());
     let additions = format!("+{}", file.additions);
     let deletions = format!("-{}", file.deletions);
     let stats_width = additions
@@ -5572,7 +5641,10 @@ fn file_sidebar_entry_line(
 
     let mut spans = Vec::new();
     if left_width > 0 {
-        spans.push(Span::styled(fit_padded(&left, left_width), base_style));
+        spans.push(Span::styled(
+            file_sidebar_left_text(file, left_width),
+            base_style,
+        ));
     }
     if gap_width > 0 {
         spans.push(Span::styled(" ", base_style));
@@ -5631,13 +5703,56 @@ fn sidebar_stat_style(color: Color, selected: bool, bg: Color) -> Style {
 }
 
 fn file_sidebar_entry(file: &hz_diff::DiffFile, width: usize) -> String {
-    let left = format!(" {} {}", status_code(file.status), file.display_path());
     let stats = file_sidebar_stats(file);
     if stats.is_empty() {
-        fit_padded(&left, width)
+        file_sidebar_left_text(file, width)
     } else {
-        right_aligned(&left, &stats, width)
+        let stats_width = stats.width();
+        let gap_width = usize::from(width > stats_width);
+        let left_width = width.saturating_sub(stats_width).saturating_sub(gap_width);
+        let stats_width = width.saturating_sub(left_width + gap_width);
+        let mut text = file_sidebar_left_text(file, left_width);
+        if gap_width > 0 {
+            text.push(' ');
+        }
+        text.push_str(&fit(&stats, stats_width));
+        fit_padded(&text, width)
     }
+}
+
+fn file_sidebar_left_text(file: &hz_diff::DiffFile, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+
+    let prefix = format!(" {} ", status_code(file.status));
+    let prefix_width = prefix.width();
+    if prefix_width >= width {
+        return fit_padded(&prefix, width);
+    }
+
+    let path_width = width - prefix_width;
+    fit_padded(
+        &format!(
+            "{prefix}{}",
+            fit_with_ellipsis(file.display_path(), path_width)
+        ),
+        width,
+    )
+}
+
+fn fit_with_ellipsis(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if text.width() <= width {
+        return fit(text, width);
+    }
+    if width <= 3 {
+        return fit("...", width);
+    }
+
+    format!("{}...", fit(text, width - 3))
 }
 
 fn file_sidebar_stats(file: &hz_diff::DiffFile) -> String {
@@ -6722,6 +6837,63 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::BOLD)
         );
+    }
+
+    #[test]
+    fn file_sidebar_truncates_long_paths_before_stats() {
+        let mut changeset =
+            changeset_with_files(&["src/runtime/test_runner/expect/toMatchInlineSnapshot.rs"]);
+        changeset.files[0].status = FileStatus::Added;
+        changeset.files[0].additions = 1290;
+        changeset.files[0].deletions = 3910;
+        let app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        let lines = file_sidebar_lines(&app, 32, 1);
+        let text = line_text(&lines[0]);
+
+        assert_eq!(text.width(), 32);
+        assert!(text.contains("..."));
+        assert!(text.contains("+1290 -3910"));
+    }
+
+    #[test]
+    fn file_sidebar_separator_drag_resizes_sidebar() {
+        let changeset = changeset_with_files(&["a.rs"]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.file_sidebar_open = true;
+        app.file_sidebar_render_width = 30;
+        app.viewport_width = 70;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 29,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("resize should start");
+
+        assert!(app.file_sidebar_resizing);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 49,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("drag should resize");
+
+        assert_eq!(app.file_sidebar_width, Some(50));
+        assert!(app.dirty);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 49,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("resize should end");
+
+        assert!(!app.file_sidebar_resizing);
     }
 
     #[test]
