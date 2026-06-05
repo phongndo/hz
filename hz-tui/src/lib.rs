@@ -4977,6 +4977,7 @@ impl DiffApp {
 
     fn toggle_file_sidebar(&mut self) {
         self.file_sidebar_open = !self.file_sidebar_open;
+        self.file_sidebar_resizing = false;
         self.diff_menu_open = false;
         self.close_branch_menu();
         self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
@@ -5142,7 +5143,7 @@ impl DiffApp {
             .unwrap_or_default();
         self.set_scroll(scroll);
         self.set_horizontal_scroll(self.horizontal_scroll);
-        self.clamp_file_sidebar_scroll(self.visible_file_sidebar_rows());
+        self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
         if let Some(notice) = notice {
             self.set_notice(notice);
         }
@@ -6722,6 +6723,42 @@ mod tests {
     }
 
     #[test]
+    fn b_key_clears_file_sidebar_resize_state() {
+        let changeset = changeset_with_files(&["a.rs"]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.file_sidebar_open = true;
+        app.file_sidebar_render_width = 30;
+        app.viewport_width = 70;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 29,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("resize should start");
+
+        assert!(app.file_sidebar_resizing);
+        assert_eq!(app.file_sidebar_width, Some(30));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
+            .expect("b should be handled");
+
+        assert!(!app.file_sidebar_open);
+        assert!(!app.file_sidebar_resizing);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 49,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("drag should no longer resize after sidebar closes");
+
+        assert_eq!(app.file_sidebar_width, Some(30));
+    }
+
+    #[test]
     fn file_sidebar_tracks_selected_file() {
         let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]);
         let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
@@ -6753,6 +6790,26 @@ mod tests {
 
         assert_eq!(app.selected_file, 0);
         assert_eq!(app.file_sidebar_scroll, 1);
+    }
+
+    #[test]
+    fn replace_changeset_keeps_remapped_file_sidebar_selection_visible() {
+        let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.file_sidebar_open = true;
+        app.set_viewport_rows(2);
+        app.selected_file = 4;
+        app.ensure_file_sidebar_selection_visible(app.visible_file_sidebar_rows());
+
+        assert_eq!(app.file_sidebar_scroll, 3);
+
+        app.replace_changeset(
+            changeset_with_files(&["new.rs", "other.rs", "third.rs", "fourth.rs", "fifth.rs"]),
+            None,
+        );
+
+        assert_eq!(app.selected_file, 0);
+        assert_eq!(app.file_sidebar_scroll, 0);
     }
 
     #[test]
