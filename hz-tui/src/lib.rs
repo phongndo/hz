@@ -74,6 +74,12 @@ const FILE_SIDEBAR_MIN_DIFF_WIDTH: u16 = 30;
 const BRANCH_COMPARISON_SEPARATOR: &str = " → ";
 const CURRENT_BRANCH_MARKER: &str = "●";
 const BASE_BRANCH_MARKER: &str = "⌂";
+const STATUSLINE_BG: Color = Color::Rgb(0x24, 0x25, 0x2b);
+const STATUSLINE_ACCENT_BG: Color = Color::Rgb(0xe5, 0x9a, 0xca);
+const STATUSLINE_ACCENT_FG: Color = Color::Rgb(0x24, 0x24, 0x2b);
+const STATUSLINE_INFO_BG: Color = Color::Rgb(0x48, 0x49, 0x52);
+const STATUSLINE_INFO_FG: Color = Color::Rgb(0xd7, 0xd6, 0xe8);
+const STATUSLINE_SELECTOR_GAP: &str = " ";
 
 fn line_gutter_fg(kind: DiffLineKind, theme: DiffTheme) -> Color {
     match kind {
@@ -4528,10 +4534,12 @@ impl DiffApp {
         }
 
         let head_width = self.branch_selector_width(BranchMenu::Head)?;
+        let selector_gap = STATUSLINE_SELECTOR_GAP.width() as u16;
+        let head_start = diff_selector_width(&self.options).saturating_add(selector_gap);
         match menu {
-            BranchMenu::Head => Some(diff_selector_width(&self.options)),
+            BranchMenu::Head => Some(head_start),
             BranchMenu::Base => Some(
-                diff_selector_width(&self.options)
+                head_start
                     .saturating_add(head_width)
                     .saturating_add(BRANCH_COMPARISON_SEPARATOR.width() as u16),
             ),
@@ -5228,80 +5236,236 @@ fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
+    let line = statusline_header_line(app, area.width as usize);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(statusline_bg(app.theme))),
+        area,
+    );
+}
+
+fn statusline_header_line(app: &DiffApp, width: usize) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+
+    let right_max_width = statusline_right_max_width(width);
+    let right = statusline_file_label(app, right_max_width);
+    let right_width = right.width();
+    let mut left_width = width.saturating_sub(right_width);
+    let mut spans = Vec::new();
+
+    push_statusline_left_spans(&mut spans, app, &mut left_width);
+    let left_used = width.saturating_sub(right_width).saturating_sub(left_width);
+    let gap = width.saturating_sub(left_used).saturating_sub(right_width);
+    if gap > 0 {
+        spans.push(Span::styled(
+            " ".repeat(gap),
+            Style::default().bg(statusline_bg(app.theme)),
+        ));
+    }
+    if right_width > 0 {
+        spans.push(Span::styled(
+            right,
+            Style::default()
+                .fg(STATUSLINE_INFO_FG)
+                .bg(STATUSLINE_INFO_BG)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    Line::from(spans)
+}
+
+fn push_statusline_left_spans(
+    spans: &mut Vec<Span<'static>>,
+    app: &DiffApp,
+    remaining: &mut usize,
+) {
     let notice = app
         .notice
         .as_ref()
         .map(|notice| notice.text.as_str())
         .unwrap_or("");
-    let mut spans = vec![Span::styled(
+    push_fitted_statusline_span(
+        spans,
         diff_selector_text(&app.options),
         Style::default()
-            .fg(app.theme.header)
+            .fg(STATUSLINE_ACCENT_FG)
+            .bg(STATUSLINE_ACCENT_BG)
             .add_modifier(Modifier::BOLD),
-    )];
+        remaining,
+    );
+    push_fitted_statusline_span(
+        spans,
+        STATUSLINE_SELECTOR_GAP,
+        Style::default().bg(statusline_bg(app.theme)),
+        remaining,
+    );
     if app.is_branch_diff()
         && let (Some(head), Some(base)) = (
             app.branch_selector_text(BranchMenu::Head),
             app.branch_selector_text(BranchMenu::Base),
         )
     {
-        spans.push(Span::styled(
+        push_fitted_statusline_span(
+            spans,
             head,
             Style::default()
                 .fg(app.theme.header)
+                .bg(statusline_bg(app.theme))
                 .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
+            remaining,
+        );
+        push_fitted_statusline_span(
+            spans,
             BRANCH_COMPARISON_SEPARATOR,
-            Style::default().fg(app.theme.muted),
-        ));
-        spans.push(Span::styled(
+            Style::default()
+                .fg(app.theme.muted)
+                .bg(statusline_bg(app.theme)),
+            remaining,
+        );
+        push_fitted_statusline_span(
+            spans,
             base,
             Style::default()
                 .fg(app.theme.header)
+                .bg(statusline_bg(app.theme))
                 .add_modifier(Modifier::BOLD),
-        ));
+            remaining,
+        );
     } else {
-        spans.push(Span::styled(
+        push_fitted_statusline_span(
+            spans,
             diff_comparison_label(&app.options),
-            Style::default().fg(app.theme.muted),
-        ));
-    }
-    spans.extend([
-        Span::raw("  "),
-        Span::styled(
-            format!("{} files", format_count(app.stats.files)),
-            Style::default().fg(app.theme.foreground),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("+{}", format_count(app.stats.additions)),
             Style::default()
-                .fg(app.theme.addition_fg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("-{}", format_count(app.stats.deletions)),
-            Style::default()
-                .fg(app.theme.deletion_fg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            progress_label(app.scroll, app.max_scroll()),
-            Style::default().fg(app.theme.header),
-        ),
-    ]);
-    if !notice.is_empty() {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(notice, Style::default().fg(app.theme.notice)));
+                .fg(app.theme.muted)
+                .bg(statusline_bg(app.theme)),
+            remaining,
+        );
     }
-    let line = Line::from(spans);
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(header_bg(app.theme))),
-        area,
+    push_fitted_statusline_span(
+        spans,
+        "  ",
+        Style::default().bg(statusline_bg(app.theme)),
+        remaining,
     );
+    push_fitted_statusline_span(
+        spans,
+        format!("{} files", format_count(app.stats.files)),
+        Style::default()
+            .fg(app.theme.foreground)
+            .bg(statusline_bg(app.theme)),
+        remaining,
+    );
+    push_fitted_statusline_span(
+        spans,
+        "  ",
+        Style::default().bg(statusline_bg(app.theme)),
+        remaining,
+    );
+    push_fitted_statusline_span(
+        spans,
+        format!("+{}", format_count(app.stats.additions)),
+        Style::default()
+            .fg(app.theme.addition_fg)
+            .bg(statusline_bg(app.theme))
+            .add_modifier(Modifier::BOLD),
+        remaining,
+    );
+    push_fitted_statusline_span(
+        spans,
+        " ",
+        Style::default().bg(statusline_bg(app.theme)),
+        remaining,
+    );
+    push_fitted_statusline_span(
+        spans,
+        format!("-{}", format_count(app.stats.deletions)),
+        Style::default()
+            .fg(app.theme.deletion_fg)
+            .bg(statusline_bg(app.theme))
+            .add_modifier(Modifier::BOLD),
+        remaining,
+    );
+    if !notice.is_empty() {
+        push_fitted_statusline_span(
+            spans,
+            "  ",
+            Style::default().bg(statusline_bg(app.theme)),
+            remaining,
+        );
+        push_fitted_statusline_span(
+            spans,
+            notice,
+            Style::default()
+                .fg(app.theme.notice)
+                .bg(statusline_bg(app.theme)),
+            remaining,
+        );
+    }
+}
+
+fn push_fitted_statusline_span(
+    spans: &mut Vec<Span<'static>>,
+    text: impl AsRef<str>,
+    style: Style,
+    remaining: &mut usize,
+) {
+    if *remaining == 0 {
+        return;
+    }
+
+    let text = fit(text.as_ref(), *remaining);
+    if text.is_empty() {
+        return;
+    }
+
+    *remaining = (*remaining).saturating_sub(text.width());
+    spans.push(Span::styled(text, style));
+}
+
+fn statusline_right_max_width(width: usize) -> usize {
+    if width <= 24 {
+        width
+    } else {
+        (width / 2).max(24).min(width)
+    }
+}
+
+fn statusline_file_label(app: &DiffApp, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let progress = progress_label(app.scroll, app.max_scroll());
+    let file_count = app.changeset.files.len();
+    let file_number = if file_count == 0 {
+        0
+    } else {
+        app.selected_file.min(file_count - 1) + 1
+    };
+    let position = format!("{file_number}/{file_count} {progress}");
+    let fallback = "No file";
+    let path = app
+        .changeset
+        .files
+        .get(app.selected_file)
+        .map(|file| file.display_path())
+        .unwrap_or(fallback);
+
+    let compact = format!(" {position} ");
+    let compact_width = compact.width();
+    if max_width <= compact_width {
+        return fit(&compact, max_width);
+    }
+
+    let path_width = max_width.saturating_sub(position.width()).saturating_sub(3);
+    let label = format!(" {} {} ", fit_with_ellipsis(path, path_width), position);
+    if label.width() > max_width {
+        fit(&label, max_width)
+    } else {
+        label
+    }
 }
 
 fn draw_diff_menu(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
@@ -5435,12 +5599,7 @@ fn draw_branch_menu(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
 }
 
 fn diff_selector_text(options: &DiffOptions) -> String {
-    let suffix = if matches!(&options.source, DiffSource::Patch(_)) {
-        ""
-    } else {
-        " ▾"
-    };
-    format!(" {}{} ", diff_type_label(options), suffix)
+    format!(" {} ", diff_type_label(options))
 }
 
 fn diff_selector_width(options: &DiffOptions) -> u16 {
@@ -6045,6 +6204,14 @@ fn header_bg(theme: DiffTheme) -> Color {
         Color::Reset
     } else {
         theme.gutter_bg
+    }
+}
+
+fn statusline_bg(theme: DiffTheme) -> Color {
+    if theme.transparent_background {
+        Color::Reset
+    } else {
+        STATUSLINE_BG
     }
 }
 
@@ -6983,20 +7150,20 @@ mod tests {
     fn diff_header_labels_describe_selected_scope() {
         let mut options = DiffOptions::default();
 
-        assert_eq!(diff_selector_text(&options), " All changes ▾ ");
+        assert_eq!(diff_selector_text(&options), " All changes ");
         assert_eq!(diff_comparison_label(&options), "HEAD → working tree");
 
         options.scope = DiffScope::Unstaged;
-        assert_eq!(diff_selector_text(&options), " Unstaged ▾ ");
+        assert_eq!(diff_selector_text(&options), " Unstaged ");
         assert_eq!(diff_comparison_label(&options), "index → working tree");
 
         options.scope = DiffScope::Staged;
-        assert_eq!(diff_selector_text(&options), " Staged ▾ ");
+        assert_eq!(diff_selector_text(&options), " Staged ");
         assert_eq!(diff_comparison_label(&options), "HEAD → index");
 
         options.source = DiffSource::Base("origin/main".to_owned());
         options.scope = DiffScope::All;
-        assert_eq!(diff_selector_text(&options), " Branch ▾ ");
+        assert_eq!(diff_selector_text(&options), " Branch ");
         assert_eq!(diff_comparison_label(&options), "HEAD → origin/main");
 
         options.source = DiffSource::Branch {
@@ -7004,6 +7171,31 @@ mod tests {
             head: "feature/ui".to_owned(),
         };
         assert_eq!(diff_comparison_label(&options), "feature/ui → origin/main");
+    }
+
+    #[test]
+    fn statusline_header_right_aligns_current_file() {
+        let changeset = changeset_with_files(&["src/lib.rs", "README.md", "docs/guide.md"]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.set_viewport_rows(3);
+        app.select_file(1);
+
+        let line = statusline_header_line(&app, 80);
+        let text = line_text(&line);
+
+        assert_eq!(text.width(), 80);
+        assert!(text.starts_with(" All changes  HEAD → working tree"));
+        assert!(text.contains("README.md 2/3"));
+        assert!(text.ends_with("% "));
+
+        let selector = line.spans.first().expect("selector block should render");
+        assert_eq!(selector.style.fg, Some(STATUSLINE_ACCENT_FG));
+        assert_eq!(selector.style.bg, Some(STATUSLINE_ACCENT_BG));
+
+        let file = line.spans.last().expect("file block should render");
+        assert_eq!(file.style.fg, Some(STATUSLINE_INFO_FG));
+        assert_eq!(file.style.bg, Some(STATUSLINE_INFO_BG));
+        assert!(file.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
@@ -7110,6 +7302,12 @@ mod tests {
         );
         assert_eq!(
             app.branch_selector_at(diff_selector_width(&app.options)),
+            None
+        );
+        assert_eq!(
+            app.branch_selector_at(
+                diff_selector_width(&app.options) + STATUSLINE_SELECTOR_GAP.width() as u16
+            ),
             Some(BranchMenu::Head)
         );
 
