@@ -2342,7 +2342,7 @@ mod tests {
                     installed: true,
                     trusted: true,
                     has_highlights: true,
-                    version: Some("1.9.0-rc.17".to_owned()),
+                    version: Some("1.9.0-rc.18".to_owned()),
                     artifact: None,
                     source: Some("bundled".to_owned()),
                 },
@@ -2352,7 +2352,7 @@ mod tests {
                     installed: true,
                     trusted: true,
                     has_highlights: false,
-                    version: Some("1.9.0-rc.17".to_owned()),
+                    version: Some("1.9.0-rc.18".to_owned()),
                     artifact: None,
                     source: Some("bundled".to_owned()),
                 },
@@ -2374,7 +2374,7 @@ mod tests {
         assert_eq!(headers[1], "status");
         assert!(output.contains("rust"));
         assert!(output.contains("ok"));
-        assert!(output.contains("1.9.0-rc.17"));
+        assert!(output.contains("1.9.0-rc.18"));
         assert!(!output.contains("note"));
         assert!(!output.contains("no query"));
         assert!(!output.contains("enabled=yes"));
@@ -2389,7 +2389,7 @@ mod tests {
                 installed: true,
                 trusted: true,
                 has_highlights: true,
-                version: Some("1.9.0-rc.17".to_owned()),
+                version: Some("1.9.0-rc.18".to_owned()),
                 artifact: None,
                 source: Some("bundled".to_owned()),
             }],

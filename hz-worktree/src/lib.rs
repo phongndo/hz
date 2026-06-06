@@ -1465,11 +1465,17 @@ fn default_worktree_path(repo: &Path, id: &str) -> HzResult<PathBuf> {
 }
 
 fn registry_path() -> HzResult<PathBuf> {
-    let config_home = match env::var_os("XDG_CONFIG_HOME") {
-        Some(path) => PathBuf::from(path),
-        None => home_dir()?.join(".config"),
-    };
-    Ok(config_home.join("hz").join("registry.json"))
+    Ok(registry_path_from_env(
+        home_dir()?,
+        env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+    ))
+}
+
+fn registry_path_from_env(home: PathBuf, xdg_config_home: Option<PathBuf>) -> PathBuf {
+    let config_home = xdg_config_home
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| home.join(".config"));
+    config_home.join("hz").join("registry.json")
 }
 
 fn home_dir() -> HzResult<PathBuf> {
@@ -2166,6 +2172,21 @@ mod tests {
                 .unwrap()
                 .to_string_lossy()
                 .starts_with(".registry.json.")
+        );
+    }
+
+    #[test]
+    fn registry_path_ignores_empty_xdg_config_home() {
+        assert_eq!(
+            registry_path_from_env(PathBuf::from("/home/user"), Some(PathBuf::new())),
+            PathBuf::from("/home/user/.config/hz/registry.json")
+        );
+        assert_eq!(
+            registry_path_from_env(
+                PathBuf::from("/home/user"),
+                Some(PathBuf::from("/tmp/config")),
+            ),
+            PathBuf::from("/tmp/config/hz/registry.json")
         );
     }
 

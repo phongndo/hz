@@ -2780,7 +2780,13 @@ fn git_blob(repo: &Path, object: &str) -> Result<Vec<u8>, SyntaxSkipReason> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["show", "--no-ext-diff", "--no-color", object])
+        .args([
+            "show",
+            "--no-ext-diff",
+            "--no-color",
+            "--end-of-options",
+            object,
+        ])
         .output()
         .map_err(|_| SyntaxSkipReason::NoSource)?;
     if !output.status.success() {
@@ -2793,7 +2799,7 @@ fn git_merge_base(repo: &Path, base: &str, head: &str) -> Result<String, SyntaxS
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["merge-base", base, head])
+        .args(["merge-base", "--end-of-options", base, head])
         .output()
         .map_err(|_| SyntaxSkipReason::NoSource)?;
     if !output.status.success() {
@@ -3441,14 +3447,30 @@ impl TextMatcher {
     }
 
     fn matches(&self, text: &str) -> bool {
-        !self.match_ranges(text).is_empty()
+        if self.case_sensitive {
+            text.contains(&self.query)
+        } else {
+            text_match_ascii_case_insensitive(text, &self.lowercase_query)
+        }
     }
 
     fn match_ranges(&self, text: &str) -> Vec<std::ops::Range<usize>> {
         if self.case_sensitive {
             text_match_ranges(text, &self.query)
         } else {
-            text_match_ranges(&text.to_ascii_lowercase(), &self.lowercase_query)
+            text_match_ranges_ascii_case_insensitive(text, &self.lowercase_query)
+        }
+    }
+
+    fn matches_prefixed(&self, prefix: char, text: &str) -> bool {
+        if self.matches(text) {
+            return true;
+        }
+
+        if self.case_sensitive {
+            prefixed_text_starts_with(prefix, text, &self.query)
+        } else {
+            prefixed_text_starts_with_ascii_case_insensitive(prefix, text, &self.lowercase_query)
         }
     }
 }
@@ -3467,6 +3489,100 @@ fn text_match_ranges(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
         start = byte_end;
     }
     ranges
+}
+
+fn text_match_ranges_ascii_case_insensitive(
+    text: &str,
+    lowercase_query: &str,
+) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while let Some(range) = text_match_range_ascii_case_insensitive(text, lowercase_query, start) {
+        start = range.end;
+        ranges.push(range);
+    }
+    ranges
+}
+
+fn text_match_ascii_case_insensitive(text: &str, lowercase_query: &str) -> bool {
+    text_match_range_ascii_case_insensitive(text, lowercase_query, 0).is_some()
+}
+
+fn text_match_range_ascii_case_insensitive(
+    text: &str,
+    lowercase_query: &str,
+    start: usize,
+) -> Option<std::ops::Range<usize>> {
+    if lowercase_query.is_empty() || lowercase_query.len() > text.len() {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let query = lowercase_query.as_bytes();
+    let mut index = start.min(text.len());
+    while index + query.len() <= text.len() {
+        if text.is_char_boundary(index) {
+            let end = index + query.len();
+            if text.is_char_boundary(end)
+                && ascii_case_insensitive_bytes_equal(&bytes[index..end], query)
+            {
+                return Some(index..end);
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+fn prefixed_text_starts_with(prefix: char, text: &str, query: &str) -> bool {
+    let mut prefix_buffer = [0; 4];
+    let prefix = prefix.encode_utf8(&mut prefix_buffer);
+    query.len() <= prefix.len() + text.len()
+        && prefixed_text_bytes_equal(prefix.as_bytes(), text.as_bytes(), query.as_bytes(), false)
+}
+
+fn prefixed_text_starts_with_ascii_case_insensitive(
+    prefix: char,
+    text: &str,
+    lowercase_query: &str,
+) -> bool {
+    let mut prefix_buffer = [0; 4];
+    let prefix = prefix.encode_utf8(&mut prefix_buffer);
+    lowercase_query.len() <= prefix.len() + text.len()
+        && prefixed_text_bytes_equal(
+            prefix.as_bytes(),
+            text.as_bytes(),
+            lowercase_query.as_bytes(),
+            true,
+        )
+}
+
+fn prefixed_text_bytes_equal(
+    prefix: &[u8],
+    text: &[u8],
+    query: &[u8],
+    ignore_ascii_case: bool,
+) -> bool {
+    query.iter().enumerate().all(|(index, query_byte)| {
+        let candidate = if index < prefix.len() {
+            prefix[index]
+        } else {
+            text[index - prefix.len()]
+        };
+        if ignore_ascii_case {
+            candidate.to_ascii_lowercase() == *query_byte
+        } else {
+            candidate == *query_byte
+        }
+    })
+}
+
+fn ascii_case_insensitive_bytes_equal(candidate: &[u8], lowercase_query: &[u8]) -> bool {
+    candidate.len() == lowercase_query.len()
+        && candidate
+            .iter()
+            .zip(lowercase_query)
+            .all(|(candidate, query)| candidate.to_ascii_lowercase() == *query)
 }
 
 fn filtered_file_indices(base: &Changeset, file_filter: &str, grep_filter: &str) -> Vec<usize> {
@@ -3547,14 +3663,7 @@ fn hunk_grep_text_matches(hunk: &hz_diff::DiffHunk, matcher: &TextMatcher) -> bo
 }
 
 fn diff_line_grep_text_matches(line: &DiffLine, matcher: &TextMatcher) -> bool {
-    if matcher.matches(&line.text) {
-        return true;
-    }
-
-    let mut rendered = String::with_capacity(line.text.len().saturating_add(1));
-    rendered.push(diff_line_grep_prefix(line.kind));
-    rendered.push_str(&line.text);
-    matcher.matches(&rendered)
+    matcher.matches_prefixed(diff_line_grep_prefix(line.kind), &line.text)
 }
 
 fn diff_line_grep_prefix(kind: DiffLineKind) -> char {
@@ -10047,6 +10156,25 @@ mod tests {
     }
 
     #[test]
+    fn text_matcher_preserves_case_and_prefix_matching() {
+        let lowercase = TextMatcher::new("line").expect("matcher should be created");
+        assert!(lowercase.matches("LINE"));
+        assert_eq!(lowercase.match_ranges("LINE").len(), 1);
+
+        let uppercase = TextMatcher::new("Line").expect("matcher should be created");
+        assert!(!uppercase.matches("line"));
+
+        let addition = DiffLine {
+            kind: DiffLineKind::Addition,
+            old_line: None,
+            new_line: Some(1),
+            text: "changed".to_owned(),
+        };
+        let prefixed = TextMatcher::new("+changed").expect("matcher should be created");
+        assert!(diff_line_grep_text_matches(&addition, &prefixed));
+    }
+
+    #[test]
     fn file_filter_and_grep_filter_compose_and_render_together() {
         let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
         let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
@@ -12102,6 +12230,27 @@ base0F = "ffffff"
             .unwrap(),
             "fn new() {}\n"
         );
+
+        fs::remove_dir_all(repo).expect("repo directory should be removed");
+    }
+
+    #[test]
+    fn git_full_file_helpers_do_not_treat_revisions_as_options() {
+        let repo = temp_test_dir("git-option-boundary");
+        fs::create_dir_all(&repo).expect("repo directory should be created");
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        fs::write(repo.join("file.rs"), "fn main() {}\n").expect("file should be written");
+        git(&repo, &["add", "file.rs"]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        let output_path = repo.join("poc.txt");
+        let output_arg = format!("--output={}", output_path.display());
+
+        assert!(git_blob(&repo, &output_arg).is_err());
+        assert!(!output_path.exists());
+        assert!(git_merge_base(&repo, &output_arg, "HEAD").is_err());
+        assert!(!output_path.exists());
 
         fs::remove_dir_all(repo).expect("repo directory should be removed");
     }
