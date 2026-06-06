@@ -203,6 +203,25 @@ struct StoredDiffSettings {
     #[serde(alias = "word_background", alias = "word_diff_background")]
     word_background: Option<DiffBackground>,
     sign_style: Option<DiffSignStyle>,
+    #[serde(
+        alias = "context_lines",
+        alias = "context_expand",
+        alias = "expand_context"
+    )]
+    context_expansion: Option<StoredDiffContextExpansion>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum StoredDiffContextExpansion {
+    Lines(usize),
+    Mode(StoredDiffContextExpansionMode),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum StoredDiffContextExpansionMode {
+    Full,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -336,6 +355,7 @@ pub struct DiffSettings {
     pub gutter_background: DiffGutterBackground,
     pub inline_background: DiffBackground,
     pub sign_style: DiffSignStyle,
+    pub context_expansion: DiffContextExpansion,
 }
 
 impl Default for DiffSettings {
@@ -345,6 +365,22 @@ impl Default for DiffSettings {
             gutter_background: DiffGutterBackground::Delta,
             inline_background: DiffBackground::Strong,
             sign_style: DiffSignStyle::Bold,
+            context_expansion: DiffContextExpansion::Lines(20),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffContextExpansion {
+    Lines(usize),
+    Full,
+}
+
+impl DiffContextExpansion {
+    pub fn expand_count(self, available: usize) -> usize {
+        match self {
+            Self::Lines(lines) => lines.min(available),
+            Self::Full => available,
         }
     }
 }
@@ -1189,6 +1225,19 @@ fn diff_from_stored(stored: StoredDiffSettings) -> DiffSettings {
             .or(stored.word_background)
             .unwrap_or(defaults.inline_background),
         sign_style: stored.sign_style.unwrap_or(defaults.sign_style),
+        context_expansion: stored
+            .context_expansion
+            .map(diff_context_expansion_from_stored)
+            .unwrap_or(defaults.context_expansion),
+    }
+}
+
+fn diff_context_expansion_from_stored(stored: StoredDiffContextExpansion) -> DiffContextExpansion {
+    match stored {
+        StoredDiffContextExpansion::Lines(lines) => DiffContextExpansion::Lines(lines.max(1)),
+        StoredDiffContextExpansion::Mode(StoredDiffContextExpansionMode::Full) => {
+            DiffContextExpansion::Full
+        }
     }
 }
 
@@ -1865,6 +1914,7 @@ line_background = "subtle"
 gutter_background = "delta"
 inline_background = "strong"
 sign_style = "bold"
+context_expand = 42
 "#,
         )
         .expect("settings should parse");
@@ -1882,6 +1932,24 @@ sign_style = "bold"
         assert_eq!(settings.diff.gutter_background, DiffGutterBackground::Delta);
         assert_eq!(settings.diff.inline_background, DiffBackground::Strong);
         assert_eq!(settings.diff.sign_style, DiffSignStyle::Bold);
+        assert_eq!(
+            settings.diff.context_expansion,
+            DiffContextExpansion::Lines(42)
+        );
+    }
+
+    #[test]
+    fn syntax_settings_supports_full_context_expansion() {
+        let settings = parse_settings(
+            r#"
+[diff]
+context_expand = "full"
+"#,
+        )
+        .expect("settings should parse");
+
+        assert_eq!(settings.diff.context_expansion, DiffContextExpansion::Full);
+        assert_eq!(settings.diff.context_expansion.expand_count(123), 123);
     }
 
     #[test]

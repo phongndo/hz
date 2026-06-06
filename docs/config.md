@@ -206,6 +206,7 @@ line_background = "subtle"         # none, subtle, or strong
 gutter_background = "delta"        # base or delta
 inline_background = "strong"       # none, subtle, or strong
 sign_style = "bold"                # normal or bold
+context_expand = 20                # lines per click, or "full"
 
 [limits]
 max_source_kib = 1024
