@@ -25,5 +25,11 @@ smoke-zsh:
 smoke-curl-install version="latest":
     scripts/smoke-curl-install {{version}}
 
+smoke-mise version="latest":
+    scripts/smoke-mise {{version}}
+
+homebrew-formula version dist="dist":
+    scripts/render-homebrew-formula {{version}} {{dist}}
+
 hz *args:
     ./target/debug/hz {{ args }}

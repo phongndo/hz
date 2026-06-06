@@ -3,10 +3,10 @@
 [![Quality](https://github.com/phongndo/hz/actions/workflows/quality.yml/badge.svg)](https://github.com/phongndo/hz/actions/workflows/quality.yml)
 [![Release](https://github.com/phongndo/hz/actions/workflows/release.yml/badge.svg)](https://github.com/phongndo/hz/actions/workflows/release.yml)
 
-`hz` is a terminal-native command center for parallel AI agent workflows. It
-keeps each task or agent in its own Git worktree, makes it fast to move between
-workspaces, hands off diffs safely, runs repo-local lifecycle hooks, and gives
-you a keyboard-first diff review loop without leaving the terminal.
+`hz` is a fast terminal workflow for parallel development with agents. It
+creates isolated workspaces, makes it fast to move between them, hands off
+diffs safely, runs repo-local lifecycle hooks, and gives you a keyboard-first
+review loop without leaving the terminal.
 
 The long-term vision is an all-in-one, provider-agnostic workflow for
 AI-assisted development: create isolated workspaces, run one or many agents,
@@ -61,7 +61,13 @@ Without shell integration, use `hz path <target>` to print a worktree path and
 
 ## Installation
 
-Install the latest release with the shell installer:
+Install the latest release with Homebrew:
+
+```sh
+brew install phongndo/tap/hz-cli
+```
+
+Or use the shell installer:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh

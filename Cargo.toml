@@ -17,9 +17,9 @@ version = "0.1.9"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-description = "Terminal-native CLI for parallel AI agent workspaces."
+description = "Fast terminal workflow for parallel development with agents."
 repository = "https://github.com/phongndo/hz"
-keywords = ["ai", "agents", "cli", "git", "worktrees"]
+keywords = ["ai", "agents", "cli", "terminal", "workflow"]
 categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
