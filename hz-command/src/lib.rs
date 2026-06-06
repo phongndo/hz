@@ -587,11 +587,18 @@ fn run_lifecycle_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()?;
-    let mut child_stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| HzError::Usage("failed to open lifecycle command stdout".to_owned()))?;
-    io::copy(&mut child_stdout, stdout)?;
+    let Some(mut child_stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(HzError::Usage(
+            "failed to open lifecycle command stdout".to_owned(),
+        ));
+    };
+    if let Err(error) = io::copy(&mut child_stdout, stdout) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error.into());
+    }
     let status = child.wait()?;
 
     if !status.success() {
@@ -880,35 +887,54 @@ pub fn shell_integration(shell: Shell) -> &'static str {
 }
 
 fn shell_rc_path(shell: Shell) -> HzResult<PathBuf> {
-    let home = home_dir()?;
-    Ok(shell_rc_path_from_env(
+    shell_rc_path_from_env(
         shell,
-        home,
+        env_path("HOME"),
         env::var_os("ZDOTDIR").map(PathBuf::from),
         env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
-    ))
+    )
 }
 
 fn shell_rc_path_from_env(
     shell: Shell,
-    home: PathBuf,
+    home: Option<PathBuf>,
     zdotdir: Option<PathBuf>,
     xdg_config_home: Option<PathBuf>,
-) -> PathBuf {
+) -> HzResult<PathBuf> {
+    let home = non_empty_path(home);
+    let zdotdir = non_empty_path(zdotdir);
+    let xdg_config_home = non_empty_path(xdg_config_home);
     match shell {
-        Shell::Zsh => zdotdir
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or(home)
-            .join(".zshrc"),
-        Shell::Bash => home.join(".bashrc"),
-        Shell::Fish => {
-            let config_home = match xdg_config_home.filter(|path| !path.as_os_str().is_empty()) {
+        Shell::Zsh => {
+            let dotdir = match zdotdir {
                 Some(path) => path,
-                None => home.join(".config"),
+                None => require_home(home)?,
             };
-            config_home.join("fish").join("config.fish")
+            Ok(dotdir.join(".zshrc"))
+        }
+        Shell::Bash => Ok(require_home(home)?.join(".bashrc")),
+        Shell::Fish => {
+            let config_home = match xdg_config_home {
+                Some(path) => path,
+                None => require_home(home)?.join(".config"),
+            };
+            Ok(config_home.join("fish").join("config.fish"))
         }
     }
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+fn non_empty_path(path: Option<PathBuf>) -> Option<PathBuf> {
+    path.filter(|path| !path.as_os_str().is_empty())
+}
+
+fn require_home(home: Option<PathBuf>) -> HzResult<PathBuf> {
+    home.ok_or_else(|| HzError::Usage("HOME is not set or empty".to_owned()))
 }
 
 fn install_line(path: &Path, line: &'static str) -> HzResult<bool> {
@@ -937,12 +963,6 @@ fn install_line(path: &Path, line: &'static str) -> HzResult<bool> {
 
     fs::write(path, next)?;
     Ok(true)
-}
-
-fn home_dir() -> HzResult<PathBuf> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| HzError::Usage("HOME is not set".to_owned()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1413,7 +1433,7 @@ mod tests {
 
     #[test]
     fn shell_rc_paths_respect_zdotdir_and_ignore_empty_xdg_config_home() {
-        let home = PathBuf::from("/home/user");
+        let home = Some(PathBuf::from("/home/user"));
 
         assert_eq!(
             shell_rc_path_from_env(
@@ -1421,13 +1441,39 @@ mod tests {
                 home.clone(),
                 Some(PathBuf::from("/tmp/zdotdir")),
                 None,
-            ),
+            )
+            .unwrap(),
             PathBuf::from("/tmp/zdotdir/.zshrc")
         );
         assert_eq!(
-            shell_rc_path_from_env(Shell::Fish, home, None, Some(PathBuf::new())),
+            shell_rc_path_from_env(Shell::Fish, home, None, Some(PathBuf::new())).unwrap(),
             PathBuf::from("/home/user/.config/fish/config.fish")
         );
+    }
+
+    #[test]
+    fn shell_rc_paths_do_not_fall_back_to_empty_home() {
+        assert_eq!(
+            shell_rc_path_from_env(
+                Shell::Zsh,
+                Some(PathBuf::new()),
+                Some(PathBuf::from("/tmp/zdotdir")),
+                None,
+            )
+            .unwrap(),
+            PathBuf::from("/tmp/zdotdir/.zshrc")
+        );
+        assert_eq!(
+            shell_rc_path_from_env(
+                Shell::Fish,
+                Some(PathBuf::new()),
+                None,
+                Some(PathBuf::from("/tmp/config")),
+            )
+            .unwrap(),
+            PathBuf::from("/tmp/config/fish/config.fish")
+        );
+        assert!(shell_rc_path_from_env(Shell::Bash, Some(PathBuf::new()), None, None).is_err());
     }
 
     #[test]

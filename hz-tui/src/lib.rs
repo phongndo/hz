@@ -3442,7 +3442,8 @@ impl TextMatcher {
         Some(Self {
             query: query.to_owned(),
             lowercase_query: query.to_ascii_lowercase(),
-            case_sensitive: query.chars().any(char::is_uppercase),
+            case_sensitive: !query.is_ascii()
+                || query.bytes().any(|byte| byte.is_ascii_uppercase()),
         })
     }
 
@@ -10163,6 +10164,11 @@ mod tests {
 
         let uppercase = TextMatcher::new("Line").expect("matcher should be created");
         assert!(!uppercase.matches("line"));
+
+        let unicode = TextMatcher::new("éclair").expect("matcher should be created");
+        assert!(unicode.case_sensitive);
+        assert!(unicode.matches("éclair"));
+        assert!(!unicode.matches("Éclair"));
 
         let addition = DiffLine {
             kind: DiffLineKind::Addition,

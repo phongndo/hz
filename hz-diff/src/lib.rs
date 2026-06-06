@@ -847,49 +847,77 @@ fn unified_header_path(path: &str) -> Cow<'_, str> {
 
 fn parse_quoted_git_path_token(input: &str) -> Option<(String, &str)> {
     let input = input.strip_prefix('"')?;
-    let mut output = String::new();
-    let mut chars = input.char_indices();
-    while let Some((index, character)) = chars.next() {
-        match character {
-            '"' => return Some((output, &input[index + 1..])),
-            '\\' => output.push(parse_git_path_escape(&mut chars)?),
-            _ => output.push(character),
+    let mut output = Vec::new();
+    let mut index = 0;
+    let bytes = input.as_bytes();
+    while let Some(byte) = bytes.get(index).copied() {
+        match byte {
+            b'"' => {
+                return Some((
+                    String::from_utf8_lossy(&output).into_owned(),
+                    &input[index + 1..],
+                ));
+            }
+            b'\\' => {
+                index += 1;
+                parse_git_path_escape(input, &mut index, &mut output)?;
+            }
+            byte => {
+                output.push(byte);
+                index += 1;
+            }
         }
     }
     None
 }
 
-fn parse_git_path_escape(chars: &mut std::str::CharIndices<'_>) -> Option<char> {
-    let (_, escaped) = chars.next()?;
-    let character = match escaped {
-        'a' => '\x07',
-        'b' => '\x08',
-        'f' => '\x0c',
-        'n' => '\n',
-        'r' => '\r',
-        't' => '\t',
-        'v' => '\x0b',
-        '\\' => '\\',
-        '"' => '"',
-        '0'..='7' => parse_octal_escape(escaped, chars),
-        other => other,
-    };
-    Some(character)
+fn parse_git_path_escape(input: &str, index: &mut usize, output: &mut Vec<u8>) -> Option<()> {
+    let bytes = input.as_bytes();
+    let escaped = *bytes.get(*index)?;
+    match escaped {
+        b'a' => push_escaped_byte(index, output, b'\x07'),
+        b'b' => push_escaped_byte(index, output, b'\x08'),
+        b'f' => push_escaped_byte(index, output, b'\x0c'),
+        b'n' => push_escaped_byte(index, output, b'\n'),
+        b'r' => push_escaped_byte(index, output, b'\r'),
+        b't' => push_escaped_byte(index, output, b'\t'),
+        b'v' => push_escaped_byte(index, output, b'\x0b'),
+        b'\\' => push_escaped_byte(index, output, b'\\'),
+        b'"' => push_escaped_byte(index, output, b'"'),
+        b'0'..=b'7' => push_octal_escape(bytes, index, output),
+        byte if byte.is_ascii() => push_escaped_byte(index, output, byte),
+        _ => {
+            let character = input[*index..].chars().next()?;
+            let mut buffer = [0; 4];
+            output.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+            *index += character.len_utf8();
+        }
+    }
+    Some(())
 }
 
-fn parse_octal_escape(first: char, chars: &mut std::str::CharIndices<'_>) -> char {
-    let mut value = first.to_digit(8).unwrap_or_default();
-    for _ in 0..2 {
-        let Some((_, next)) = chars.clone().next() else {
+fn push_escaped_byte(index: &mut usize, output: &mut Vec<u8>, byte: u8) {
+    output.push(byte);
+    *index += 1;
+}
+
+fn push_octal_escape(bytes: &[u8], index: &mut usize, output: &mut Vec<u8>) {
+    let mut value = 0u32;
+    for _ in 0..3 {
+        let Some(byte) = bytes.get(*index).copied() else {
             break;
         };
-        let Some(digit) = next.to_digit(8) else {
+        if !(b'0'..=b'7').contains(&byte) {
             break;
-        };
-        let _ = chars.next();
-        value = value * 8 + digit;
+        }
+        value = value * 8 + u32::from(byte - b'0');
+        *index += 1;
     }
-    char::from_u32(value).unwrap_or(char::REPLACEMENT_CHARACTER)
+    if let Ok(byte) = u8::try_from(value) {
+        output.push(byte);
+    } else {
+        output.extend_from_slice("\u{FFFD}".as_bytes());
+    }
 }
 
 #[derive(Debug)]
@@ -1075,6 +1103,18 @@ mod tests {
             Some("name\twith\"quote\\.txt")
         );
         assert_eq!(files[0].display_path(), "name\twith\"quote\\.txt");
+    }
+
+    #[test]
+    fn parse_patch_dequotes_git_octal_utf8_paths() {
+        let patch = "diff --git \"a/\\303\\251.txt\" \"b/\\303\\251.txt\"\n--- \"a/\\303\\251.txt\"\n+++ \"b/\\303\\251.txt\"\n@@ -1 +1 @@\n-old\n+new\n";
+
+        let files = parse_patch(patch);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].old_path.as_deref(), Some("é.txt"));
+        assert_eq!(files[0].new_path.as_deref(), Some("é.txt"));
+        assert_eq!(files[0].display_path(), "é.txt");
     }
 
     #[test]
