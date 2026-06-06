@@ -38,7 +38,7 @@ use notify::{RecursiveMode, Watcher};
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     prelude::{Color, Line, Modifier, Span, Style, Text},
     widgets::{Block, BorderType, Clear, Padding, Paragraph},
 };
@@ -110,9 +110,17 @@ const HELP_MENU_LEFT_ROWS: &[HelpMenuRow] = &[
 
 const HELP_MENU_RIGHT_ROWS: &[HelpMenuRow] = &[
     HelpMenuRow::Section("Actions"),
+    HelpMenuRow::Binding("f", "filter files"),
+    HelpMenuRow::Binding("/", "grep diff"),
+    HelpMenuRow::Binding("n/p", "next / previous grep match"),
     HelpMenuRow::Binding("b", "toggle file sidebar"),
     HelpMenuRow::Binding("s", "split / unified"),
     HelpMenuRow::Binding("r", "reload diff"),
+    HelpMenuRow::Section("Filter input"),
+    HelpMenuRow::Binding("Enter", "keep filter"),
+    HelpMenuRow::Binding("Esc", "clear active filters"),
+    HelpMenuRow::Binding("Backspace", "delete char"),
+    HelpMenuRow::Binding("Ctrl-U", "clear input"),
     HelpMenuRow::Section("Branch filter"),
     HelpMenuRow::Binding("type", "filter branches"),
     HelpMenuRow::Binding("Enter", "select branch"),
@@ -212,6 +220,8 @@ struct DiffTheme {
     muted: Color,
     gutter_bg: Color,
     empty_diff: Color,
+    search_match_fg: Color,
+    search_match_bg: Color,
     addition_fg: Color,
     addition_gutter_bg: Color,
     addition_bg: Color,
@@ -246,6 +256,8 @@ impl DiffTheme {
             muted: Color::Rgb(0x7d, 0x87, 0x94),
             gutter_bg: Color::Indexed(0),
             empty_diff: Color::Rgb(0x3d, 0x42, 0x49),
+            search_match_fg: Color::Indexed(0),
+            search_match_bg: Color::Indexed(3),
             addition_fg: green.color(),
             addition_gutter_bg: base.blend(green, 0.12).color(),
             addition_bg: Color::Rgb(0x1f, 0x30, 0x25),
@@ -274,6 +286,8 @@ impl DiffTheme {
             muted: Color::Rgb(125, 135, 148),
             gutter_bg: Color::Rgb(12, 16, 20),
             empty_diff: Color::Rgb(38, 45, 54),
+            search_match_fg: Color::Indexed(0),
+            search_match_bg: Color::Indexed(3),
             addition_fg: Color::Indexed(2),
             addition_gutter_bg: base.blend(green, 0.035).color(),
             addition_bg: base.blend(green, 0.045).color(),
@@ -302,6 +316,8 @@ impl DiffTheme {
             muted: Color::Rgb(106, 115, 125),
             gutter_bg: Color::Rgb(238, 242, 246),
             empty_diff: Color::Rgb(225, 228, 232),
+            search_match_fg: Color::Rgb(36, 41, 47),
+            search_match_bg: Color::Rgb(0xff, 0xec, 0x99),
             addition_fg: Color::Indexed(2),
             addition_gutter_bg: base.blend(green, 0.035).color(),
             addition_bg: base.blend(green, 0.045).color(),
@@ -327,6 +343,8 @@ impl DiffTheme {
             muted: Color::DarkGray,
             gutter_bg: Color::Black,
             empty_diff: Color::DarkGray,
+            search_match_fg: Color::Black,
+            search_match_bg: Color::Yellow,
             addition_fg: Color::Green,
             addition_gutter_bg: Color::Black,
             addition_bg: Color::Reset,
@@ -352,6 +370,8 @@ impl DiffTheme {
             muted: Color::Indexed(8),
             gutter_bg: Color::Indexed(0),
             empty_diff: Color::Indexed(8),
+            search_match_fg: Color::Indexed(0),
+            search_match_bg: Color::Indexed(3),
             addition_fg: Color::Indexed(2),
             addition_gutter_bg: Color::Indexed(0),
             addition_bg: Color::Reset,
@@ -380,6 +400,8 @@ impl DiffTheme {
             muted: Color::Rgb(0x6c, 0x70, 0x86),
             gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
             empty_diff: Color::Rgb(0x31, 0x32, 0x44),
+            search_match_fg: base.color(),
+            search_match_bg: Color::Rgb(0xf9, 0xe2, 0xaf),
             addition_fg: green.color(),
             addition_gutter_bg: base.blend(green, 0.035).color(),
             addition_bg: base.blend(green, 0.045).color(),
@@ -408,6 +430,8 @@ impl DiffTheme {
             muted: Color::Rgb(0x92, 0x83, 0x74),
             gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
             empty_diff: Color::Rgb(0x3c, 0x38, 0x36),
+            search_match_fg: base.color(),
+            search_match_bg: Color::Rgb(0xfa, 0xbd, 0x2f),
             addition_fg: green.color(),
             addition_gutter_bg: base.blend(green, 0.035).color(),
             addition_bg: base.blend(green, 0.045).color(),
@@ -436,6 +460,8 @@ impl DiffTheme {
             muted: Color::Rgb(0x56, 0x5f, 0x89),
             gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
             empty_diff: Color::Rgb(0x24, 0x28, 0x3b),
+            search_match_fg: base.color(),
+            search_match_bg: Color::Rgb(0xe0, 0xaf, 0x68),
             addition_fg: green.color(),
             addition_gutter_bg: base.blend(green, 0.035).color(),
             addition_bg: base.blend(green, 0.045).color(),
@@ -464,6 +490,8 @@ impl DiffTheme {
             muted: Color::Rgb(0x62, 0x72, 0xa4),
             gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
             empty_diff: Color::Rgb(0x44, 0x47, 0x5a),
+            search_match_fg: base.color(),
+            search_match_bg: Color::Rgb(0xf1, 0xfa, 0x8c),
             addition_fg: green.color(),
             addition_gutter_bg: base.blend(green, 0.035).color(),
             addition_bg: base.blend(green, 0.045).color(),
@@ -489,6 +517,8 @@ impl DiffTheme {
             muted: scheme.base03.color(),
             gutter_bg: scheme.base00.blend(RgbColor::new(0, 0, 0), 0.18).color(),
             empty_diff: scheme.base01.color(),
+            search_match_fg: scheme.base00.color(),
+            search_match_bg: scheme.base0a.color(),
             addition_fg: scheme.base0b.color(),
             addition_gutter_bg: scheme.base00.blend(scheme.base0b, 0.035).color(),
             addition_bg: scheme.base00.blend(scheme.base0b, 0.045).color(),
@@ -540,6 +570,12 @@ impl DiffTheme {
         }
         if let Some(color) = config_color(&colors.empty_diff, "empty_diff")? {
             self.empty_diff = color;
+        }
+        if let Some(color) = config_color(&colors.search_match_fg, "search_match_fg")? {
+            self.search_match_fg = color;
+        }
+        if let Some(color) = config_color(&colors.search_match_bg, "search_match_bg")? {
+            self.search_match_bg = color;
         }
         if let Some(color) = config_color(&colors.addition_fg, "addition_fg")? {
             self.addition_fg = color;
@@ -3300,6 +3336,12 @@ enum BranchMenu {
     Base,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffFilterKind {
+    File,
+    Grep,
+}
+
 impl DiffChoice {
     fn label(self) -> &'static str {
         match self {
@@ -3376,6 +3418,236 @@ fn fuzzy_subsequence_score(query: &str, branch: &str) -> Option<usize> {
     }
 
     Some(score)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextMatcher {
+    query: String,
+    lowercase_query: String,
+    case_sensitive: bool,
+}
+
+impl TextMatcher {
+    fn new(query: &str) -> Option<Self> {
+        if query.is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            query: query.to_owned(),
+            lowercase_query: query.to_ascii_lowercase(),
+            case_sensitive: query.chars().any(char::is_uppercase),
+        })
+    }
+
+    fn matches(&self, text: &str) -> bool {
+        !self.match_ranges(text).is_empty()
+    }
+
+    fn match_ranges(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        if self.case_sensitive {
+            text_match_ranges(text, &self.query)
+        } else {
+            text_match_ranges(&text.to_ascii_lowercase(), &self.lowercase_query)
+        }
+    }
+}
+
+fn text_match_ranges(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while let Some(offset) = text[start..].find(query) {
+        let byte_start = start + offset;
+        let byte_end = byte_start + query.len();
+        ranges.push(byte_start..byte_end);
+        start = byte_end;
+    }
+    ranges
+}
+
+fn filtered_file_indices(base: &Changeset, file_filter: &str, grep_filter: &str) -> Vec<usize> {
+    let grep_matcher = TextMatcher::new(grep_filter);
+    base.files
+        .iter()
+        .enumerate()
+        .filter(|file| file_matches_file_filter(file, file_filter))
+        .filter(|file| file_matches_grep_filter(file, grep_matcher.as_ref()))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn file_matches_file_filter((_, file): &(usize, &hz_diff::DiffFile), query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+
+    file_filter_texts(file)
+        .into_iter()
+        .any(|text| branch_match_score(&query, &text).is_some())
+}
+
+fn file_filter_texts(file: &hz_diff::DiffFile) -> Vec<String> {
+    let mut texts = Vec::with_capacity(4);
+    texts.push(file.display_path().to_owned());
+    if let Some(old_path) = &file.old_path
+        && old_path != file.display_path()
+    {
+        texts.push(old_path.clone());
+    }
+    if let Some(new_path) = &file.new_path
+        && new_path != file.display_path()
+    {
+        texts.push(new_path.clone());
+    }
+    texts.push(file.status.label().to_owned());
+    texts
+}
+
+fn file_matches_grep_filter(
+    (_, file): &(usize, &hz_diff::DiffFile),
+    matcher: Option<&TextMatcher>,
+) -> bool {
+    let Some(matcher) = matcher else {
+        return true;
+    };
+
+    file_grep_text_matches(file, matcher)
+}
+
+fn file_grep_text_matches(file: &hz_diff::DiffFile, matcher: &TextMatcher) -> bool {
+    matcher.matches(file.display_path())
+        || file
+            .old_path
+            .as_deref()
+            .is_some_and(|path| matcher.matches(path))
+        || file
+            .new_path
+            .as_deref()
+            .is_some_and(|path| matcher.matches(path))
+        || matcher.matches(file.status.label())
+        || file
+            .hunks
+            .iter()
+            .any(|hunk| hunk_grep_text_matches(hunk, matcher))
+        || (file.is_binary && matcher.matches("binary file"))
+        || (!file.is_binary && file.hunks.is_empty() && matcher.matches("no textual changes"))
+}
+
+fn hunk_grep_text_matches(hunk: &hz_diff::DiffHunk, matcher: &TextMatcher) -> bool {
+    matcher.matches(&hunk.header)
+        || hunk
+            .lines
+            .iter()
+            .any(|line| diff_line_grep_text_matches(line, matcher))
+}
+
+fn diff_line_grep_text_matches(line: &DiffLine, matcher: &TextMatcher) -> bool {
+    if matcher.matches(&line.text) {
+        return true;
+    }
+
+    let mut rendered = String::with_capacity(line.text.len().saturating_add(1));
+    rendered.push(diff_line_grep_prefix(line.kind));
+    rendered.push_str(&line.text);
+    matcher.matches(&rendered)
+}
+
+fn diff_line_grep_prefix(kind: DiffLineKind) -> char {
+    match kind {
+        DiffLineKind::Context => ' ',
+        DiffLineKind::Addition => '+',
+        DiffLineKind::Deletion => '-',
+        DiffLineKind::Meta => '\\',
+    }
+}
+
+fn grep_match_rows(changeset: &Changeset, model: &UiModel, query: &str) -> Vec<usize> {
+    let Some(matcher) = TextMatcher::new(query) else {
+        return Vec::new();
+    };
+
+    (0..model.len())
+        .filter(|row_index| {
+            model
+                .row(*row_index)
+                .is_some_and(|row| row_matches_grep(changeset, row, &matcher))
+        })
+        .collect()
+}
+
+fn row_matches_grep(changeset: &Changeset, row: UiRow, matcher: &TextMatcher) -> bool {
+    match row {
+        UiRow::FileSeparator
+        | UiRow::Collapsed { .. }
+        | UiRow::ContextLine { .. }
+        | UiRow::ContextHide { .. } => false,
+        UiRow::FileHeader(file) | UiRow::BinaryFile(file) => changeset
+            .files
+            .get(file)
+            .is_some_and(|file| file_grep_header_matches(file, matcher)),
+        UiRow::HunkHeader { file, hunk } => changeset
+            .files
+            .get(file)
+            .and_then(|file| file.hunks.get(hunk))
+            .is_some_and(|hunk| matcher.matches(&hunk.header)),
+        UiRow::UnifiedLine { file, hunk, line } | UiRow::MetaLine { file, hunk, line } => changeset
+            .files
+            .get(file)
+            .and_then(|file| file.hunks.get(hunk))
+            .and_then(|hunk| hunk.lines.get(line))
+            .is_some_and(|line| diff_line_grep_text_matches(line, matcher)),
+        UiRow::SplitLine {
+            file,
+            hunk,
+            left,
+            right,
+        } => changeset
+            .files
+            .get(file)
+            .and_then(|file| file.hunks.get(hunk))
+            .is_some_and(|hunk| {
+                left.and_then(|line| hunk.lines.get(line))
+                    .is_some_and(|line| diff_line_grep_text_matches(line, matcher))
+                    || right
+                        .and_then(|line| hunk.lines.get(line))
+                        .is_some_and(|line| diff_line_grep_text_matches(line, matcher))
+            }),
+    }
+}
+
+fn file_grep_header_matches(file: &hz_diff::DiffFile, matcher: &TextMatcher) -> bool {
+    matcher.matches(file.display_path())
+        || file
+            .old_path
+            .as_deref()
+            .is_some_and(|path| matcher.matches(path))
+        || file
+            .new_path
+            .as_deref()
+            .is_some_and(|path| matcher.matches(path))
+        || matcher.matches(file.status.label())
+        || (file.is_binary && matcher.matches("binary file"))
+        || (!file.is_binary && file.hunks.is_empty() && matcher.matches("no textual changes"))
+}
+
+fn diff_stats_for_files(changeset: &Changeset, files: &[usize]) -> DiffStats {
+    let mut stats = DiffStats {
+        files: files.len(),
+        ..DiffStats::default()
+    };
+    for file in files.iter().filter_map(|file| changeset.files.get(*file)) {
+        stats.additions += file.additions;
+        stats.deletions += file.deletions;
+        if file.is_binary {
+            stats.binary_files += 1;
+        }
+    }
+    stats
 }
 
 fn git_branches(repo: &Path) -> Vec<String> {
@@ -3569,7 +3841,9 @@ enum ContextSourceEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UiModel {
     rows: Vec<UiRow>,
-    file_start_rows: Vec<usize>,
+    file_start_rows: Vec<Option<usize>>,
+    file_row_starts: Vec<(usize, usize)>,
+    visible_files: Vec<usize>,
     hunk_start_rows: Vec<usize>,
 }
 
@@ -3578,6 +3852,16 @@ impl UiModel {
         changeset: &Changeset,
         layout: DiffLayoutMode,
         context_expansions: &HashMap<ContextKey, usize>,
+    ) -> Self {
+        let visible_files: Vec<_> = (0..changeset.files.len()).collect();
+        Self::new_filtered(changeset, layout, context_expansions, &visible_files)
+    }
+
+    fn new_filtered(
+        changeset: &Changeset,
+        layout: DiffLayoutMode,
+        context_expansions: &HashMap<ContextKey, usize>,
+        visible_files: &[usize],
     ) -> Self {
         let total_hunks = changeset
             .files
@@ -3612,14 +3896,19 @@ impl UiModel {
                 .saturating_add(expanded_context_rows)
                 .saturating_add(expanded_context_controls),
         );
-        let mut file_start_rows = Vec::with_capacity(changeset.files.len());
+        let mut file_start_rows = vec![None; changeset.files.len()];
+        let mut file_row_starts = Vec::with_capacity(visible_files.len());
         let mut hunk_start_rows = Vec::with_capacity(total_hunks);
 
-        for (file_index, file) in changeset.files.iter().enumerate() {
-            if file_index > 0 {
+        for (visible_index, file_index) in visible_files.iter().copied().enumerate() {
+            let Some(file) = changeset.files.get(file_index) else {
+                continue;
+            };
+            if visible_index > 0 {
                 rows.push(UiRow::FileSeparator);
             }
-            file_start_rows.push(rows.len());
+            file_start_rows[file_index] = Some(rows.len());
+            file_row_starts.push((file_index, rows.len()));
             rows.push(UiRow::FileHeader(file_index));
 
             if file.is_binary || file.hunks.is_empty() {
@@ -3739,6 +4028,8 @@ impl UiModel {
         Self {
             rows,
             file_start_rows,
+            file_row_starts,
+            visible_files: visible_files.to_vec(),
             hunk_start_rows,
         }
     }
@@ -3756,18 +4047,31 @@ impl UiModel {
     }
 
     fn file_start_row(&self, file: usize) -> Option<usize> {
-        self.file_start_rows.get(file).copied()
+        self.file_start_rows.get(file).copied().flatten()
     }
 
     fn file_at_row(&self, row: usize) -> Option<usize> {
-        if self.file_start_rows.is_empty() {
+        if self.file_row_starts.is_empty() {
             return None;
         }
-        match self.file_start_rows.binary_search(&row) {
-            Ok(index) => Some(index),
-            Err(0) => Some(0),
-            Err(index) => Some(index - 1),
+        match self
+            .file_row_starts
+            .binary_search_by_key(&row, |(_, start)| *start)
+        {
+            Ok(index) => self.file_row_starts.get(index).map(|(file, _)| *file),
+            Err(0) => self.file_row_starts.first().map(|(file, _)| *file),
+            Err(index) => self.file_row_starts.get(index - 1).map(|(file, _)| *file),
         }
+    }
+
+    fn visible_files(&self) -> &[usize] {
+        &self.visible_files
+    }
+
+    fn visible_file_position(&self, file: usize) -> Option<usize> {
+        self.visible_files
+            .iter()
+            .position(|candidate| *candidate == file)
     }
 
     fn next_hunk_row(&self, row: usize) -> Option<usize> {
@@ -4045,7 +4349,9 @@ enum SyntaxStartupMode {
 #[derive(Debug)]
 struct DiffApp {
     options: DiffOptions,
+    base_changeset: Changeset,
     changeset: Changeset,
+    total_stats: DiffStats,
     stats: DiffStats,
     model: UiModel,
     layout: DiffLayoutMode,
@@ -4062,6 +4368,13 @@ struct DiffApp {
     file_sidebar_resizing: bool,
     help_menu_open: bool,
     diff_menu_open: bool,
+    filter_input: Option<DiffFilterKind>,
+    file_filter: String,
+    file_filter_input: String,
+    grep_filter: String,
+    grep_filter_input: String,
+    grep_matches: Vec<usize>,
+    selected_grep_match: Option<usize>,
     branch_menu_open: Option<BranchMenu>,
     branch_menu_input: String,
     branch_menu_scroll: usize,
@@ -4116,6 +4429,7 @@ impl DiffApp {
         let context_cache = HashMap::new();
         let model = UiModel::new(&changeset, layout, &context_expansions);
         let stats = changeset.stats();
+        let total_stats = stats.clone();
         let branch_base = default_branch_base(&options, &changeset.repo);
         let current_head = current_head_label(&changeset.repo);
         let branch_head = branch_head_from_options(&options, current_head.as_deref());
@@ -4169,7 +4483,9 @@ impl DiffApp {
         let max_line_width = changeset_max_line_width(&changeset);
         Self {
             options,
+            base_changeset: changeset.clone(),
             changeset,
+            total_stats,
             stats,
             model,
             layout,
@@ -4186,6 +4502,13 @@ impl DiffApp {
             file_sidebar_resizing: false,
             help_menu_open: false,
             diff_menu_open: false,
+            filter_input: None,
+            file_filter: String::new(),
+            file_filter_input: String::new(),
+            grep_filter: String::new(),
+            grep_filter_input: String::new(),
+            grep_matches: Vec::new(),
+            selected_grep_match: None,
             branch_menu_open: None,
             branch_menu_input: String::new(),
             branch_menu_scroll: 0,
@@ -4214,6 +4537,10 @@ impl DiffApp {
         }
 
         self.mouse_scroll.reset();
+
+        if self.filter_input.is_some() && self.handle_filter_input_key(key) {
+            return Ok(false);
+        }
 
         if self.help_menu_open {
             if key.code == KeyCode::Esc || is_plain_char_key(key, '?') {
@@ -4304,6 +4631,7 @@ impl DiffApp {
         }
 
         match key.code {
+            KeyCode::Esc if self.filters_active() => self.clear_all_filters(),
             KeyCode::Esc | KeyCode::Char('q') => return Ok(true),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_by(1),
             KeyCode::Up | KeyCode::Char('k') => self.scroll_by(-1),
@@ -4317,6 +4645,11 @@ impl DiffApp {
             KeyCode::PageUp | KeyCode::Char('u') => self.scroll_by(-20),
             KeyCode::Home | KeyCode::Char('g') => self.set_scroll(0),
             KeyCode::End | KeyCode::Char('G') => self.set_scroll(self.max_scroll()),
+            KeyCode::Char('f') => self.open_filter_input(DiffFilterKind::File),
+            KeyCode::Char('/') => self.open_filter_input(DiffFilterKind::Grep),
+            KeyCode::Char('n') if !self.grep_filter.is_empty() => self.move_grep_match(1),
+            KeyCode::Char('p') if !self.grep_filter.is_empty() => self.move_grep_match(-1),
+            KeyCode::Char('N') if !self.grep_filter.is_empty() => self.move_grep_match(-1),
             KeyCode::Char('n') | KeyCode::Char('J') => self.move_file(1),
             KeyCode::Char('p') | KeyCode::Char('K') => self.move_file(-1),
             KeyCode::Char('b') => self.toggle_file_sidebar(),
@@ -4536,12 +4869,12 @@ impl DiffApp {
             return false;
         }
 
-        let file = self
+        let position = self
             .file_sidebar_scroll
             .saturating_add(usize::from(row - 1));
-        if file >= self.changeset.files.len() {
+        let Some(file) = self.model.visible_files().get(position).copied() else {
             return false;
-        }
+        };
 
         self.select_file(file);
         true
@@ -4606,8 +4939,18 @@ impl DiffApp {
         );
         self.context_expansions
             .insert(ContextKey { file, hunk }, next);
-        self.model = UiModel::new(&self.changeset, self.layout, &self.context_expansions);
+        let visible_files =
+            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
+        self.model = UiModel::new_filtered(
+            &self.changeset,
+            self.layout,
+            &self.context_expansions,
+            &visible_files,
+        );
+        self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
+        self.selected_grep_match = None;
         self.set_scroll(self.scroll);
+        self.sync_grep_match_selection_to_scroll();
         self.set_horizontal_scroll(self.horizontal_scroll);
         self.dirty = true;
         true
@@ -4622,8 +4965,18 @@ impl DiffApp {
             return false;
         }
 
-        self.model = UiModel::new(&self.changeset, self.layout, &self.context_expansions);
+        let visible_files =
+            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
+        self.model = UiModel::new_filtered(
+            &self.changeset,
+            self.layout,
+            &self.context_expansions,
+            &visible_files,
+        );
+        self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
+        self.selected_grep_match = None;
         self.set_scroll(self.scroll);
+        self.sync_grep_match_selection_to_scroll();
         self.set_horizontal_scroll(self.horizontal_scroll);
         self.dirty = true;
         true
@@ -5219,11 +5572,23 @@ impl DiffApp {
     }
 
     fn set_scroll(&mut self, scroll: usize) {
+        self.set_scroll_with_grep_sync(scroll, true);
+    }
+
+    fn set_scroll_centered_on(&mut self, row: usize) {
+        let center_offset = self.viewport_rows.saturating_sub(1) / 2;
+        self.set_scroll_with_grep_sync(row.saturating_sub(center_offset), false);
+    }
+
+    fn set_scroll_with_grep_sync(&mut self, scroll: usize, sync_grep: bool) {
         let previous_scroll = self.scroll;
         let previous_file = self.selected_file;
         self.scroll = scroll.min(self.max_scroll());
         if let Some(file) = self.model.file_at_row(self.scroll) {
             self.selected_file = file;
+        }
+        if sync_grep && self.scroll != previous_scroll {
+            self.sync_grep_match_selection_to_scroll();
         }
         if self.scroll != previous_scroll || self.selected_file != previous_file {
             self.dirty = true;
@@ -5454,6 +5819,10 @@ impl DiffApp {
     }
 
     fn drain_syntax(&mut self) {
+        if self.syntax_updates_paused() {
+            return;
+        }
+
         if let Some(syntax) = self.syntax.as_mut()
             && syntax.drain(self.generation, MAX_SYNTAX_RESULTS_PER_FRAME)
         {
@@ -5466,6 +5835,243 @@ impl DiffApp {
             .as_ref()
             .map(SyntaxRuntime::stats)
             .unwrap_or_default()
+    }
+
+    fn syntax_updates_paused(&self) -> bool {
+        self.filter_input.is_some()
+    }
+
+    fn open_filter_input(&mut self, kind: DiffFilterKind) {
+        match kind {
+            DiffFilterKind::File => self.file_filter_input = self.file_filter.clone(),
+            DiffFilterKind::Grep => self.grep_filter_input = self.grep_filter.clone(),
+        }
+        self.filter_input = Some(kind);
+        self.diff_menu_open = false;
+        self.close_branch_menu();
+        self.dirty = true;
+    }
+
+    fn handle_filter_input_key(&mut self, key: KeyEvent) -> bool {
+        let Some(kind) = self.filter_input else {
+            return false;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.clear_all_filters();
+                self.filter_input = None;
+            }
+            KeyCode::Enter => {
+                self.commit_filter_input(kind);
+                self.filter_input = None;
+            }
+            KeyCode::Backspace if !self.filter_input_query(kind).is_empty() => {
+                self.filter_input_query_mut(kind).pop();
+                self.sync_filter_input(kind);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.filter_input_query_mut(kind).clear();
+                self.sync_filter_input(kind);
+            }
+            KeyCode::Char(character)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.filter_input_query_mut(kind).push(character);
+                self.sync_filter_input(kind);
+            }
+            _ => {}
+        }
+
+        true
+    }
+
+    fn filter_query(&self, kind: DiffFilterKind) -> &str {
+        match kind {
+            DiffFilterKind::File => &self.file_filter,
+            DiffFilterKind::Grep => &self.grep_filter,
+        }
+    }
+
+    fn filter_query_mut(&mut self, kind: DiffFilterKind) -> &mut String {
+        match kind {
+            DiffFilterKind::File => &mut self.file_filter,
+            DiffFilterKind::Grep => &mut self.grep_filter,
+        }
+    }
+
+    fn filter_input_query(&self, kind: DiffFilterKind) -> &str {
+        match kind {
+            DiffFilterKind::File => &self.file_filter_input,
+            DiffFilterKind::Grep => &self.grep_filter_input,
+        }
+    }
+
+    fn filter_input_query_mut(&mut self, kind: DiffFilterKind) -> &mut String {
+        match kind {
+            DiffFilterKind::File => &mut self.file_filter_input,
+            DiffFilterKind::Grep => &mut self.grep_filter_input,
+        }
+    }
+
+    fn commit_filter_input(&mut self, kind: DiffFilterKind) {
+        let next = self.filter_input_query(kind).to_owned();
+        if self.filter_query(kind) == next {
+            self.dirty = true;
+            return;
+        }
+
+        *self.filter_query_mut(kind) = next;
+        self.apply_filter_change(kind);
+    }
+
+    fn sync_filter_input(&mut self, kind: DiffFilterKind) {
+        let next = self.filter_input_query(kind).to_owned();
+        if self.filter_query(kind) == next {
+            self.dirty = true;
+            return;
+        }
+
+        *self.filter_query_mut(kind) = next;
+        self.apply_filter_change(kind);
+    }
+
+    fn clear_all_filters(&mut self) {
+        if self.file_filter.is_empty() && self.grep_filter.is_empty() {
+            self.file_filter_input.clear();
+            self.grep_filter_input.clear();
+            self.dirty = true;
+            return;
+        }
+
+        self.file_filter.clear();
+        self.file_filter_input.clear();
+        self.grep_filter.clear();
+        self.grep_filter_input.clear();
+        self.apply_filters(false);
+    }
+
+    fn apply_filter_change(&mut self, kind: DiffFilterKind) {
+        let jump_to_grep = kind == DiffFilterKind::Grep && !self.grep_filter.is_empty();
+        self.apply_filters(jump_to_grep);
+    }
+
+    fn apply_filters(&mut self, jump_to_grep: bool) {
+        let selected_path = self
+            .changeset
+            .files
+            .get(self.selected_file)
+            .map(|file| file.display_path().to_owned());
+        let relative_scroll = self
+            .model
+            .file_start_row(self.selected_file)
+            .map(|start| self.scroll.saturating_sub(start))
+            .unwrap_or_default();
+
+        let visible_files =
+            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
+        self.replace_visible_files(visible_files, selected_path, relative_scroll, jump_to_grep);
+    }
+
+    fn replace_visible_files(
+        &mut self,
+        visible_files: Vec<usize>,
+        selected_path: Option<String>,
+        relative_scroll: usize,
+        jump_to_grep: bool,
+    ) {
+        let selected_file = selected_path
+            .and_then(|path| {
+                self.changeset
+                    .files
+                    .iter()
+                    .position(|file| file.display_path() == path)
+            })
+            .filter(|file| visible_files.contains(file))
+            .or_else(|| visible_files.first().copied())
+            .unwrap_or(0);
+
+        self.stats = diff_stats_for_files(&self.changeset, &visible_files);
+        self.max_line_width = changeset_max_line_width_for_files(&self.changeset, &visible_files);
+        self.model = UiModel::new_filtered(
+            &self.changeset,
+            self.layout,
+            &self.context_expansions,
+            &visible_files,
+        );
+        self.selected_file = selected_file;
+        self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
+        self.selected_grep_match = None;
+
+        let scroll = self
+            .model
+            .file_start_row(self.selected_file)
+            .map(|start| start.saturating_add(relative_scroll))
+            .unwrap_or_default();
+        self.set_scroll(scroll);
+        self.set_horizontal_scroll(self.horizontal_scroll);
+        self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
+
+        if jump_to_grep && !self.grep_matches.is_empty() {
+            self.selected_grep_match = Some(0);
+            self.set_scroll_centered_on(self.grep_matches[0]);
+        } else {
+            self.sync_grep_match_selection_to_scroll();
+        }
+
+        self.dirty = true;
+    }
+
+    fn filters_active(&self) -> bool {
+        !self.file_filter.is_empty() || !self.grep_filter.is_empty()
+    }
+
+    #[cfg(test)]
+    fn current_grep_match_row(&self) -> Option<usize> {
+        self.selected_grep_match
+            .and_then(|index| self.grep_matches.get(index).copied())
+    }
+
+    fn sync_grep_match_selection_to_scroll(&mut self) {
+        if self.grep_filter.is_empty() || self.grep_matches.is_empty() {
+            self.selected_grep_match = None;
+            return;
+        }
+
+        self.selected_grep_match = self
+            .grep_matches
+            .iter()
+            .position(|row| *row >= self.scroll)
+            .or_else(|| self.grep_matches.len().checked_sub(1));
+    }
+
+    fn move_grep_match(&mut self, delta: isize) {
+        if self.grep_matches.is_empty() {
+            self.selected_grep_match = None;
+            self.set_notice("no grep matches");
+            return;
+        }
+
+        let len = self.grep_matches.len();
+        let current = self.selected_grep_match.unwrap_or_else(|| {
+            self.grep_matches
+                .iter()
+                .position(|row| *row >= self.scroll)
+                .unwrap_or(0)
+        });
+        let next = if delta < 0 {
+            current
+                .saturating_add(len)
+                .saturating_sub(delta.unsigned_abs() % len)
+                % len
+        } else {
+            current.saturating_add(delta as usize) % len
+        };
+
+        self.selected_grep_match = Some(next);
+        self.set_scroll_centered_on(self.grep_matches[next]);
+        self.dirty = true;
     }
 
     fn syntax_line(
@@ -5533,26 +6139,39 @@ impl DiffApp {
     }
 
     fn move_file(&mut self, delta: isize) {
-        if self.changeset.files.is_empty() {
+        let visible_files = self.model.visible_files();
+        if visible_files.is_empty() {
             return;
         }
 
+        let current = self
+            .model
+            .visible_file_position(self.selected_file)
+            .unwrap_or_default();
         let next = if delta < 0 {
-            self.selected_file.saturating_sub(delta.unsigned_abs())
+            current.saturating_sub(delta.unsigned_abs())
         } else {
-            self.selected_file.saturating_add(delta as usize)
+            current.saturating_add(delta as usize)
         }
-        .min(self.changeset.files.len() - 1);
+        .min(visible_files.len() - 1);
 
-        self.select_file(next);
+        self.select_file(visible_files[next]);
     }
 
     fn select_file(&mut self, file: usize) {
-        if self.changeset.files.is_empty() {
+        if self.model.visible_files().is_empty() {
             return;
         }
 
-        let next = file.min(self.changeset.files.len() - 1);
+        let next = if self.model.file_start_row(file).is_some() {
+            file
+        } else {
+            self.model
+                .visible_files()
+                .first()
+                .copied()
+                .unwrap_or_default()
+        };
         self.selected_file = next;
         if let Some(row) = self.model.file_start_row(next) {
             self.set_scroll(row);
@@ -5580,16 +6199,22 @@ impl DiffApp {
     }
 
     fn ensure_file_sidebar_selection_visible(&mut self, visible_rows: usize) {
-        if self.changeset.files.is_empty() || visible_rows == 0 {
+        let Some(selected_position) = self.model.visible_file_position(self.selected_file) else {
+            self.file_sidebar_scroll = 0;
+            return;
+        };
+        if visible_rows == 0 {
             self.file_sidebar_scroll = 0;
             return;
         }
 
-        if self.selected_file < self.file_sidebar_scroll {
-            self.file_sidebar_scroll = self.selected_file;
-        } else if self.selected_file >= self.file_sidebar_scroll.saturating_add(visible_rows) {
+        if selected_position < self.file_sidebar_scroll {
+            self.file_sidebar_scroll = selected_position;
+        } else if selected_position >= self.file_sidebar_scroll.saturating_add(visible_rows) {
             self.file_sidebar_scroll = self
-                .selected_file
+                .model
+                .visible_file_position(self.selected_file)
+                .unwrap_or_default()
                 .saturating_add(1)
                 .saturating_sub(visible_rows);
         }
@@ -5600,8 +6225,8 @@ impl DiffApp {
     }
 
     fn max_file_sidebar_scroll(&self, visible_rows: usize) -> usize {
-        self.changeset
-            .files
+        self.model
+            .visible_files()
             .len()
             .saturating_sub(visible_rows.max(1))
     }
@@ -5635,13 +6260,23 @@ impl DiffApp {
         }
 
         self.layout = layout;
-        self.model = UiModel::new(&self.changeset, self.layout, &self.context_expansions);
+        let visible_files =
+            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
+        self.model = UiModel::new_filtered(
+            &self.changeset,
+            self.layout,
+            &self.context_expansions,
+            &visible_files,
+        );
+        self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
+        self.selected_grep_match = None;
         self.set_horizontal_scroll(self.horizontal_scroll);
         let scroll = self
             .model
             .file_start_row(self.selected_file)
             .unwrap_or_default();
         self.set_scroll(scroll);
+        self.sync_grep_match_selection_to_scroll();
         self.dirty = true;
         if show_notice {
             self.set_notice(match self.layout {
@@ -5668,7 +6303,7 @@ impl DiffApp {
         notice: Option<&str>,
     ) {
         let options_changed = self.options != options;
-        if !options_changed && self.changeset == changeset {
+        if !options_changed && self.base_changeset == changeset {
             if let Some(notice) = notice {
                 self.set_notice(notice);
             }
@@ -5685,14 +6320,6 @@ impl DiffApp {
             .file_start_row(self.selected_file)
             .map(|start| self.scroll.saturating_sub(start))
             .unwrap_or_default();
-        let selected_file = selected_path
-            .and_then(|path| {
-                changeset
-                    .files
-                    .iter()
-                    .position(|file| file.display_path() == path)
-            })
-            .unwrap_or(0);
 
         let previous_branch_base = self.branch_base.clone();
         let previous_branch_head = self.branch_head.clone();
@@ -5713,8 +6340,8 @@ impl DiffApp {
             ],
         );
         self.branch_menu_scroll = self.branch_menu_scroll.min(self.max_branch_menu_scroll());
-        self.stats = changeset.stats();
-        self.max_line_width = changeset_max_line_width(&changeset);
+        self.total_stats = changeset.stats();
+        self.base_changeset = changeset.clone();
         self.changeset = changeset;
         self.context_expansions.clear();
         self.context_cache.clear();
@@ -5723,20 +6350,12 @@ impl DiffApp {
         if let Some(syntax) = self.syntax.as_mut() {
             syntax.clear(self.generation);
         }
-        self.model = UiModel::new(&self.changeset, self.layout, &self.context_expansions);
-        self.selected_file = selected_file.min(self.changeset.files.len().saturating_sub(1));
-        let scroll = self
-            .model
-            .file_start_row(self.selected_file)
-            .map(|start| start.saturating_add(relative_scroll))
-            .unwrap_or_default();
-        self.set_scroll(scroll);
-        self.set_horizontal_scroll(self.horizontal_scroll);
-        self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
+        let visible_files =
+            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
+        self.replace_visible_files(visible_files, selected_path, relative_scroll, false);
         if let Some(notice) = notice {
             self.set_notice(notice);
         }
-        self.dirty = true;
     }
 }
 
@@ -5745,9 +6364,14 @@ fn max_scroll_for_viewport(row_count: usize, viewport_rows: usize) -> usize {
 }
 
 fn changeset_max_line_width(changeset: &Changeset) -> usize {
-    changeset
-        .files
+    let files: Vec<_> = (0..changeset.files.len()).collect();
+    changeset_max_line_width_for_files(changeset, &files)
+}
+
+fn changeset_max_line_width_for_files(changeset: &Changeset, files: &[usize]) -> usize {
+    files
         .iter()
+        .filter_map(|file| changeset.files.get(*file))
         .flat_map(|file| file.hunks.iter())
         .flat_map(|hunk| hunk.lines.iter())
         .map(|line| line.text.width())
@@ -5780,38 +6404,65 @@ fn split_cell_content_width(width: usize) -> usize {
 
 fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
     let area = frame.area();
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(area);
-    let sidebar_width = file_sidebar_width(app, vertical[1].width);
+    if area.height == 0 {
+        return;
+    }
+
+    let header_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: 1,
+    };
+    let filter_bar_height = u16::from(filter_bar_visible(app) && area.height > 1);
+    let body_height = area
+        .height
+        .saturating_sub(1)
+        .saturating_sub(filter_bar_height);
+    let body_area = Rect {
+        x: area.x,
+        y: area.y.saturating_add(1),
+        width: area.width,
+        height: body_height,
+    };
+    let filter_bar_area = (filter_bar_height > 0).then_some(Rect {
+        x: area.x,
+        y: area.y.saturating_add(area.height.saturating_sub(1)),
+        width: area.width,
+        height: 1,
+    });
+
+    let sidebar_width = file_sidebar_width(app, body_area.width);
     app.file_sidebar_render_width = sidebar_width;
     let (sidebar_area, diff_area) = if sidebar_width > 0 {
         (
             Some(Rect {
-                x: vertical[1].x,
-                y: vertical[1].y,
+                x: body_area.x,
+                y: body_area.y,
                 width: sidebar_width,
-                height: vertical[1].height,
+                height: body_area.height,
             }),
             Rect {
-                x: vertical[1].x.saturating_add(sidebar_width),
-                y: vertical[1].y,
-                width: vertical[1].width.saturating_sub(sidebar_width),
-                height: vertical[1].height,
+                x: body_area.x.saturating_add(sidebar_width),
+                y: body_area.y,
+                width: body_area.width.saturating_sub(sidebar_width),
+                height: body_area.height,
             },
         )
     } else {
-        (None, vertical[1])
+        (None, body_area)
     };
 
     app.set_viewport_rows(diff_area.height as usize);
     app.set_viewport_width(diff_area.width as usize);
-    draw_header(frame, app, vertical[0]);
+    draw_header(frame, app, header_area);
     if let Some(sidebar_area) = sidebar_area {
         draw_file_sidebar(frame, app, sidebar_area);
     }
     draw_diff(frame, app, diff_area);
+    if let Some(filter_bar_area) = filter_bar_area {
+        draw_filter_bar(frame, app, filter_bar_area);
+    }
     draw_diff_menu(frame, app, area);
     draw_branch_menu(frame, app, area);
     draw_help_menu(frame, app, area);
@@ -5823,6 +6474,145 @@ fn draw_header(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
         Paragraph::new(line).style(Style::default().bg(statusline_bg(app.theme))),
         area,
     );
+}
+
+fn draw_filter_bar(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
+    let line = filter_bar_line(app, area.width as usize);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(statusline_bg(app.theme))),
+        area,
+    );
+}
+
+fn filter_bar_visible(app: &DiffApp) -> bool {
+    app.filter_input.is_some() || app.filters_active()
+}
+
+fn filter_bar_line(app: &DiffApp, width: usize) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+
+    if !filter_bar_visible(app) {
+        return Line::from(Span::styled(
+            " ".repeat(width),
+            Style::default().bg(statusline_bg(app.theme)),
+        ));
+    }
+
+    let mut remaining = width;
+    let mut spans = Vec::new();
+    let bg = statusline_bg(app.theme);
+
+    if app.filter_input == Some(DiffFilterKind::File) || !app.file_filter.is_empty() {
+        push_file_filter_bar_spans(app, &mut spans, &mut remaining);
+    }
+
+    if app.filter_input == Some(DiffFilterKind::Grep) || !app.grep_filter.is_empty() {
+        if !spans.is_empty() {
+            push_filter_bar_span(&mut spans, "  ", Style::default().bg(bg), &mut remaining);
+        }
+        push_grep_filter_bar_spans(app, &mut spans, &mut remaining);
+    }
+
+    if remaining > 0 {
+        spans.push(Span::styled(" ".repeat(remaining), Style::default().bg(bg)));
+    }
+
+    Line::from(spans)
+}
+
+fn push_file_filter_bar_spans(
+    app: &DiffApp,
+    spans: &mut Vec<Span<'static>>,
+    remaining: &mut usize,
+) {
+    let bg = statusline_bg(app.theme);
+    let query = filter_bar_query(app, DiffFilterKind::File);
+    push_filter_bar_span(
+        spans,
+        "filter: ",
+        Style::default()
+            .fg(app.theme.foreground)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+        remaining,
+    );
+    if query.is_empty() {
+        push_filter_bar_span(
+            spans,
+            "type to filter files",
+            Style::default().fg(app.theme.muted).bg(bg),
+            remaining,
+        );
+    } else {
+        push_filter_bar_span(
+            spans,
+            query,
+            Style::default().fg(app.theme.foreground).bg(bg),
+            remaining,
+        );
+    }
+}
+
+fn push_grep_filter_bar_spans(
+    app: &DiffApp,
+    spans: &mut Vec<Span<'static>>,
+    remaining: &mut usize,
+) {
+    let bg = statusline_bg(app.theme);
+    let query = filter_bar_query(app, DiffFilterKind::Grep);
+    push_filter_bar_span(
+        spans,
+        "/",
+        Style::default()
+            .fg(app.theme.foreground)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
+        remaining,
+    );
+    if query.is_empty() {
+        push_filter_bar_span(
+            spans,
+            " type to grep diff",
+            Style::default().fg(app.theme.muted).bg(bg),
+            remaining,
+        );
+    } else {
+        push_filter_bar_span(
+            spans,
+            query,
+            Style::default().fg(app.theme.foreground).bg(bg),
+            remaining,
+        );
+    }
+}
+
+fn filter_bar_query(app: &DiffApp, kind: DiffFilterKind) -> &str {
+    if app.filter_input == Some(kind) {
+        app.filter_input_query(kind)
+    } else {
+        app.filter_query(kind)
+    }
+}
+
+fn push_filter_bar_span(
+    spans: &mut Vec<Span<'static>>,
+    text: &str,
+    style: Style,
+    remaining: &mut usize,
+) {
+    if *remaining == 0 {
+        return;
+    }
+
+    let text = fit(text, *remaining);
+    if text.is_empty() {
+        return;
+    }
+
+    *remaining = (*remaining).saturating_sub(text.width());
+    spans.push(Span::styled(text, style));
 }
 
 fn statusline_header_line(app: &DiffApp, width: usize) -> Line<'static> {
@@ -5863,11 +6653,6 @@ fn push_statusline_left_spans(
     app: &DiffApp,
     remaining: &mut usize,
 ) {
-    let notice = app
-        .notice
-        .as_ref()
-        .map(|notice| notice.text.as_str())
-        .unwrap_or("");
     push_fitted_statusline_span(
         spans,
         diff_selector_text(&app.options),
@@ -5933,7 +6718,7 @@ fn push_statusline_left_spans(
     );
     push_fitted_statusline_span(
         spans,
-        format!("{} files", format_count(app.stats.files)),
+        statusline_file_count_label(app),
         Style::default()
             .fg(app.theme.foreground)
             .bg(statusline_bg(app.theme)),
@@ -5969,6 +6754,11 @@ fn push_statusline_left_spans(
             .add_modifier(Modifier::BOLD),
         remaining,
     );
+    let notice = app
+        .notice
+        .as_ref()
+        .map(|notice| notice.text.as_str())
+        .unwrap_or_default();
     if !notice.is_empty() {
         push_fitted_statusline_span(
             spans,
@@ -5984,6 +6774,18 @@ fn push_statusline_left_spans(
                 .bg(statusline_bg(app.theme)),
             remaining,
         );
+    }
+}
+
+fn statusline_file_count_label(app: &DiffApp) -> String {
+    if app.filters_active() {
+        format!(
+            "{}/{} files",
+            format_count(app.stats.files),
+            format_count(app.total_stats.files)
+        )
+    } else {
+        format!("{} files", format_count(app.stats.files))
     }
 }
 
@@ -6020,12 +6822,12 @@ fn statusline_file_label(app: &DiffApp, max_width: usize) -> String {
     }
 
     let progress = progress_label(app.scroll, app.max_scroll());
-    let file_count = app.changeset.files.len();
-    let file_number = if file_count == 0 {
-        0
-    } else {
-        app.selected_file.min(file_count - 1) + 1
-    };
+    let file_count = app.model.visible_files().len();
+    let file_number = app
+        .model
+        .visible_file_position(app.selected_file)
+        .map(|position| position + 1)
+        .unwrap_or_default();
     let position = format!("{file_number}/{file_count} {progress}");
     let fallback = "No file";
     let path = app
@@ -6438,9 +7240,10 @@ fn max_file_sidebar_width(area_width: u16) -> u16 {
 
 fn file_sidebar_desired_width(app: &DiffApp) -> u16 {
     let content_width = app
-        .changeset
-        .files
+        .model
+        .visible_files()
         .iter()
+        .filter_map(|file| app.changeset.files.get(*file))
         .map(|file| {
             let stats = file_sidebar_stats(file);
             let stats_width = if stats.is_empty() {
@@ -6486,15 +7289,17 @@ fn file_sidebar_lines(app: &DiffApp, width: usize, height: usize) -> Vec<Line<'s
     let mut lines = Vec::with_capacity(height);
     let visible_files = height;
     let content_width = width.saturating_sub(1);
-    for file_index in app.file_sidebar_scroll..app.file_sidebar_scroll.saturating_add(visible_files)
-    {
-        let Some(file) = app.changeset.files.get(file_index) else {
+    for position in app.file_sidebar_scroll..app.file_sidebar_scroll.saturating_add(visible_files) {
+        let Some(file_index) = app.model.visible_files().get(position).copied() else {
             lines.push(file_sidebar_line(
                 "",
                 Style::default().bg(base_bg(theme)),
                 width,
                 theme,
             ));
+            continue;
+        };
+        let Some(file) = app.changeset.files.get(file_index) else {
             continue;
         };
 
@@ -6750,9 +7555,14 @@ fn format_count(count: usize) -> String {
 
 fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
     if app.model.is_empty() {
+        let message = if app.filters_active() && !app.base_changeset.files.is_empty() {
+            "No files match filters."
+        } else {
+            "No changes."
+        };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "No changes.",
+                message,
                 Style::default().fg(app.theme.muted),
             )))
             .style(Style::default().bg(base_bg(app.theme))),
@@ -6762,7 +7572,9 @@ fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
     }
 
     let visible_rows = area.height as usize;
-    app.prepare_syntax_for_viewport(visible_rows);
+    if !app.syntax_updates_paused() {
+        app.prepare_syntax_for_viewport(visible_rows);
+    }
 
     let mut lines = Vec::with_capacity(visible_rows);
     for offset in 0..visible_rows {
@@ -6786,7 +7598,7 @@ fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
 fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> Line<'static> {
     let theme = app.theme;
     let horizontal_scroll = app.horizontal_scroll;
-    match row {
+    let mut line = match row {
         UiRow::FileSeparator => file_separator_line(app.layout, width, theme),
         UiRow::FileHeader(file_index) => {
             let file = &app.changeset.files[file_index];
@@ -6850,6 +7662,57 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
             left,
             right,
         } => render_split_line(app, file, hunk, left, right, row_index, width),
+    };
+
+    if !app.grep_filter.is_empty() {
+        line = highlighted_grep_text_line(line, &app.grep_filter, theme);
+    }
+    line
+}
+
+fn highlighted_grep_text_line(line: Line<'static>, query: &str, theme: DiffTheme) -> Line<'static> {
+    let Some(matcher) = TextMatcher::new(query) else {
+        return line;
+    };
+
+    let mut spans = Vec::with_capacity(line.spans.len());
+    for span in line.spans {
+        push_highlighted_grep_spans(&mut spans, span, &matcher, theme);
+    }
+    Line::from(spans)
+}
+
+fn push_highlighted_grep_spans(
+    spans: &mut Vec<Span<'static>>,
+    span: Span<'static>,
+    matcher: &TextMatcher,
+    theme: DiffTheme,
+) {
+    let text = span.content.as_ref();
+    let ranges = matcher.match_ranges(text);
+    if ranges.is_empty() {
+        spans.push(span);
+        return;
+    }
+
+    let mut start = 0;
+    for range in ranges {
+        if start < range.start {
+            spans.push(Span::styled(
+                text[start..range.start].to_owned(),
+                span.style,
+            ));
+        }
+        spans.push(Span::styled(
+            text[range.clone()].to_owned(),
+            span.style
+                .fg(theme.search_match_fg)
+                .bg(theme.search_match_bg),
+        ));
+        start = range.end;
+    }
+    if start < text.len() {
+        spans.push(Span::styled(text[start..].to_owned(), span.style));
     }
 }
 
@@ -8705,6 +9568,168 @@ mod tests {
     }
 
     #[test]
+    fn f_key_filters_files_and_escape_clears_filter() {
+        let changeset = changeset_with_files(&["src/lib.rs", "README.md", "hz-tui/src/lib.rs"]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+            .expect("f should open file filter");
+        assert!(line_text(&filter_bar_line(&app, 40)).starts_with("filter: type to filter files"));
+        let generation_before_input = app.generation;
+        for character in "tui".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .expect("file filter input should be handled");
+        }
+
+        assert_eq!(app.file_filter, "tui");
+        assert_eq!(app.file_filter_input, "tui");
+        assert_eq!(visible_paths(&app), vec!["hz-tui/src/lib.rs"]);
+        assert_eq!(app.generation, generation_before_input);
+        assert!(line_text(&filter_bar_line(&app, 40)).starts_with("filter: tui"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("enter should keep file filter");
+
+        assert_eq!(app.generation, generation_before_input);
+        assert_eq!(app.file_filter, "tui");
+        assert_eq!(visible_paths(&app), vec!["hz-tui/src/lib.rs"]);
+        assert_eq!(statusline_file_count_label(&app), "1/3 files");
+        assert!(line_text(&filter_bar_line(&app, 40)).starts_with("filter: tui"));
+        assert!(!line_text(&statusline_header_line(&app, 120)).contains("f:tui"));
+        assert!(app.filter_input.is_none());
+        assert!(filter_bar_visible(&app));
+        assert!(line_text(&filter_bar_line(&app, 40)).starts_with("filter: tui"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+            .expect("f should reopen file filter");
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .expect("escape should clear file filter");
+
+        assert_eq!(app.file_filter, "");
+        assert_eq!(
+            visible_paths(&app),
+            vec!["src/lib.rs", "README.md", "hz-tui/src/lib.rs"]
+        );
+        assert!(app.filter_input.is_none());
+    }
+
+    #[test]
+    fn slash_filters_files_by_diff_content_and_escape_clears_filter() {
+        let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+            .expect("slash should open grep filter");
+        assert!(line_text(&filter_bar_line(&app, 40)).starts_with("/ type to grep diff"));
+        for character in "line 1".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .expect("grep filter input should be handled");
+        }
+
+        assert_eq!(app.grep_filter, "line 1");
+        assert_eq!(app.grep_filter_input, "line 1");
+        assert_eq!(visible_paths(&app), vec!["b.rs"]);
+        assert!(line_text(&filter_bar_line(&app, 40)).starts_with("/line 1"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("enter should keep grep filter");
+
+        assert_eq!(app.grep_filter, "line 1");
+        assert_eq!(visible_paths(&app), vec!["b.rs"]);
+        assert_eq!(app.grep_matches.len(), 1);
+        assert_eq!(app.current_grep_match_row(), Some(2));
+        assert!(line_text(&filter_bar_line(&app, 40)).starts_with("/line 1"));
+        assert!(!line_text(&statusline_header_line(&app, 120)).contains("/:line 1"));
+        assert!(app.filter_input.is_none());
+        assert!(filter_bar_visible(&app));
+        assert!(line_text(&filter_bar_line(&app, 40)).starts_with("/line 1"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+            .expect("slash should reopen grep filter");
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .expect("escape should clear grep filter");
+
+        assert_eq!(app.grep_filter, "");
+        assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs", "c.rs"]);
+        assert!(app.filter_input.is_none());
+    }
+
+    #[test]
+    fn file_filter_and_grep_filter_compose_and_render_together() {
+        let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+            .expect("f should open file filter");
+        app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
+            .expect("file filter input should be handled");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("enter should keep file filter");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+            .expect("slash should open grep filter");
+        for character in "line 1".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+                .expect("grep filter input should be handled");
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("enter should keep grep filter");
+
+        assert_eq!(visible_paths(&app), vec!["b.rs"]);
+        assert!(line_text(&filter_bar_line(&app, 80)).starts_with("filter: b  /line 1"));
+
+        let should_quit = app
+            .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .expect("escape should clear active filters");
+        assert!(!should_quit);
+        assert_eq!(app.file_filter, "");
+        assert_eq!(app.grep_filter, "");
+        assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs", "c.rs"]);
+        assert!(!filter_bar_visible(&app));
+    }
+
+    #[test]
+    fn n_and_p_navigate_grep_matches_when_grep_filter_is_active() {
+        let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.set_viewport_rows(5);
+        app.grep_filter = "line".to_owned();
+        app.apply_filters(true);
+
+        assert_eq!(app.grep_matches.len(), 3);
+        assert_eq!(app.current_grep_match_row(), Some(2));
+        let row = app.model.row(2).unwrap();
+        let rendered = render_row(&mut app, 2, row, 40);
+        assert!(
+            rendered
+                .spans
+                .iter()
+                .any(|span| span.content.as_ref() == "line"
+                    && span.style.bg == Some(app.theme.search_match_bg)),
+            "grep text should be highlighted"
+        );
+        assert!(
+            rendered
+                .spans
+                .iter()
+                .any(|span| span.content.as_ref() == "line"
+                    && span.style.fg == Some(app.theme.search_match_fg))
+        );
+        assert_ne!(rendered.spans[0].style.bg, Some(app.theme.search_match_bg));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+            .expect("n should move to next grep match");
+        assert_eq!(app.current_grep_match_row(), Some(6));
+        assert_eq!(app.scroll, 4);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))
+            .expect("p should move to previous grep match");
+        assert_eq!(app.current_grep_match_row(), Some(2));
+    }
+
+    #[test]
     fn question_mark_key_toggles_help_menu() {
         let changeset = changeset_with_context_lines(1);
         let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
@@ -9850,6 +10875,8 @@ mod tests {
                 bg: Some("#010203".to_owned()),
                 addition_bg: Some("#123456".to_owned()),
                 deletion_fg: Some("bright-red".to_owned()),
+                search_match_fg: Some("#112233".to_owned()),
+                search_match_bg: Some("#223344".to_owned()),
                 keyword: Some("ansi-13".to_owned()),
                 ..ColorOverrides::default()
             })
@@ -9861,6 +10888,8 @@ mod tests {
             Color::Rgb(0x12, 0x34, 0x56)
         );
         assert_eq!(theme.deletion_fg, Color::LightRed);
+        assert_eq!(theme.search_match_fg, Color::Rgb(0x11, 0x22, 0x33));
+        assert_eq!(theme.search_match_bg, Color::Rgb(0x22, 0x33, 0x44));
         assert_eq!(
             theme.syntax.color(SyntaxClass::Keyword),
             Some(Color::Indexed(13))
@@ -10856,6 +11885,15 @@ base0F = "ffffff"
 
     fn line_text(line: &Line<'_>) -> String {
         span_text(&line.spans)
+    }
+
+    fn visible_paths(app: &DiffApp) -> Vec<&str> {
+        app.model
+            .visible_files()
+            .iter()
+            .filter_map(|file| app.changeset.files.get(*file))
+            .map(|file| file.display_path())
+            .collect()
     }
 
     fn span_text(spans: &[Span<'_>]) -> String {

@@ -200,6 +200,8 @@ transparent_background = false     # keep diff backgrounds by default
 # deletion_bg = "#372526"          # full-line - background
 # addition_inline_bg = "#284b32"   # paired word-diff background
 # deletion_inline_bg = "#5a3030"   # paired word-diff background
+# search_match_fg = "#111315"      # grep match foreground; like a Search highlight group
+# search_match_bg = "#e5c07b"      # grep match background; defaults come from the colorscheme
 
 [diff]
 line_background = "subtle"         # none, subtle, or strong
@@ -275,7 +277,8 @@ index such as `"10"`, `default`, `reset`, `none`, or named ANSI colors such as
 `red`, `bright-green`, and `dark-gray`. Diff override keys include `bg`, `fg`,
 `header`, `file`, `hunk`, `notice`, `muted`, `gutter_bg`, `empty_diff`,
 `addition_fg`, `addition_gutter_bg`, `addition_bg`, `addition_inline_bg`,
-`deletion_fg`, `deletion_gutter_bg`, `deletion_bg`, and `deletion_inline_bg`.
+`deletion_fg`, `deletion_gutter_bg`, `deletion_bg`, `deletion_inline_bg`,
+`search_match_fg`, and `search_match_bg`.
 Syntax override keys include `attribute`, `comment`, `constant`, `constructor`,
 `function`, `keyword`, `label`, `module`, `number`, `operator`, `property`,
 `punctuation`, `string`, `tag`, `type`, and `variable`.
