@@ -379,7 +379,7 @@ pub enum DiffContextExpansion {
 impl DiffContextExpansion {
     pub fn expand_count(self, available: usize) -> usize {
         match self {
-            Self::Lines(lines) => lines.min(available),
+            Self::Lines(lines) => available.min(lines.max(1)),
             Self::Full => available,
         }
     }
@@ -1967,6 +1967,12 @@ context_expand = 0
             DiffContextExpansion::Lines(1)
         );
         assert_eq!(settings.diff.context_expansion.expand_count(10), 1);
+    }
+
+    #[test]
+    fn context_expansion_count_clamps_direct_zero_lines_to_one() {
+        assert_eq!(DiffContextExpansion::Lines(0).expand_count(10), 1);
+        assert_eq!(DiffContextExpansion::Lines(0).expand_count(0), 0);
     }
 
     #[test]
