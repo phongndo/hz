@@ -243,7 +243,7 @@ impl DiffTheme {
             file: Color::Reset,
             hunk: Color::Indexed(13),
             notice: green.color(),
-            muted: Color::Indexed(8),
+            muted: Color::Rgb(0x7d, 0x87, 0x94),
             gutter_bg: Color::Indexed(0),
             empty_diff: Color::Rgb(0x3d, 0x42, 0x49),
             addition_fg: green.color(),
@@ -1934,9 +1934,11 @@ struct SyntaxRuntime {
     queue: SyntaxWorkerQueue,
     cache: LruCache<SyntaxKey, HighlightedSide>,
     pending: HashSet<SyntaxKey>,
+    source_keys: HashMap<SyntaxSourceId, SyntaxKey>,
     position_keys: HashMap<SyntaxPosition, SyntaxKey>,
     line_maps: HashMap<SyntaxPosition, Vec<Option<usize>>>,
     skipped: HashMap<SyntaxPosition, SyntaxSkipReason>,
+    skipped_sources: HashSet<SyntaxSourceId>,
     unavailable_full_files: HashSet<SyntaxKey>,
     failed: HashSet<SyntaxKey>,
     stats: SyntaxBenchmarkReport,
@@ -1966,9 +1968,11 @@ impl SyntaxRuntime {
             queue,
             cache: LruCache::new(limits.cache_entries),
             pending: HashSet::new(),
+            source_keys: HashMap::new(),
             position_keys: HashMap::new(),
             line_maps: HashMap::new(),
             skipped: HashMap::new(),
+            skipped_sources: HashSet::new(),
             unavailable_full_files: HashSet::new(),
             failed: HashSet::new(),
             stats: SyntaxBenchmarkReport::default(),
@@ -1984,9 +1988,11 @@ impl SyntaxRuntime {
     fn clear(&mut self, generation: u64) {
         self.cache.clear();
         self.pending.clear();
+        self.source_keys.clear();
         self.position_keys.clear();
         self.line_maps.clear();
         self.skipped.clear();
+        self.skipped_sources.clear();
         self.unavailable_full_files.clear();
         self.failed.clear();
         self.queue.set_generation(generation);
@@ -2064,6 +2070,7 @@ impl SyntaxRuntime {
                     }
                 };
 
+                self.source_keys.insert(key.source, key);
                 self.position_keys.insert(position, key);
                 self.line_maps.insert(position, line_map);
                 if self.queue_job(
@@ -2071,7 +2078,7 @@ impl SyntaxRuntime {
                     language,
                     SyntaxJobSource::FullFile(source),
                     priority,
-                    position,
+                    Some(position),
                 ) {
                     return;
                 }
@@ -2097,6 +2104,7 @@ impl SyntaxRuntime {
             language_hash: hash_text(&language),
             theme_id: SYNTAX_THEME_ID,
         };
+        self.source_keys.insert(key.source, key);
         self.position_keys.insert(position, key);
         self.line_maps.insert(position, source.line_map.clone());
         if self.failed.contains(&key) {
@@ -2109,7 +2117,75 @@ impl SyntaxRuntime {
             language,
             SyntaxJobSource::Hunk(source),
             priority,
-            position,
+            Some(position),
+        );
+    }
+
+    fn queue_full_file(
+        &mut self,
+        options: &DiffOptions,
+        changeset: &Changeset,
+        generation: u64,
+        file: usize,
+        side: DiffSide,
+        priority: SyntaxPriority,
+    ) {
+        self.stats.queue_requests = self.stats.queue_requests.saturating_add(1);
+        let source_id = SyntaxSourceId {
+            generation,
+            file,
+            side,
+            kind: SyntaxSourceKind::FullFile,
+        };
+        if let Some(key) = self.source_keys.get(&source_id).copied() {
+            if self.cache.contains_key(&key) {
+                return;
+            }
+            if self.pending.contains(&key) {
+                if priority == SyntaxPriority::Visible {
+                    self.queue.promote(key);
+                }
+                return;
+            }
+        }
+        if self.skipped_sources.contains(&source_id) {
+            return;
+        }
+
+        let Some(file_diff) = changeset.files.get(file) else {
+            self.skip_source(source_id);
+            return;
+        };
+        let Some(path) = syntax_path(file_diff, side) else {
+            self.skip_source(source_id);
+            return;
+        };
+        let Some(language) = self.languages.language_for_path(path) else {
+            self.skip_source(source_id);
+            return;
+        };
+        let Some(source) = full_file_source(&changeset.repo, options, file_diff, side) else {
+            self.skip_source(source_id);
+            return;
+        };
+
+        let key = SyntaxKey {
+            source: source_id,
+            language_hash: hash_text(&language),
+            theme_id: SYNTAX_THEME_ID,
+        };
+        self.source_keys.insert(source_id, key);
+        if self.unavailable_full_files.contains(&key) || self.failed.contains(&key) {
+            self.skip_source(source_id);
+            return;
+        }
+
+        self.queue_job(
+            key,
+            language,
+            SyntaxJobSource::FullFile(source),
+            priority,
+            None,
         );
     }
 
@@ -2119,7 +2195,7 @@ impl SyntaxRuntime {
         language: String,
         source: SyntaxJobSource,
         priority: SyntaxPriority,
-        position: SyntaxPosition,
+        position: Option<SyntaxPosition>,
     ) -> bool {
         if self.cache.contains_key(&key) {
             return true;
@@ -2165,7 +2241,11 @@ impl SyntaxRuntime {
                 false
             }
             Err(SyntaxQueueError::Closed) => {
-                self.skip(position, SyntaxSkipReason::QueueClosed);
+                if let Some(position) = position {
+                    self.skip(position, SyntaxSkipReason::QueueClosed);
+                } else {
+                    self.skip_source(key.source);
+                }
                 false
             }
         }
@@ -2173,6 +2253,12 @@ impl SyntaxRuntime {
 
     fn skip(&mut self, position: SyntaxPosition, reason: SyntaxSkipReason) {
         if self.skipped.insert(position, reason).is_none() {
+            self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
+        }
+    }
+
+    fn skip_source(&mut self, source_id: SyntaxSourceId) {
+        if self.skipped_sources.insert(source_id) {
             self.stats.jobs_skipped = self.stats.jobs_skipped.saturating_add(1);
         }
     }
@@ -2229,6 +2315,7 @@ impl SyntaxRuntime {
     }
 
     fn handle_unavailable_source(&mut self, key: SyntaxKey) {
+        self.source_keys.remove(&key.source);
         if matches!(key.source.kind, SyntaxSourceKind::FullFile) {
             self.unavailable_full_files.insert(key);
         } else {
@@ -2264,6 +2351,33 @@ impl SyntaxRuntime {
                 .and_then(|side| side.lines.get(source_line))
                 .cloned()
         });
+        if highlighted.is_some() {
+            self.stats.cache_hits = self.stats.cache_hits.saturating_add(1);
+        } else {
+            self.stats.cache_misses = self.stats.cache_misses.saturating_add(1);
+        }
+        highlighted
+    }
+
+    fn full_file_line(
+        &mut self,
+        generation: u64,
+        file: usize,
+        side: DiffSide,
+        line_number: usize,
+    ) -> Option<HighlightedLine> {
+        let source_line = line_number.checked_sub(1)?;
+        let source_id = SyntaxSourceId {
+            generation,
+            file,
+            side,
+            kind: SyntaxSourceKind::FullFile,
+        };
+        let key = self.source_keys.get(&source_id).copied();
+        let highlighted = key
+            .and_then(|key| self.cache.get(&key))
+            .and_then(|side| side.lines.get(source_line))
+            .cloned();
         if highlighted.is_some() {
             self.stats.cache_hits = self.stats.cache_hits.saturating_add(1);
         } else {
@@ -2672,6 +2786,19 @@ fn validate_highlight_source(source: &str, limits: SyntaxLimits) -> Result<(), S
 
 fn source_line_count(source: &str) -> usize {
     source.lines().count().max(1)
+}
+
+fn split_context_source_lines(source: &str) -> Vec<String> {
+    source.lines().map(str::to_owned).collect()
+}
+
+fn available_context_lines(source_start: usize, total: usize, source_line_count: usize) -> usize {
+    let Some(source_index_start) = source_start.checked_sub(1) else {
+        return 0;
+    };
+    source_line_count
+        .saturating_sub(source_index_start)
+        .min(total)
 }
 
 fn hash_text(text: &str) -> u64 {
@@ -3364,9 +3491,25 @@ fn git_output<const N: usize>(repo: &Path, args: [&str; N]) -> Option<String> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiRow {
+    FileSeparator,
     FileHeader(usize),
     BinaryFile(usize),
     Collapsed {
+        file: usize,
+        hunk: usize,
+        old_start: usize,
+        new_start: usize,
+        lines: usize,
+        expanded: usize,
+    },
+    ContextLine {
+        file: usize,
+        old_line: usize,
+        new_line: usize,
+    },
+    ContextHide {
+        file: usize,
+        hunk: usize,
         lines: usize,
     },
     HunkHeader {
@@ -3391,6 +3534,38 @@ enum UiRow {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ContextKey {
+    file: usize,
+    hunk: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextExpansionDirection {
+    Up,
+    Down,
+}
+
+fn context_expansion_direction(hunk: usize) -> ContextExpansionDirection {
+    if hunk == 0 {
+        ContextExpansionDirection::Up
+    } else {
+        ContextExpansionDirection::Down
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ContextSourceKey {
+    file: usize,
+    side: DiffSide,
+}
+
+#[derive(Debug, Clone)]
+enum ContextSourceEntry {
+    Lines(Arc<Vec<String>>),
+    Unavailable,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UiModel {
     rows: Vec<UiRow>,
@@ -3399,7 +3574,11 @@ struct UiModel {
 }
 
 impl UiModel {
-    fn new(changeset: &Changeset, layout: DiffLayoutMode) -> Self {
+    fn new(
+        changeset: &Changeset,
+        layout: DiffLayoutMode,
+        context_expansions: &HashMap<ContextKey, usize>,
+    ) -> Self {
         let total_hunks = changeset
             .files
             .iter()
@@ -3416,18 +3595,30 @@ impl UiModel {
             .iter()
             .filter(|file| file.is_binary || file.hunks.is_empty())
             .count();
+        let file_separator_rows = changeset.files.len().saturating_sub(1);
+        let expanded_context_rows = context_expansions.values().copied().sum::<usize>();
+        let expanded_context_controls = context_expansions
+            .values()
+            .filter(|expanded| **expanded > 0)
+            .count();
         let mut rows = Vec::with_capacity(
             changeset
                 .files
                 .len()
+                .saturating_add(file_separator_rows)
                 .saturating_add(binary_or_empty_rows)
                 .saturating_add(total_hunks.saturating_mul(2))
-                .saturating_add(total_hunk_lines),
+                .saturating_add(total_hunk_lines)
+                .saturating_add(expanded_context_rows)
+                .saturating_add(expanded_context_controls),
         );
         let mut file_start_rows = Vec::with_capacity(changeset.files.len());
         let mut hunk_start_rows = Vec::with_capacity(total_hunks);
 
         for (file_index, file) in changeset.files.iter().enumerate() {
+            if file_index > 0 {
+                rows.push(UiRow::FileSeparator);
+            }
             file_start_rows.push(rows.len());
             rows.push(UiRow::FileHeader(file_index));
 
@@ -3444,9 +3635,76 @@ impl UiModel {
                     .saturating_sub(next_old_line)
                     .min(hunk.new_start.saturating_sub(next_new_line));
                 if collapsed_lines > 0 {
-                    rows.push(UiRow::Collapsed {
-                        lines: collapsed_lines,
-                    });
+                    let key = ContextKey {
+                        file: file_index,
+                        hunk: hunk_index,
+                    };
+                    let expanded = context_expansions
+                        .get(&key)
+                        .copied()
+                        .unwrap_or_default()
+                        .min(collapsed_lines);
+                    let remaining = collapsed_lines.saturating_sub(expanded);
+                    let direction = context_expansion_direction(hunk_index);
+
+                    match direction {
+                        ContextExpansionDirection::Up => {
+                            if remaining > 0 {
+                                rows.push(UiRow::Collapsed {
+                                    file: file_index,
+                                    hunk: hunk_index,
+                                    old_start: next_old_line,
+                                    new_start: next_new_line,
+                                    lines: remaining,
+                                    expanded,
+                                });
+                            }
+
+                            if expanded > 0 {
+                                let old_start = hunk.old_start.saturating_sub(expanded);
+                                let new_start = hunk.new_start.saturating_sub(expanded);
+                                for offset in 0..expanded {
+                                    rows.push(UiRow::ContextLine {
+                                        file: file_index,
+                                        old_line: old_start + offset,
+                                        new_line: new_start + offset,
+                                    });
+                                }
+                                rows.push(UiRow::ContextHide {
+                                    file: file_index,
+                                    hunk: hunk_index,
+                                    lines: expanded,
+                                });
+                            }
+                        }
+                        ContextExpansionDirection::Down => {
+                            if expanded > 0 {
+                                rows.push(UiRow::ContextHide {
+                                    file: file_index,
+                                    hunk: hunk_index,
+                                    lines: expanded,
+                                });
+                                for offset in 0..expanded {
+                                    rows.push(UiRow::ContextLine {
+                                        file: file_index,
+                                        old_line: next_old_line + offset,
+                                        new_line: next_new_line + offset,
+                                    });
+                                }
+                            }
+
+                            if remaining > 0 {
+                                rows.push(UiRow::Collapsed {
+                                    file: file_index,
+                                    hunk: hunk_index,
+                                    old_start: next_old_line,
+                                    new_start: next_new_line,
+                                    lines: remaining,
+                                    expanded,
+                                });
+                            }
+                        }
+                    }
                 }
 
                 hunk_start_rows.push(rows.len());
@@ -3816,6 +4074,8 @@ struct DiffApp {
     mouse_scroll: MouseScroll,
     notice: Option<Notice>,
     theme: DiffTheme,
+    context_expansions: HashMap<ContextKey, usize>,
+    context_cache: HashMap<ContextSourceKey, ContextSourceEntry>,
     syntax_limits: SyntaxLimits,
     syntax: Option<SyntaxRuntime>,
     inline_cache: LruCache<InlineHunkKey, InlineHunkEmphasisCache>,
@@ -3852,7 +4112,9 @@ impl DiffApp {
         layout: DiffLayoutMode,
         syntax_mode: SyntaxStartupMode,
     ) -> Self {
-        let model = UiModel::new(&changeset, layout);
+        let context_expansions = HashMap::new();
+        let context_cache = HashMap::new();
+        let model = UiModel::new(&changeset, layout, &context_expansions);
         let stats = changeset.stats();
         let branch_base = default_branch_base(&options, &changeset.repo);
         let current_head = current_head_label(&changeset.repo);
@@ -3936,6 +4198,8 @@ impl DiffApp {
             mouse_scroll: MouseScroll::default(),
             notice,
             theme,
+            context_expansions,
+            context_cache,
             syntax_limits,
             syntax,
             inline_cache: LruCache::new(MAX_INLINE_DIFF_CACHE_ENTRIES),
@@ -4262,8 +4526,8 @@ impl DiffApp {
             self.toggle_diff_menu();
         } else if let Some(menu) = clicked_branch_selector {
             self.toggle_branch_menu(menu);
-        } else {
-            self.handle_file_sidebar_click(column, row);
+        } else if !self.handle_file_sidebar_click(column, row) {
+            self.handle_diff_click(column, row);
         }
     }
 
@@ -4281,6 +4545,189 @@ impl DiffApp {
 
         self.select_file(file);
         true
+    }
+
+    fn handle_diff_click(&mut self, column: u16, row: u16) -> bool {
+        if row == 0 || self.is_file_sidebar_position(column, row) {
+            return false;
+        }
+
+        let row_index = self.scroll.saturating_add(usize::from(row - 1));
+        self.handle_context_at_row(row_index)
+    }
+
+    fn handle_context_at_row(&mut self, row_index: usize) -> bool {
+        match self.model.row(row_index) {
+            Some(UiRow::Collapsed { .. }) => self.expand_context_at_row(row_index),
+            Some(UiRow::ContextHide { file, hunk, .. }) => self.hide_context(file, hunk),
+            _ => false,
+        }
+    }
+
+    fn expand_context_at_row(&mut self, row_index: usize) -> bool {
+        let Some(UiRow::Collapsed {
+            file,
+            hunk,
+            old_start,
+            new_start,
+            lines,
+            expanded,
+        }) = self.model.row(row_index)
+        else {
+            return false;
+        };
+
+        let Some((side, source_lines)) = self.ensure_context_lines(file) else {
+            self.set_notice("context unavailable for this diff");
+            return true;
+        };
+
+        let total = lines.saturating_add(expanded);
+        let source_start = match side {
+            DiffSide::Old => old_start,
+            DiffSide::New => new_start,
+        };
+        let available = available_context_lines(source_start, total, source_lines.len());
+        let current = expanded.min(available);
+        let remaining = available.saturating_sub(current);
+        if remaining == 0 {
+            self.set_notice("no more context");
+            return true;
+        }
+
+        let next = current.saturating_add(self.context_expand_count(remaining));
+        self.update_max_line_width_for_expanded_context(
+            &source_lines,
+            source_start,
+            total,
+            current,
+            next,
+            context_expansion_direction(hunk),
+        );
+        self.context_expansions
+            .insert(ContextKey { file, hunk }, next);
+        self.model = UiModel::new(&self.changeset, self.layout, &self.context_expansions);
+        self.set_scroll(self.scroll);
+        self.set_horizontal_scroll(self.horizontal_scroll);
+        self.dirty = true;
+        true
+    }
+
+    fn hide_context(&mut self, file: usize, hunk: usize) -> bool {
+        if self
+            .context_expansions
+            .remove(&ContextKey { file, hunk })
+            .is_none()
+        {
+            return false;
+        }
+
+        self.model = UiModel::new(&self.changeset, self.layout, &self.context_expansions);
+        self.set_scroll(self.scroll);
+        self.set_horizontal_scroll(self.horizontal_scroll);
+        self.dirty = true;
+        true
+    }
+
+    fn context_expand_count(&self, available: usize) -> usize {
+        self.theme.diff.context_expansion.expand_count(available)
+    }
+
+    fn ensure_context_lines(&mut self, file: usize) -> Option<(DiffSide, Arc<Vec<String>>)> {
+        for side in [DiffSide::New, DiffSide::Old] {
+            if !self.has_context_source(file, side) {
+                continue;
+            }
+            if let Some(lines) = self.context_lines(file, side) {
+                return Some((side, lines));
+            }
+        }
+        None
+    }
+
+    fn has_context_source(&self, file: usize, side: DiffSide) -> bool {
+        self.changeset
+            .files
+            .get(file)
+            .and_then(|file_diff| {
+                full_file_source(&self.changeset.repo, &self.options, file_diff, side)
+            })
+            .is_some()
+    }
+
+    fn context_source_side(&self, file: usize) -> Option<DiffSide> {
+        for side in [DiffSide::New, DiffSide::Old] {
+            match self.context_cache.get(&ContextSourceKey { file, side }) {
+                Some(ContextSourceEntry::Lines(_)) => return Some(side),
+                Some(ContextSourceEntry::Unavailable) => continue,
+                None if self.has_context_source(file, side) => return Some(side),
+                None => {}
+            }
+        }
+        None
+    }
+
+    fn context_lines(&mut self, file: usize, side: DiffSide) -> Option<Arc<Vec<String>>> {
+        let key = ContextSourceKey { file, side };
+        if !self.context_cache.contains_key(&key) {
+            let entry = self
+                .load_context_lines(file, side)
+                .map(ContextSourceEntry::Lines)
+                .unwrap_or(ContextSourceEntry::Unavailable);
+            self.context_cache.insert(key, entry);
+        }
+
+        match self.context_cache.get(&key) {
+            Some(ContextSourceEntry::Lines(lines)) => Some(Arc::clone(lines)),
+            Some(ContextSourceEntry::Unavailable) | None => None,
+        }
+    }
+
+    fn load_context_lines(&self, file: usize, side: DiffSide) -> Option<Arc<Vec<String>>> {
+        let file_diff = self.changeset.files.get(file)?;
+        let source = full_file_source(&self.changeset.repo, &self.options, file_diff, side)?;
+        let text = load_full_file_source(&source).ok()?;
+        Some(Arc::new(split_context_source_lines(&text)))
+    }
+
+    fn context_line_text(&mut self, file: usize, old_line: usize, new_line: usize) -> String {
+        let Some((side, source_lines)) = self.ensure_context_lines(file) else {
+            return "context unavailable".to_owned();
+        };
+        let line_number = match side {
+            DiffSide::Old => old_line,
+            DiffSide::New => new_line,
+        };
+        let Some(line_index) = line_number.checked_sub(1) else {
+            return String::new();
+        };
+        source_lines.get(line_index).cloned().unwrap_or_default()
+    }
+
+    fn update_max_line_width_for_expanded_context(
+        &mut self,
+        source_lines: &[String],
+        source_start: usize,
+        total: usize,
+        current: usize,
+        next: usize,
+        direction: ContextExpansionDirection,
+    ) {
+        let Some(source_index_start) = source_start.checked_sub(1) else {
+            return;
+        };
+        let (newly_visible_start, newly_visible_end) = match direction {
+            ContextExpansionDirection::Up => {
+                (total.saturating_sub(next), total.saturating_sub(current))
+            }
+            ContextExpansionDirection::Down => (current, next),
+        };
+        for offset in newly_visible_start..newly_visible_end {
+            let Some(text) = source_lines.get(source_index_start + offset) else {
+                continue;
+            };
+            self.max_line_width = self.max_line_width.max(text.width());
+        }
     }
 
     fn toggle_diff_menu(&mut self) {
@@ -4860,6 +5307,7 @@ impl DiffApp {
             return;
         }
         let mut requested = HashSet::new();
+        let mut requested_files = HashSet::new();
 
         let visible_start = self.scroll;
         let visible_end = visible_start
@@ -4870,6 +5318,7 @@ impl DiffApp {
             visible_end,
             SyntaxPriority::Visible,
             &mut requested,
+            &mut requested_files,
         );
 
         let prefetch_rows = visible_rows.saturating_mul(self.syntax_limits.prefetch_viewports);
@@ -4881,6 +5330,7 @@ impl DiffApp {
             ahead_end,
             SyntaxPriority::Prefetch,
             &mut requested,
+            &mut requested_files,
         );
 
         let behind_start = visible_start.saturating_sub(prefetch_rows);
@@ -4889,6 +5339,7 @@ impl DiffApp {
             visible_start,
             SyntaxPriority::Prefetch,
             &mut requested,
+            &mut requested_files,
         );
     }
 
@@ -4898,12 +5349,13 @@ impl DiffApp {
         end: usize,
         priority: SyntaxPriority,
         requested: &mut HashSet<SyntaxPosition>,
+        requested_files: &mut HashSet<ContextSourceKey>,
     ) {
         for row_index in start..end {
             let Some(row) = self.model.row(row_index) else {
                 continue;
             };
-            self.prepare_syntax_for_row(row, priority, requested);
+            self.prepare_syntax_for_row(row, priority, requested, requested_files);
         }
     }
 
@@ -4912,8 +5364,10 @@ impl DiffApp {
         row: UiRow,
         priority: SyntaxPriority,
         requested: &mut HashSet<SyntaxPosition>,
+        requested_files: &mut HashSet<ContextSourceKey>,
     ) {
         match row {
+            UiRow::FileSeparator => {}
             UiRow::UnifiedLine { file, hunk, line } => {
                 let Some(diff_line) = self
                     .changeset
@@ -4941,9 +5395,15 @@ impl DiffApp {
                     self.queue_syntax_hunk(file, hunk, DiffSide::New, priority, requested);
                 }
             }
+            UiRow::ContextLine { file, .. } => {
+                if let Some(side) = self.context_source_side(file) {
+                    self.queue_syntax_file(file, side, priority, requested_files);
+                }
+            }
             UiRow::FileHeader(_)
             | UiRow::BinaryFile(_)
             | UiRow::Collapsed { .. }
+            | UiRow::ContextHide { .. }
             | UiRow::HunkHeader { .. }
             | UiRow::MetaLine { .. } => {}
         }
@@ -4968,6 +5428,28 @@ impl DiffApp {
         }
         if let Some(syntax) = self.syntax.as_mut() {
             syntax.queue_hunk(&self.options, &self.changeset, position, priority);
+        }
+    }
+
+    fn queue_syntax_file(
+        &mut self,
+        file: usize,
+        side: DiffSide,
+        priority: SyntaxPriority,
+        requested: &mut HashSet<ContextSourceKey>,
+    ) {
+        if !requested.insert(ContextSourceKey { file, side }) {
+            return;
+        }
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.queue_full_file(
+                &self.options,
+                &self.changeset,
+                self.generation,
+                file,
+                side,
+                priority,
+            );
         }
     }
 
@@ -5004,6 +5486,17 @@ impl DiffApp {
                 line,
             )
         })
+    }
+
+    fn syntax_file_line(
+        &mut self,
+        file: usize,
+        side: DiffSide,
+        line_number: usize,
+    ) -> Option<HighlightedLine> {
+        self.syntax
+            .as_mut()
+            .and_then(|syntax| syntax.full_file_line(self.generation, file, side, line_number))
     }
 
     fn inline_ranges(&mut self, file: usize, hunk: usize, line: usize) -> Vec<InlineRange> {
@@ -5142,7 +5635,7 @@ impl DiffApp {
         }
 
         self.layout = layout;
-        self.model = UiModel::new(&self.changeset, self.layout);
+        self.model = UiModel::new(&self.changeset, self.layout, &self.context_expansions);
         self.set_horizontal_scroll(self.horizontal_scroll);
         let scroll = self
             .model
@@ -5223,12 +5716,14 @@ impl DiffApp {
         self.stats = changeset.stats();
         self.max_line_width = changeset_max_line_width(&changeset);
         self.changeset = changeset;
+        self.context_expansions.clear();
+        self.context_cache.clear();
         self.generation = self.generation.wrapping_add(1);
         self.inline_cache.clear();
         if let Some(syntax) = self.syntax.as_mut() {
             syntax.clear(self.generation);
         }
-        self.model = UiModel::new(&self.changeset, self.layout);
+        self.model = UiModel::new(&self.changeset, self.layout, &self.context_expansions);
         self.selected_file = selected_file.min(self.changeset.files.len().saturating_sub(1));
         let scroll = self
             .model
@@ -6292,6 +6787,7 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
     let theme = app.theme;
     let horizontal_scroll = app.horizontal_scroll;
     match row {
+        UiRow::FileSeparator => file_separator_line(app.layout, width, theme),
         UiRow::FileHeader(file_index) => {
             let file = &app.changeset.files[file_index];
             file_header_line(file, width, theme)
@@ -6308,13 +6804,15 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
                 Style::default().fg(theme.muted),
             ))
         }
-        UiRow::Collapsed { lines } => {
-            let label = format!("⋯ {lines} unchanged");
-            Line::from(Span::styled(
-                fit_padded(&label, width),
-                Style::default().fg(theme.muted),
-            ))
-        }
+        UiRow::Collapsed {
+            lines, expanded, ..
+        } => context_show_line(app.context_expand_count(lines), expanded > 0, width, theme),
+        UiRow::ContextLine {
+            file,
+            old_line,
+            new_line,
+        } => render_context_line(app, file, old_line, new_line, row_index, width),
+        UiRow::ContextHide { lines, .. } => context_hide_line(lines, width, theme),
         UiRow::HunkHeader { file, hunk } => {
             let hunk = &app.changeset.files[file].hunks[hunk];
             hunk_header_line(hunk, width, theme)
@@ -6353,6 +6851,154 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
             right,
         } => render_split_line(app, file, hunk, left, right, row_index, width),
     }
+}
+
+fn context_show_line(lines: usize, more: bool, width: usize, theme: DiffTheme) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+
+    let suffix = if lines == 1 { "line" } else { "lines" };
+    let label = if more {
+        format!(" ▾ show {} more {suffix}", format_count(lines))
+    } else {
+        format!(" ▾ show {} {suffix}", format_count(lines))
+    };
+    context_action_line(&label, width, theme, theme.muted)
+}
+
+fn context_hide_line(lines: usize, width: usize, theme: DiffTheme) -> Line<'static> {
+    let suffix = if lines == 1 { "line" } else { "lines" };
+    context_action_line(
+        &format!(" ▴ hide {} {suffix}", format_count(lines)),
+        width,
+        theme,
+        theme.muted,
+    )
+}
+
+fn context_action_line(
+    label: &str,
+    width: usize,
+    theme: DiffTheme,
+    text_color: Color,
+) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+
+    let bg = base_bg(theme);
+    let mut spans = Vec::new();
+    let indicator_width = 1.min(width);
+    if indicator_width > 0 {
+        spans.push(diff_indicator_span(DiffLineKind::Meta, theme));
+    }
+    let content_width = width.saturating_sub(indicator_width);
+    if content_width > 0 {
+        spans.push(Span::styled(
+            fit_padded(label, content_width),
+            Style::default().fg(text_color).bg(bg),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn render_context_line(
+    app: &mut DiffApp,
+    file: usize,
+    old_line: usize,
+    new_line: usize,
+    row_index: usize,
+    width: usize,
+) -> Line<'static> {
+    let theme = app.theme;
+    let horizontal_scroll = app.horizontal_scroll;
+    let side = app.context_source_side(file);
+    let syntax = side.and_then(|side| {
+        let line_number = match side {
+            DiffSide::Old => old_line,
+            DiffSide::New => new_line,
+        };
+        app.syntax_file_line(file, side, line_number)
+    });
+    let diff_line = DiffLine {
+        kind: DiffLineKind::Context,
+        old_line: Some(old_line),
+        new_line: Some(new_line),
+        text: app.context_line_text(file, old_line, new_line),
+    };
+
+    match app.layout {
+        DiffLayoutMode::Unified => render_unified_line_at_scroll(
+            &diff_line,
+            syntax.as_ref(),
+            &[],
+            row_index,
+            width,
+            theme,
+            horizontal_scroll,
+        ),
+        DiffLayoutMode::Split => render_split_context_line(
+            &diff_line,
+            syntax.as_ref(),
+            row_index,
+            width,
+            theme,
+            horizontal_scroll,
+        ),
+    }
+}
+
+fn render_split_context_line(
+    line: &DiffLine,
+    syntax: Option<&HighlightedLine>,
+    row_index: usize,
+    width: usize,
+    theme: DiffTheme,
+    horizontal_scroll: usize,
+) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+
+    let left_width = width / 2;
+    let right_width = width.saturating_sub(left_width);
+    let mut spans = split_cell_spans_at_scroll(
+        Some(line),
+        syntax,
+        &[],
+        SplitCellRender {
+            side: SplitSide::Old,
+            row_index,
+            width: left_width,
+            theme,
+        },
+        horizontal_scroll,
+    );
+    spans.extend(split_cell_spans_at_scroll(
+        Some(line),
+        syntax,
+        &[],
+        SplitCellRender {
+            side: SplitSide::New,
+            row_index,
+            width: right_width,
+            theme,
+        },
+        horizontal_scroll,
+    ));
+    Line::from(spans)
+}
+
+fn file_separator_line(_layout: DiffLayoutMode, width: usize, theme: DiffTheme) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+
+    Line::from(Span::styled(
+        "─".repeat(width),
+        Style::default().fg(theme.empty_diff).bg(base_bg(theme)),
+    ))
 }
 
 fn file_header_line(file: &hz_diff::DiffFile, width: usize, theme: DiffTheme) -> Line<'static> {
@@ -7552,6 +8198,7 @@ fn is_single_width_ascii(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hz_syntax::DiffContextExpansion;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -7609,6 +8256,366 @@ mod tests {
         app.set_horizontal_scroll(8);
         app.set_viewport_width(80);
         assert_eq!(app.horizontal_scroll, 0);
+    }
+
+    #[test]
+    fn ui_model_inserts_file_separator_between_files() {
+        let changeset = changeset_with_files(&["a.rs", "b.rs"]);
+        let model = UiModel::new(&changeset, DiffLayoutMode::Unified, &HashMap::new());
+
+        assert_eq!(model.file_start_row(0), Some(0));
+        assert_eq!(model.file_start_row(1), Some(4));
+        assert_eq!(model.row(3), Some(UiRow::FileSeparator));
+        assert_eq!(model.row(4), Some(UiRow::FileHeader(1)));
+        assert_eq!(model.file_at_row(3), Some(0));
+        assert_eq!(model.file_at_row(4), Some(1));
+    }
+
+    #[test]
+    fn file_separator_line_draws_rule_across_full_width() {
+        let theme = DiffTheme::default();
+        let line = file_separator_line(DiffLayoutMode::Unified, 24, theme);
+        let text = line_text(&line);
+
+        assert_eq!(text.width(), 24);
+        assert_eq!(text, "────────────────────────");
+        assert_eq!(line.spans[0].style.bg, Some(base_bg(theme)));
+        assert_eq!(line.spans[0].style.fg, Some(theme.empty_diff));
+    }
+
+    #[test]
+    fn ui_model_expands_context_before_hunk_from_nearest_lines() {
+        let step = default_context_expand_step();
+        let changeset = changeset_with_hunk_at(PathBuf::from("/repo"), 50);
+        let mut expansions = HashMap::new();
+
+        let model = UiModel::new(&changeset, DiffLayoutMode::Unified, &expansions);
+        assert_eq!(
+            model.row(1),
+            Some(UiRow::Collapsed {
+                file: 0,
+                hunk: 0,
+                old_start: 1,
+                new_start: 1,
+                lines: 49,
+                expanded: 0,
+            })
+        );
+
+        expansions.insert(ContextKey { file: 0, hunk: 0 }, step);
+        let model = UiModel::new(&changeset, DiffLayoutMode::Unified, &expansions);
+
+        assert_eq!(
+            model.row(1),
+            Some(UiRow::Collapsed {
+                file: 0,
+                hunk: 0,
+                old_start: 1,
+                new_start: 1,
+                lines: 29,
+                expanded: step,
+            })
+        );
+        assert_eq!(
+            model.row(2),
+            Some(UiRow::ContextLine {
+                file: 0,
+                old_line: 30,
+                new_line: 30,
+            })
+        );
+        assert_eq!(
+            model.row(22),
+            Some(UiRow::ContextHide {
+                file: 0,
+                hunk: 0,
+                lines: step,
+            })
+        );
+        assert_eq!(model.row(23), Some(UiRow::HunkHeader { file: 0, hunk: 0 }));
+    }
+
+    #[test]
+    fn ui_model_expands_context_after_previous_hunk_downward() {
+        let step = default_context_expand_step();
+        let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[50, 100]);
+        let mut expansions = HashMap::new();
+
+        let model = UiModel::new(&changeset, DiffLayoutMode::Unified, &expansions);
+        assert_eq!(
+            model.row(4),
+            Some(UiRow::Collapsed {
+                file: 0,
+                hunk: 1,
+                old_start: 51,
+                new_start: 51,
+                lines: 49,
+                expanded: 0,
+            })
+        );
+
+        expansions.insert(ContextKey { file: 0, hunk: 1 }, step);
+        let model = UiModel::new(&changeset, DiffLayoutMode::Unified, &expansions);
+
+        assert_eq!(
+            model.row(4),
+            Some(UiRow::ContextHide {
+                file: 0,
+                hunk: 1,
+                lines: step,
+            })
+        );
+        assert_eq!(
+            model.row(5),
+            Some(UiRow::ContextLine {
+                file: 0,
+                old_line: 51,
+                new_line: 51,
+            })
+        );
+        assert_eq!(
+            model.row(25),
+            Some(UiRow::Collapsed {
+                file: 0,
+                hunk: 1,
+                old_start: 51,
+                new_start: 51,
+                lines: 29,
+                expanded: step,
+            })
+        );
+        assert_eq!(model.row(26), Some(UiRow::HunkHeader { file: 0, hunk: 1 }));
+    }
+
+    #[test]
+    fn full_context_expansion_config_shows_all_remaining_lines() {
+        let repo = temp_test_dir("full-context-expansion");
+        fs::create_dir_all(&repo).expect("repo directory should be created");
+        let text = (1..=80)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(repo.join("file.rs"), text).expect("context file should be written");
+        let changeset = changeset_with_hunk_at(repo, 50);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.theme.diff.context_expansion = DiffContextExpansion::Full;
+
+        assert_eq!(app.context_expand_count(49), 49);
+        assert!(app.expand_context_at_row(1));
+        assert_eq!(
+            app.context_expansions.get(&ContextKey { file: 0, hunk: 0 }),
+            Some(&49)
+        );
+        assert_eq!(
+            app.model.row(1),
+            Some(UiRow::ContextLine {
+                file: 0,
+                old_line: 1,
+                new_line: 1,
+            })
+        );
+        assert_eq!(
+            app.model.row(50),
+            Some(UiRow::ContextHide {
+                file: 0,
+                hunk: 0,
+                lines: 49,
+            })
+        );
+    }
+
+    #[test]
+    fn clicking_collapsed_context_expands_more_on_each_click() {
+        let step = default_context_expand_step();
+        let repo = temp_test_dir("expand-context");
+        fs::create_dir_all(&repo).expect("repo directory should be created");
+        let text = (1..=80)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(repo.join("file.rs"), text).expect("context file should be written");
+        let changeset = changeset_with_hunk_at(repo, 50);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        assert!(app.expand_context_at_row(1));
+        assert_eq!(
+            app.context_expansions.get(&ContextKey { file: 0, hunk: 0 }),
+            Some(&step)
+        );
+        assert_eq!(
+            app.model.row(1),
+            Some(UiRow::Collapsed {
+                file: 0,
+                hunk: 0,
+                old_start: 1,
+                new_start: 1,
+                lines: 29,
+                expanded: step,
+            })
+        );
+        let row = app.model.row(2).expect("expanded context row should exist");
+        assert_eq!(
+            row,
+            UiRow::ContextLine {
+                file: 0,
+                old_line: 30,
+                new_line: 30,
+            }
+        );
+        let rendered = render_row(&mut app, 2, row, 80);
+        assert!(line_text(&rendered).contains("line 30"));
+
+        assert!(app.expand_context_at_row(1));
+        assert_eq!(
+            app.context_expansions.get(&ContextKey { file: 0, hunk: 0 }),
+            Some(&(step * 2))
+        );
+        assert_eq!(
+            app.model.row(2),
+            Some(UiRow::ContextLine {
+                file: 0,
+                old_line: 10,
+                new_line: 10,
+            })
+        );
+
+        assert!(app.hide_context(0, 0));
+        assert!(
+            !app.context_expansions
+                .contains_key(&ContextKey { file: 0, hunk: 0 })
+        );
+        assert_eq!(
+            app.model.row(1),
+            Some(UiRow::Collapsed {
+                file: 0,
+                hunk: 0,
+                old_start: 1,
+                new_start: 1,
+                lines: 49,
+                expanded: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn clicking_collapsed_context_between_hunks_expands_downward() {
+        let step = default_context_expand_step();
+        let repo = temp_test_dir("expand-context-downward");
+        fs::create_dir_all(&repo).expect("repo directory should be created");
+        let text = (1..=120)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(repo.join("file.rs"), text).expect("context file should be written");
+        let changeset = changeset_with_hunks_at(repo, &[50, 100]);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        assert!(app.expand_context_at_row(4));
+        assert_eq!(
+            app.context_expansions.get(&ContextKey { file: 0, hunk: 1 }),
+            Some(&step)
+        );
+        assert_eq!(
+            app.model.row(4),
+            Some(UiRow::ContextHide {
+                file: 0,
+                hunk: 1,
+                lines: step,
+            })
+        );
+        let row = app.model.row(5).expect("expanded context row should exist");
+        assert_eq!(
+            row,
+            UiRow::ContextLine {
+                file: 0,
+                old_line: 51,
+                new_line: 51,
+            }
+        );
+        let rendered = render_row(&mut app, 5, row, 80);
+        assert!(line_text(&rendered).contains("line 51"));
+
+        assert!(app.expand_context_at_row(25));
+        assert_eq!(
+            app.context_expansions.get(&ContextKey { file: 0, hunk: 1 }),
+            Some(&(step * 2))
+        );
+        assert_eq!(
+            app.model.row(25),
+            Some(UiRow::ContextLine {
+                file: 0,
+                old_line: 71,
+                new_line: 71,
+            })
+        );
+
+        assert!(app.hide_context(0, 1));
+        assert!(
+            !app.context_expansions
+                .contains_key(&ContextKey { file: 0, hunk: 1 })
+        );
+        assert_eq!(
+            app.model.row(4),
+            Some(UiRow::Collapsed {
+                file: 0,
+                hunk: 1,
+                old_start: 51,
+                new_start: 51,
+                lines: 49,
+                expanded: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn context_source_side_uses_loaded_fallback_side() {
+        let repo = temp_test_dir("context-source-side-fallback");
+        fs::create_dir_all(&repo).expect("repo directory should be created");
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "Test"]);
+
+        let text = (1..=10)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(repo.join("file.rs"), text).expect("old file should be written");
+        git(&repo, &["add", "file.rs"]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        fs::remove_file(repo.join("file.rs")).expect("worktree file should be removed");
+
+        let changeset = changeset_with_hunk_at(repo.clone(), 5);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        let (side, lines) = app
+            .ensure_context_lines(0)
+            .expect("old context should load after new side fails");
+        assert_eq!(side, DiffSide::Old);
+        assert_eq!(lines.first().map(String::as_str), Some("line 1"));
+        assert_eq!(app.context_source_side(0), Some(DiffSide::Old));
+
+        fs::remove_dir_all(repo).expect("repo directory should be removed");
+    }
+
+    #[test]
+    fn collapsed_context_control_is_minimal_and_readable() {
+        let theme = DiffTheme::default();
+        let line = context_show_line(20, false, 72, theme);
+        let text = line_text(&line);
+
+        assert_eq!(text.width(), 72);
+        assert!(text.starts_with(DIFF_INDICATOR));
+        assert!(text.contains("▾ show 20 lines"));
+        assert_eq!(line.spans[1].style.fg, Some(theme.muted));
+        assert_eq!(
+            line.spans[0].style.bg,
+            Some(line_gutter_bg(DiffLineKind::Meta, theme))
+        );
+
+        let hide = context_hide_line(20, 24, theme);
+        let hide_text = line_text(&hide);
+        assert!(hide_text.contains("▴ hide 20 lines"));
+        assert_eq!(hide.spans[1].style.fg, Some(theme.muted));
     }
 
     #[test]
@@ -9259,6 +10266,36 @@ base0F = "ffffff"
     }
 
     #[test]
+    fn closed_queue_marks_full_file_source_skipped() {
+        let queue = SyntaxWorkerQueue::new(8, 0);
+        queue.close();
+        let mut syntax = syntax_runtime_with_queue(queue);
+        let source_id = SyntaxSourceId {
+            generation: 0,
+            file: 0,
+            side: DiffSide::New,
+            kind: SyntaxSourceKind::FullFile,
+        };
+        let key = SyntaxKey {
+            source: source_id,
+            language_hash: 1,
+            theme_id: SYNTAX_THEME_ID,
+        };
+
+        assert!(!syntax.queue_job(
+            key,
+            "rust".to_owned(),
+            full_file_syntax_job_source(),
+            SyntaxPriority::Visible,
+            None,
+        ));
+
+        assert!(syntax.skipped_sources.contains(&source_id));
+        assert_eq!(syntax.stats.jobs_skipped, 1);
+        assert_eq!(syntax.stats.jobs_rejected, 0);
+    }
+
+    #[test]
     fn oversized_hunks_fall_back_to_plain_diff_text() {
         let limits = SyntaxLimits::default();
         let text = "x".repeat(limits.max_line_bytes);
@@ -9677,6 +10714,44 @@ base0F = "ffffff"
         }
     }
 
+    fn changeset_with_hunk_at(repo: PathBuf, line_number: usize) -> Changeset {
+        changeset_with_hunks_at(repo, &[line_number])
+    }
+
+    fn changeset_with_hunks_at(repo: PathBuf, line_numbers: &[usize]) -> Changeset {
+        let hunks = line_numbers
+            .iter()
+            .map(|line_number| hz_diff::DiffHunk {
+                header: format!("@@ -{line_number} +{line_number} @@"),
+                old_start: *line_number,
+                old_count: 1,
+                new_start: *line_number,
+                new_count: 1,
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Context,
+                    old_line: Some(*line_number),
+                    new_line: Some(*line_number),
+                    text: format!("line {line_number}"),
+                }],
+            })
+            .collect();
+
+        Changeset {
+            repo,
+            title: "test".to_owned(),
+            files: vec![hz_diff::DiffFile {
+                old_path: Some("file.rs".to_owned()),
+                new_path: Some("file.rs".to_owned()),
+                status: hz_diff::FileStatus::Modified,
+                hunks,
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            }],
+            raw_patch: String::new(),
+        }
+    }
+
     fn changeset_with_files(paths: &[&str]) -> Changeset {
         let files = paths
             .iter()
@@ -9742,6 +10817,36 @@ base0F = "ffffff"
         }
     }
 
+    fn full_file_syntax_job_source() -> SyntaxJobSource {
+        SyntaxJobSource::FullFile(FullFileSource {
+            repo: PathBuf::from("/repo"),
+            kind: FullFileSourceKind::Worktree {
+                path: "file.rs".to_owned(),
+            },
+        })
+    }
+
+    fn syntax_runtime_with_queue(queue: SyntaxWorkerQueue) -> SyntaxRuntime {
+        let (_result_tx, result_rx) = mpsc::channel();
+        SyntaxRuntime {
+            languages: SyntaxLanguageSet::from_enabled_languages(&[]),
+            limits: SyntaxLimits::default(),
+            result_rx,
+            queue,
+            cache: LruCache::new(8),
+            pending: HashSet::new(),
+            source_keys: HashMap::new(),
+            position_keys: HashMap::new(),
+            line_maps: HashMap::new(),
+            skipped: HashMap::new(),
+            skipped_sources: HashSet::new(),
+            unavailable_full_files: HashSet::new(),
+            failed: HashSet::new(),
+            stats: SyntaxBenchmarkReport::default(),
+            worker: None,
+        }
+    }
+
     fn range_texts(text: &str, ranges: &[InlineRange]) -> Vec<String> {
         ranges
             .iter()
@@ -9755,6 +10860,13 @@ base0F = "ffffff"
 
     fn span_text(spans: &[Span<'_>]) -> String {
         spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    fn default_context_expand_step() -> usize {
+        match DiffSettings::default().context_expansion {
+            DiffContextExpansion::Lines(lines) => lines,
+            DiffContextExpansion::Full => panic!("default context expansion should be bounded"),
+        }
     }
 
     fn temp_test_dir(name: &str) -> PathBuf {
