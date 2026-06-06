@@ -1953,6 +1953,23 @@ context_expand = "full"
     }
 
     #[test]
+    fn syntax_settings_clamps_zero_context_expansion_to_one() {
+        let settings = parse_settings(
+            r#"
+[diff]
+context_expand = 0
+"#,
+        )
+        .expect("settings should parse");
+
+        assert_eq!(
+            settings.diff.context_expansion,
+            DiffContextExpansion::Lines(1)
+        );
+        assert_eq!(settings.diff.context_expansion.expand_count(10), 1);
+    }
+
+    #[test]
     fn syntax_settings_supports_legacy_theme_key() {
         let settings = parse_settings(
             r#"

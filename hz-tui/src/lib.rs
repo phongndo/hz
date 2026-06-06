@@ -2244,7 +2244,7 @@ impl SyntaxRuntime {
                 if let Some(position) = position {
                     self.skip(position, SyntaxSkipReason::QueueClosed);
                 } else {
-                    self.stats.jobs_rejected = self.stats.jobs_rejected.saturating_add(1);
+                    self.skip_source(key.source);
                 }
                 false
             }
@@ -4656,9 +4656,15 @@ impl DiffApp {
     }
 
     fn context_source_side(&self, file: usize) -> Option<DiffSide> {
-        [DiffSide::New, DiffSide::Old]
-            .into_iter()
-            .find(|side| self.has_context_source(file, *side))
+        for side in [DiffSide::New, DiffSide::Old] {
+            match self.context_cache.get(&ContextSourceKey { file, side }) {
+                Some(ContextSourceEntry::Lines(_)) => return Some(side),
+                Some(ContextSourceEntry::Unavailable) => continue,
+                None if self.has_context_source(file, side) => return Some(side),
+                None => {}
+            }
+        }
+        None
     }
 
     fn context_lines(&mut self, file: usize, side: DiffSide) -> Option<Arc<Vec<String>>> {
@@ -8562,6 +8568,36 @@ mod tests {
     }
 
     #[test]
+    fn context_source_side_uses_loaded_fallback_side() {
+        let repo = temp_test_dir("context-source-side-fallback");
+        fs::create_dir_all(&repo).expect("repo directory should be created");
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "Test"]);
+
+        let text = (1..=10)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(repo.join("file.rs"), text).expect("old file should be written");
+        git(&repo, &["add", "file.rs"]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        fs::remove_file(repo.join("file.rs")).expect("worktree file should be removed");
+
+        let changeset = changeset_with_hunk_at(repo.clone(), 5);
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+        let (side, lines) = app
+            .ensure_context_lines(0)
+            .expect("old context should load after new side fails");
+        assert_eq!(side, DiffSide::Old);
+        assert_eq!(lines.first().map(String::as_str), Some("line 1"));
+        assert_eq!(app.context_source_side(0), Some(DiffSide::Old));
+
+        fs::remove_dir_all(repo).expect("repo directory should be removed");
+    }
+
+    #[test]
     fn collapsed_context_control_is_minimal_and_readable() {
         let theme = DiffTheme::default();
         let line = context_show_line(20, false, 72, theme);
@@ -10230,6 +10266,36 @@ base0F = "ffffff"
     }
 
     #[test]
+    fn closed_queue_marks_full_file_source_skipped() {
+        let queue = SyntaxWorkerQueue::new(8, 0);
+        queue.close();
+        let mut syntax = syntax_runtime_with_queue(queue);
+        let source_id = SyntaxSourceId {
+            generation: 0,
+            file: 0,
+            side: DiffSide::New,
+            kind: SyntaxSourceKind::FullFile,
+        };
+        let key = SyntaxKey {
+            source: source_id,
+            language_hash: 1,
+            theme_id: SYNTAX_THEME_ID,
+        };
+
+        assert!(!syntax.queue_job(
+            key,
+            "rust".to_owned(),
+            full_file_syntax_job_source(),
+            SyntaxPriority::Visible,
+            None,
+        ));
+
+        assert!(syntax.skipped_sources.contains(&source_id));
+        assert_eq!(syntax.stats.jobs_skipped, 1);
+        assert_eq!(syntax.stats.jobs_rejected, 0);
+    }
+
+    #[test]
     fn oversized_hunks_fall_back_to_plain_diff_text() {
         let limits = SyntaxLimits::default();
         let text = "x".repeat(limits.max_line_bytes);
@@ -10748,6 +10814,36 @@ base0F = "ffffff"
                 source_lines: 1,
             }),
             limits: SyntaxLimits::default(),
+        }
+    }
+
+    fn full_file_syntax_job_source() -> SyntaxJobSource {
+        SyntaxJobSource::FullFile(FullFileSource {
+            repo: PathBuf::from("/repo"),
+            kind: FullFileSourceKind::Worktree {
+                path: "file.rs".to_owned(),
+            },
+        })
+    }
+
+    fn syntax_runtime_with_queue(queue: SyntaxWorkerQueue) -> SyntaxRuntime {
+        let (_result_tx, result_rx) = mpsc::channel();
+        SyntaxRuntime {
+            languages: SyntaxLanguageSet::from_enabled_languages(&[]),
+            limits: SyntaxLimits::default(),
+            result_rx,
+            queue,
+            cache: LruCache::new(8),
+            pending: HashSet::new(),
+            source_keys: HashMap::new(),
+            position_keys: HashMap::new(),
+            line_maps: HashMap::new(),
+            skipped: HashMap::new(),
+            skipped_sources: HashSet::new(),
+            unavailable_full_files: HashSet::new(),
+            failed: HashSet::new(),
+            stats: SyntaxBenchmarkReport::default(),
+            worker: None,
         }
     }
 
