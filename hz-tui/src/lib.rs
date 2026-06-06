@@ -7665,31 +7665,414 @@ fn render_row(app: &mut DiffApp, row_index: usize, row: UiRow, width: usize) -> 
     };
 
     if !app.grep_filter.is_empty() {
-        line = highlighted_grep_text_line(line, &app.grep_filter, theme);
+        let targets = grep_highlight_targets_for_row(app, row, &line, width);
+        line = highlighted_grep_text_line(line, &app.grep_filter, targets, theme);
     }
     line
 }
 
-fn highlighted_grep_text_line(line: Line<'static>, query: &str, theme: DiffTheme) -> Line<'static> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GrepHighlightTarget {
+    text: String,
+    spans: Vec<GrepHighlightSpan>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GrepHighlightSpan {
+    span_index: usize,
+    text_byte_start: usize,
+    span_byte_start: usize,
+    span_byte_end: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpanColumnPosition {
+    span_index: usize,
+    byte_index: usize,
+}
+
+fn highlighted_grep_text_line(
+    line: Line<'static>,
+    query: &str,
+    targets: Vec<GrepHighlightTarget>,
+    theme: DiffTheme,
+) -> Line<'static> {
     let Some(matcher) = TextMatcher::new(query) else {
         return line;
     };
+    if targets.is_empty() {
+        return line;
+    }
+
+    let ranges_by_span = grep_highlight_ranges_by_span(line.spans.len(), &targets, &matcher);
+    if ranges_by_span.iter().all(Vec::is_empty) {
+        return line;
+    }
 
     let mut spans = Vec::with_capacity(line.spans.len());
-    for span in line.spans {
-        push_highlighted_grep_spans(&mut spans, span, &matcher, theme);
+    for (index, span) in line.spans.into_iter().enumerate() {
+        push_highlighted_grep_spans(&mut spans, span, &ranges_by_span[index], theme);
     }
     Line::from(spans)
+}
+
+fn grep_highlight_ranges_by_span(
+    span_count: usize,
+    targets: &[GrepHighlightTarget],
+    matcher: &TextMatcher,
+) -> Vec<Vec<std::ops::Range<usize>>> {
+    let mut ranges_by_span = vec![Vec::new(); span_count];
+    for target in targets {
+        let match_ranges = matcher.match_ranges(&target.text);
+        if match_ranges.is_empty() {
+            continue;
+        }
+
+        for span in &target.spans {
+            if span.span_index >= ranges_by_span.len() || span.span_byte_start >= span.span_byte_end
+            {
+                continue;
+            }
+
+            let span_text_end = span.text_byte_start + (span.span_byte_end - span.span_byte_start);
+            for range in &match_ranges {
+                let start = range.start.max(span.text_byte_start);
+                let end = range.end.min(span_text_end);
+                if start < end {
+                    let local_start = span.span_byte_start + (start - span.text_byte_start);
+                    let local_end = span.span_byte_start + (end - span.text_byte_start);
+                    ranges_by_span[span.span_index].push(local_start..local_end);
+                }
+            }
+        }
+    }
+
+    for ranges in &mut ranges_by_span {
+        merge_ranges(ranges);
+    }
+    ranges_by_span
+}
+
+fn merge_ranges(ranges: &mut Vec<std::ops::Range<usize>>) {
+    if ranges.len() <= 1 {
+        return;
+    }
+
+    ranges.sort_by_key(|range| (range.start, range.end));
+    let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges.drain(..) {
+        if let Some(previous) = merged.last_mut()
+            && range.start <= previous.end
+        {
+            previous.end = previous.end.max(range.end);
+            continue;
+        }
+        merged.push(range);
+    }
+    *ranges = merged;
+}
+
+fn grep_highlight_targets_for_row(
+    app: &DiffApp,
+    row: UiRow,
+    line: &Line<'_>,
+    width: usize,
+) -> Vec<GrepHighlightTarget> {
+    match row {
+        UiRow::FileHeader(file) => app
+            .changeset
+            .files
+            .get(file)
+            .and_then(|file| {
+                grep_highlight_target_for_columns(
+                    file.display_path().to_owned(),
+                    &line.spans,
+                    status_code(file.status).width().saturating_add(1),
+                    width,
+                    0,
+                )
+            })
+            .into_iter()
+            .collect(),
+        UiRow::BinaryFile(file) => app
+            .changeset
+            .files
+            .get(file)
+            .and_then(|file| {
+                let message = if file.is_binary {
+                    "binary file"
+                } else {
+                    "no textual changes"
+                };
+                grep_highlight_target_for_columns(
+                    message.to_owned(),
+                    &line.spans,
+                    2.min(width),
+                    width,
+                    0,
+                )
+            })
+            .into_iter()
+            .collect(),
+        UiRow::HunkHeader { file, hunk } => app
+            .changeset
+            .files
+            .get(file)
+            .and_then(|file| file.hunks.get(hunk))
+            .and_then(|hunk| {
+                grep_highlight_target_for_columns(
+                    hunk.header.clone(),
+                    &line.spans,
+                    2.min(width),
+                    width,
+                    0,
+                )
+            })
+            .into_iter()
+            .collect(),
+        UiRow::UnifiedLine {
+            file,
+            hunk,
+            line: line_index,
+        }
+        | UiRow::MetaLine {
+            file,
+            hunk,
+            line: line_index,
+        } => app
+            .changeset
+            .files
+            .get(file)
+            .and_then(|file| file.hunks.get(hunk))
+            .and_then(|hunk| hunk.lines.get(line_index))
+            .and_then(|diff_line| {
+                let content_start = unified_content_start_column(width);
+                grep_highlight_target_for_columns(
+                    diff_line_grep_highlight_text(diff_line),
+                    &line.spans,
+                    content_start,
+                    width,
+                    diff_line_grep_rendered_text_byte_start(diff_line, app.horizontal_scroll),
+                )
+            })
+            .into_iter()
+            .collect(),
+        UiRow::SplitLine {
+            file,
+            hunk,
+            left,
+            right,
+        } => {
+            let Some(hunk) = app
+                .changeset
+                .files
+                .get(file)
+                .and_then(|file| file.hunks.get(hunk))
+            else {
+                return Vec::new();
+            };
+
+            let left_width = width / 2;
+            let right_width = width.saturating_sub(left_width);
+            let mut targets = Vec::with_capacity(2);
+            if let Some(target) =
+                left.and_then(|index| hunk.lines.get(index))
+                    .and_then(|diff_line| {
+                        split_diff_line_grep_highlight_target(
+                            diff_line,
+                            &line.spans,
+                            0,
+                            left_width,
+                            app.horizontal_scroll,
+                        )
+                    })
+            {
+                targets.push(target);
+            }
+            if let Some(target) =
+                right
+                    .and_then(|index| hunk.lines.get(index))
+                    .and_then(|diff_line| {
+                        split_diff_line_grep_highlight_target(
+                            diff_line,
+                            &line.spans,
+                            left_width,
+                            right_width,
+                            app.horizontal_scroll,
+                        )
+                    })
+            {
+                targets.push(target);
+            }
+            targets
+        }
+        UiRow::FileSeparator
+        | UiRow::Collapsed { .. }
+        | UiRow::ContextLine { .. }
+        | UiRow::ContextHide { .. } => Vec::new(),
+    }
+}
+
+fn split_diff_line_grep_highlight_target(
+    line: &DiffLine,
+    spans: &[Span<'_>],
+    cell_start: usize,
+    cell_width: usize,
+    horizontal_scroll: usize,
+) -> Option<GrepHighlightTarget> {
+    let content_start = cell_start.saturating_add(split_content_start_column(cell_width));
+    let content_end = cell_start.saturating_add(cell_width);
+    grep_highlight_target_for_columns(
+        diff_line_grep_highlight_text(line),
+        spans,
+        content_start,
+        content_end,
+        diff_line_grep_rendered_text_byte_start(line, horizontal_scroll),
+    )
+}
+
+fn unified_content_start_column(width: usize) -> usize {
+    let indicator_width = 1.min(width);
+    let gutter_width = UNIFIED_GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
+    indicator_width + gutter_width
+}
+
+fn split_content_start_column(width: usize) -> usize {
+    let indicator_width = 1.min(width);
+    let gutter_width = GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
+    indicator_width + gutter_width
+}
+
+fn diff_line_grep_highlight_text(line: &DiffLine) -> String {
+    let mut text = String::with_capacity(line.text.len().saturating_add(1));
+    text.push(diff_line_grep_prefix(line.kind));
+    text.push_str(&line.text);
+    text
+}
+
+fn diff_line_grep_rendered_text_byte_start(line: &DiffLine, horizontal_scroll: usize) -> usize {
+    1 + scrolled_text_byte_start(&line.text, horizontal_scroll)
+}
+
+fn scrolled_text_byte_start(text: &str, horizontal_scroll: usize) -> usize {
+    text.len() - skip_display_prefix(text, horizontal_scroll).0.len()
+}
+
+fn grep_highlight_target_for_columns(
+    text: String,
+    spans: &[Span<'_>],
+    start_column: usize,
+    end_column: usize,
+    text_byte_start: usize,
+) -> Option<GrepHighlightTarget> {
+    if text.is_empty() || start_column >= end_column || text_byte_start >= text.len() {
+        return None;
+    }
+
+    let start = span_position_for_column(spans, start_column);
+    let end = span_position_for_column(spans, end_column);
+    if start.span_index >= spans.len() {
+        return None;
+    }
+
+    let mut target = GrepHighlightTarget {
+        text,
+        spans: Vec::new(),
+    };
+    let mut current_text_byte = text_byte_start;
+    for index in start.span_index..spans.len() {
+        if current_text_byte >= target.text.len() || index > end.span_index {
+            break;
+        }
+
+        let span_text = spans[index].content.as_ref();
+        let span_byte_start = if index == start.span_index {
+            start.byte_index
+        } else {
+            0
+        };
+        let span_byte_end = if index == end.span_index {
+            end.byte_index
+        } else {
+            span_text.len()
+        };
+        if span_byte_start >= span_byte_end {
+            if index == end.span_index {
+                break;
+            }
+            continue;
+        }
+
+        let rendered = &span_text[span_byte_start..span_byte_end];
+        let matched_len = common_prefix_byte_len(rendered, &target.text[current_text_byte..]);
+        if matched_len > 0 {
+            target.spans.push(GrepHighlightSpan {
+                span_index: index,
+                text_byte_start: current_text_byte,
+                span_byte_start,
+                span_byte_end: span_byte_start + matched_len,
+            });
+            current_text_byte += matched_len;
+        }
+        if matched_len < rendered.len() || index == end.span_index {
+            break;
+        }
+    }
+
+    (!target.spans.is_empty()).then_some(target)
+}
+
+fn span_position_for_column(spans: &[Span<'_>], column: usize) -> SpanColumnPosition {
+    let mut used = 0usize;
+    for (span_index, span) in spans.iter().enumerate() {
+        if column <= used {
+            return SpanColumnPosition {
+                span_index,
+                byte_index: 0,
+            };
+        }
+
+        let text = span.content.as_ref();
+        let width = text.width();
+        if column < used + width {
+            let visible = skip_display_prefix(text, column - used).0;
+            return SpanColumnPosition {
+                span_index,
+                byte_index: text.len() - visible.len(),
+            };
+        }
+
+        used += width;
+    }
+
+    SpanColumnPosition {
+        span_index: spans.len(),
+        byte_index: 0,
+    }
+}
+
+fn common_prefix_byte_len(left: &str, right: &str) -> usize {
+    let mut len = 0usize;
+    let mut right_chars = right.chars();
+    for (index, left_char) in left.char_indices() {
+        let Some(right_char) = right_chars.next() else {
+            break;
+        };
+        if left_char != right_char {
+            break;
+        }
+        len = index + left_char.len_utf8();
+    }
+    len
 }
 
 fn push_highlighted_grep_spans(
     spans: &mut Vec<Span<'static>>,
     span: Span<'static>,
-    matcher: &TextMatcher,
+    ranges: &[std::ops::Range<usize>],
     theme: DiffTheme,
 ) {
     let text = span.content.as_ref();
-    let ranges = matcher.match_ranges(text);
     if ranges.is_empty() {
         spans.push(span);
         return;
@@ -7697,6 +8080,13 @@ fn push_highlighted_grep_spans(
 
     let mut start = 0;
     for range in ranges {
+        if range.start >= range.end
+            || range.end > text.len()
+            || !text.is_char_boundary(range.start)
+            || !text.is_char_boundary(range.end)
+        {
+            continue;
+        }
         if start < range.start {
             spans.push(Span::styled(
                 text[start..range.start].to_owned(),
@@ -7704,7 +8094,7 @@ fn push_highlighted_grep_spans(
             ));
         }
         spans.push(Span::styled(
-            text[range.clone()].to_owned(),
+            text[range.start..range.end].to_owned(),
             span.style
                 .fg(theme.search_match_fg)
                 .bg(theme.search_match_bg),
@@ -9727,6 +10117,52 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))
             .expect("p should move to previous grep match");
         assert_eq!(app.current_grep_match_row(), Some(2));
+    }
+
+    #[test]
+    fn grep_highlight_uses_logical_text_across_rendered_spans() {
+        let theme = DiffTheme::default();
+        let line = Line::from(vec![
+            Span::styled("fo", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("obar", Style::default()),
+        ]);
+        let target = grep_highlight_target_for_columns("foobar".to_owned(), &line.spans, 0, 6, 0)
+            .expect("target should map rendered spans to logical text");
+
+        let rendered = highlighted_grep_text_line(line, "foobar", vec![target], theme);
+
+        assert_eq!(line_text(&rendered), "foobar");
+        assert_eq!(rendered.spans[0].content.as_ref(), "fo");
+        assert_eq!(rendered.spans[0].style.bg, Some(theme.search_match_bg));
+        assert_eq!(rendered.spans[0].style.fg, Some(theme.search_match_fg));
+        assert!(
+            rendered.spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(rendered.spans[1].content.as_ref(), "obar");
+        assert_eq!(rendered.spans[1].style.bg, Some(theme.search_match_bg));
+    }
+
+    #[test]
+    fn grep_highlight_ignores_unified_gutter_numbers() {
+        let changeset = changeset_with_line_text("abc");
+        let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+        app.grep_filter = "1".to_owned();
+        app.apply_filters(false);
+
+        let row = app.model.row(2).expect("diff line should be visible");
+        let rendered = render_row(&mut app, 2, row, 32);
+
+        assert!(line_text(&rendered).contains('1'));
+        assert!(
+            rendered
+                .spans
+                .iter()
+                .all(|span| span.style.bg != Some(app.theme.search_match_bg)),
+            "grep should not highlight line numbers when only the gutter matches"
+        );
     }
 
     #[test]
