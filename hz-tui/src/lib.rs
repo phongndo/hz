@@ -7980,12 +7980,12 @@ fn grep_highlight_target_for_columns(
         spans: Vec::new(),
     };
     let mut current_text_byte = text_byte_start;
-    for index in start.span_index..spans.len() {
+    for (index, span) in spans.iter().enumerate().skip(start.span_index) {
         if current_text_byte >= target.text.len() || index > end.span_index {
             break;
         }
 
-        let span_text = spans[index].content.as_ref();
+        let span_text = span.content.as_ref();
         let span_byte_start = if index == start.span_index {
             start.byte_index
         } else {
