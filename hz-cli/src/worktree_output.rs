@@ -1,20 +1,9 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::HashSet,
-    env,
-    ffi::{OsStr, OsString},
-    fs,
-    io::{self, IsTerminal, Read, Write},
+    env, fs,
+    io::{self, IsTerminal},
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
-use clap::{
-    Args, Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Styles},
-};
 use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -22,6 +11,11 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const MONTH_ABBREVIATIONS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
+
+use crate::{
+    args::{ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs},
+    removal::worktree_branch_or_handle,
+};
 
 pub(crate) fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
     let debug = args.debug;
@@ -735,7 +729,7 @@ pub(crate) fn format_modified_at(timestamp: u64) -> String {
 pub(crate) fn format_unix_timestamp(timestamp: u64) -> Option<String> {
     let timestamp = i64::try_from(timestamp).ok()?;
     let datetime = time::OffsetDateTime::from_unix_timestamp(timestamp).ok()?;
-    let offset = time::UtcOffset::local_offset_at(datetime).ok()?;
+    let offset = time::UtcOffset::local_offset_at(datetime).unwrap_or(time::UtcOffset::UTC);
     Some(format_modified_datetime(datetime.to_offset(offset)))
 }
 

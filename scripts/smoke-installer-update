@@ -1,0 +1,170 @@
+#!/usr/bin/env sh
+set -eu
+
+version="${1:-latest}"
+repo="local/hz"
+repo_dir="$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
+tmp_dir="$(mktemp -d)"
+
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT INT TERM
+
+cd "$repo_dir"
+package_version="$(cargo pkgid -p hz-cli --locked | sed 's/.*#//')"
+
+case "$version" in
+  latest)
+    tag="v$package_version"
+    ;;
+  v*)
+    tag="$version"
+    ;;
+  *)
+    tag="v$version"
+    ;;
+esac
+
+case "$(uname -s)" in
+  Darwin)
+    platform="apple-darwin"
+    ;;
+  Linux)
+    platform="unknown-linux-gnu"
+    ;;
+  *)
+    echo "smoke-installer-update: unsupported OS: $(uname -s)" >&2
+    exit 1
+    ;;
+esac
+
+case "$(uname -m)" in
+  arm64 | aarch64)
+    arch="aarch64"
+    ;;
+  x86_64 | amd64)
+    arch="x86_64"
+    ;;
+  *)
+    echo "smoke-installer-update: unsupported architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+cargo build -p hz-cli --locked
+
+target="$arch-$platform"
+package="hz-$tag-$target"
+asset="$package.tar.gz"
+release_dir="$tmp_dir/release"
+
+mkdir -p "$release_dir/$package" "$tmp_dir/bin"
+install -m 755 "$repo_dir/target/debug/hz" "$release_dir/$package/hz"
+tar -czf "$release_dir/$asset" -C "$release_dir" "$package"
+
+if command -v shasum >/dev/null 2>&1; then
+  (cd "$release_dir" && shasum -a 256 "$asset" > "$asset.sha256")
+elif command -v sha256sum >/dev/null 2>&1; then
+  (cd "$release_dir" && sha256sum "$asset" > "$asset.sha256")
+else
+  echo "smoke-installer-update: missing required command: shasum or sha256sum" >&2
+  exit 1
+fi
+
+# Fake the small curl surface that the installer needs so CI can smoke the
+# installer and update paths without depending on a published GitHub release.
+cat > "$tmp_dir/bin/curl" <<'SH'
+#!/usr/bin/env sh
+set -eu
+
+out=""
+url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "fake curl: -o requires an output path" >&2
+        exit 2
+      fi
+      out="$1"
+      ;;
+    -*)
+      ;;
+    *)
+      url="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ -z "$url" ]; then
+  echo "fake curl: missing URL" >&2
+  exit 2
+fi
+
+write_stdout_or_file() {
+  if [ -n "$out" ]; then
+    cat > "$out"
+  else
+    cat
+  fi
+}
+
+api_url="https://api.github.com/repos/$HZ_SMOKE_REPO/releases/latest"
+installer_url="https://raw.githubusercontent.com/$HZ_SMOKE_REPO/main/scripts/install.sh"
+download_prefix="https://github.com/$HZ_SMOKE_REPO/releases/download/$HZ_SMOKE_TAG/"
+
+if [ "$url" = "$api_url" ]; then
+  printf '{"tag_name":"%s"}\n' "$HZ_SMOKE_TAG" | write_stdout_or_file
+  exit 0
+fi
+
+if [ "$url" = "$installer_url" ]; then
+  if [ -n "$out" ]; then
+    cp "$HZ_SMOKE_INSTALLER" "$out"
+  else
+    cat "$HZ_SMOKE_INSTALLER"
+  fi
+  exit 0
+fi
+
+case "$url" in
+  "$download_prefix"*)
+    file="${url#"$download_prefix"}"
+    source="$HZ_SMOKE_RELEASE_DIR/$file"
+    if [ ! -f "$source" ]; then
+      echo "fake curl: missing release asset: $file" >&2
+      exit 22
+    fi
+    if [ -n "$out" ]; then
+      cp "$source" "$out"
+    else
+      cat "$source"
+    fi
+    ;;
+  *)
+    echo "fake curl: unexpected URL: $url" >&2
+    exit 22
+    ;;
+esac
+SH
+chmod +x "$tmp_dir/bin/curl"
+
+HZ_INSTALLER= \
+HZ_INSTALLER_URL="https://raw.githubusercontent.com/$repo/main/scripts/install.sh" \
+HZ_REPO="$repo" \
+HZ_SMOKE_INSTALLER="$repo_dir/scripts/install.sh" \
+HZ_SMOKE_RELEASE_DIR="$release_dir" \
+HZ_SMOKE_REPO="$repo" \
+HZ_SMOKE_TAG="$tag" \
+PATH="$tmp_dir/bin:$PATH" \
+  "$repo_dir/scripts/smoke-curl-install" "$version"
+
+HZ_REPO="$repo" \
+HZ_SMOKE_RELEASE_DIR="$release_dir" \
+HZ_SMOKE_REPO="$repo" \
+HZ_SMOKE_TAG="$tag" \
+PATH="$tmp_dir/bin:$PATH" \
+  "$repo_dir/scripts/smoke-update" "$version"

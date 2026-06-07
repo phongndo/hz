@@ -1,24 +1,17 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::HashSet,
-    env,
-    ffi::{OsStr, OsString},
-    fs,
-    io::{self, IsTerminal, Read, Write},
+    io::{self, IsTerminal, Read},
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode, Stdio},
     sync::Arc,
 };
 
-use clap::{
-    Args, Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Styles},
+use crate::{
+    args::{DiffArgs, TreeSitterAvailableArgs, TreeSitterCommand},
+    worktree_output::{
+        ListGlyphs, StyleColor, ascii_output_requested, display_width, list_glyphs, list_row_width,
+        styled_cell, styled_centered_cell, terminal_width, truncate_middle,
+    },
 };
-use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(crate) fn tree_sitter(command: TreeSitterCommand) -> HzResult<()> {
     match command {
@@ -182,10 +175,10 @@ pub(crate) fn pr_diff_options(args: DiffArgs, target: &str) -> HzResult<hz_comma
 
 pub(crate) fn patch_source(path: PathBuf) -> HzResult<hz_command::DiffSource> {
     if path == Path::new("-") {
-        let mut patch = String::new();
-        io::stdin().read_to_string(&mut patch)?;
+        let mut patch = Vec::new();
+        io::stdin().read_to_end(&mut patch)?;
         return Ok(hz_command::DiffSource::Patch(
-            hz_command::PatchSource::Stdin(Arc::from(patch)),
+            hz_command::PatchSource::Stdin(Arc::from(patch.into_boxed_slice())),
         ));
     }
 

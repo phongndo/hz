@@ -1,4 +1,7 @@
-use crate::{CompleteArgs, CompletionKind, worktree_branch_or_handle};
+use crate::{
+    args::{CompleteArgs, CompletionKind},
+    removal::worktree_branch_or_handle,
+};
 use std::path::PathBuf;
 
 use hz_core::HzResult;

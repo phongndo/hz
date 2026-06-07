@@ -1,51 +1,26 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
     collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
-    env,
-    ffi::OsStr,
     fs,
     hash::{Hash, Hasher},
-    io,
     panic::{self, AssertUnwindSafe},
     path::{Component, Path, PathBuf},
     process::Command,
     sync::{
         Arc, Condvar, Mutex,
-        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+        mpsc::{self, Receiver, Sender},
     },
     thread,
-    time::{Duration, Instant},
 };
 
-use crossterm::{
-    cursor::Show,
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseButton, MouseEvent, MouseEventKind,
-    },
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-use hz_core::{HzError, HzResult};
-use hz_diff::{
-    Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, DiffStats, FileStatus,
-};
+use hz_core::HzResult;
+use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource};
 use hz_syntax::{
-    ColorOverrides, DiffBackground, DiffGutterBackground, DiffSettings, DiffSignStyle,
-    HighlightedLine, SyntaxClass, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits,
-    SyntaxSettings, SyntaxThemeConfig, SyntaxThemeSource,
+    HighlightedLine, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits, SyntaxSettings,
 };
-use notify::{RecursiveMode, Watcher};
-use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
-    layout::Rect,
-    prelude::{Color, Line, Modifier, Span, Style, Text},
-    widgets::{Block, BorderType, Clear, Padding, Paragraph},
+
+use crate::theme::{
+    MAX_INLINE_DIFF_LINE_BYTES, MAX_INLINE_DIFF_TOKENS, SYNTAX_THEME_ID, SyntaxBenchmarkReport,
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum DiffSide {
