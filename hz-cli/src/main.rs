@@ -17,14 +17,16 @@ use std::{
 use clap::Parser;
 use hz_core::HzResult;
 
-pub(crate) use args::*;
-pub(crate) use complete::*;
-pub(crate) use lifecycle::*;
-pub(crate) use removal::*;
-pub(crate) use repo_shell::*;
-pub(crate) use tree_sitter::*;
-pub(crate) use update::*;
-pub(crate) use worktree_output::*;
+use crate::{
+    args::{Cli, Command, WorktreeCommand},
+    complete::complete,
+    lifecycle::run_lifecycle,
+    removal::{handoff_worktree, remove_worktree},
+    repo_shell::{init_repo_or_shell, install_shell, shell_script},
+    tree_sitter::{diff_options, tree_sitter},
+    update::update,
+    worktree_output::{StyleColor, create_worktree, list_worktrees, path_worktree, styled},
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -74,7 +76,7 @@ fn run() -> HzResult<()> {
             if io::stdout().is_terminal() && !stat {
                 hz_tui::run_diff_with_live_updates_and_syntax(options, live_updates, syntax_enabled)
             } else {
-                let output = hz_command::diff(options)?;
+                let output = hz_command::diff_bytes(options)?;
                 write_stdout(&output)
             }
         }
@@ -83,8 +85,8 @@ fn run() -> HzResult<()> {
     }
 }
 
-fn write_stdout(output: &str) -> HzResult<()> {
-    write_all_ignore_broken_pipe(io::stdout().lock(), output.as_bytes())
+fn write_stdout(output: &[u8]) -> HzResult<()> {
+    write_all_ignore_broken_pipe(io::stdout().lock(), output)
 }
 
 fn write_all_ignore_broken_pipe(mut writer: impl Write, bytes: &[u8]) -> HzResult<()> {

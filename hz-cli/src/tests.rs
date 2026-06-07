@@ -7,6 +7,7 @@ use std::{
 };
 
 use super::*;
+use crate::{args::*, complete::*, removal::*, tree_sitter::*, update::*, worktree_output::*};
 
 struct FailingWriter(io::ErrorKind);
 
@@ -20,11 +21,34 @@ impl Write for FailingWriter {
     }
 }
 
+struct FlushFailingWriter {
+    bytes: Vec<u8>,
+}
+
+impl Write for FlushFailingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::BrokenPipe))
+    }
+}
+
 #[test]
 fn stdout_write_ignores_broken_pipe() {
     assert!(
         write_all_ignore_broken_pipe(FailingWriter(io::ErrorKind::BrokenPipe), b"diff").is_ok()
     );
+}
+
+#[test]
+fn stdout_flush_ignores_broken_pipe_after_successful_write() {
+    let mut writer = FlushFailingWriter { bytes: Vec::new() };
+
+    assert!(write_all_ignore_broken_pipe(&mut writer, b"diff").is_ok());
+    assert_eq!(writer.bytes, b"diff");
 }
 
 #[test]

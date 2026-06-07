@@ -1,51 +1,18 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     env,
     ffi::OsStr,
     fs,
-    hash::{Hash, Hasher},
-    io,
-    panic::{self, AssertUnwindSafe},
-    path::{Component, Path, PathBuf},
-    process::Command,
-    sync::{
-        Arc, Condvar, Mutex,
-        mpsc::{self, Receiver, RecvTimeoutError, Sender},
-    },
-    thread,
-    time::{Duration, Instant},
+    path::{Path, PathBuf},
+    time::Duration,
 };
 
-use crossterm::{
-    cursor::Show,
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseButton, MouseEvent, MouseEventKind,
-    },
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
 use hz_core::{HzError, HzResult};
-use hz_diff::{
-    Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, DiffStats, FileStatus,
-};
+use hz_diff::DiffLineKind;
 use hz_syntax::{
-    ColorOverrides, DiffBackground, DiffGutterBackground, DiffSettings, DiffSignStyle,
-    HighlightedLine, SyntaxClass, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits,
-    SyntaxSettings, SyntaxThemeConfig, SyntaxThemeSource,
+    ColorOverrides, DiffGutterBackground, DiffSettings, SyntaxClass, SyntaxThemeConfig,
+    SyntaxThemeSource,
 };
-use notify::{RecursiveMode, Watcher};
-use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
-    layout::Rect,
-    prelude::{Color, Line, Modifier, Span, Style, Text},
-    widgets::{Block, BorderType, Clear, Padding, Paragraph},
-};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use ratatui::prelude::Color;
 
 pub(crate) const EVENT_POLL: Duration = Duration::from_millis(120);
 pub(crate) const LIVE_RELOAD_DEBOUNCE: Duration = Duration::from_millis(200);

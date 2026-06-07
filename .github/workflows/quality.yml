@@ -100,3 +100,6 @@ jobs:
 
       - name: Build
         run: cargo build --workspace --all-targets --all-features --locked
+
+      - name: Smoke installer and update
+        run: scripts/smoke-installer-update

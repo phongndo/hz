@@ -37,8 +37,8 @@ pub enum DiffSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatchSource {
     File(PathBuf),
-    Stdin(Arc<str>),
-    Text { label: String, patch: Arc<str> },
+    Stdin(Arc<[u8]>),
+    Text { label: String, patch: Arc<[u8]> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +67,7 @@ pub struct Changeset {
     pub repo: PathBuf,
     pub title: String,
     pub files: Vec<DiffFile>,
-    pub raw_patch: String,
+    pub raw_patch: Vec<u8>,
 }
 
 impl Changeset {
@@ -283,12 +283,17 @@ pub fn load_review_ref(options: &DiffOptions) -> HzResult<Changeset> {
 
 fn load_changeset(options: &DiffOptions, keep_raw_patch: bool) -> HzResult<Changeset> {
     let title = diff_title(options);
-    let (repo, patch) = diff_patch(options)?;
-    let files = parse_patch(&patch);
+    let (repo, patch) = diff_patch_bytes(options)?;
+    let files = {
+        // The parsed model is text-only for stats/TUI display. Keep raw_patch
+        // as bytes and only decode lossily at this display/parsing boundary.
+        let patch_text = String::from_utf8_lossy(patch.as_ref());
+        parse_patch(&patch_text)
+    };
     let raw_patch = if keep_raw_patch {
         patch.into_owned()
     } else {
-        String::new()
+        Vec::new()
     };
 
     Ok(Changeset {
@@ -299,37 +304,44 @@ fn load_changeset(options: &DiffOptions, keep_raw_patch: bool) -> HzResult<Chang
     })
 }
 
-fn diff_patch(options: &DiffOptions) -> HzResult<(PathBuf, Cow<'_, str>)> {
+fn diff_patch_bytes(options: &DiffOptions) -> HzResult<(PathBuf, Cow<'_, [u8]>)> {
     if let DiffSource::Patch(source) = &options.source {
         validate_options(options)?;
         let repo = options.repo.clone().unwrap_or_default();
-        return Ok((repo, patch_source_text(source)?));
+        return Ok((repo, patch_source_bytes(source)?));
     }
 
     let repo = hz_git::repository_root(options.repo.as_deref())?;
     validate_options(options)?;
     let args = git_diff_args(options);
     let patch = if should_include_untracked(options) {
-        git_diff_text_with_untracked(&repo, &args)?
+        git_diff_bytes_with_untracked(&repo, &args)?
     } else {
-        git_diff_text(&repo, &args)?
+        git_diff_bytes(&repo, &args)?
     };
 
     Ok((repo, Cow::Owned(patch)))
 }
 
 pub fn render(options: DiffOptions) -> HzResult<String> {
+    let bytes = render_bytes(options)?;
+    String::from_utf8(bytes).map_err(|_| {
+        HzError::Usage("diff output is not valid UTF-8; use byte-preserving output".to_owned())
+    })
+}
+
+pub fn render_bytes(options: DiffOptions) -> HzResult<Vec<u8>> {
     if options.stat {
         let changeset = load_review_ref(&options)?;
-        return Ok(render_stat(&changeset));
+        return Ok(render_stat(&changeset).into_bytes());
     }
-    let (_, patch) = diff_patch(&options)?;
+    let (_, patch) = diff_patch_bytes(&options)?;
     Ok(patch.into_owned())
 }
 
-fn patch_source_text(source: &PatchSource) -> HzResult<Cow<'_, str>> {
+fn patch_source_bytes(source: &PatchSource) -> HzResult<Cow<'_, [u8]>> {
     match source {
-        PatchSource::File(path) => Ok(Cow::Owned(fs::read_to_string(path)?)),
+        PatchSource::File(path) => Ok(Cow::Owned(fs::read(path)?)),
         PatchSource::Stdin(patch) => Ok(Cow::Borrowed(patch.as_ref())),
         PatchSource::Text { patch, .. } => Ok(Cow::Borrowed(patch.as_ref())),
     }
@@ -434,15 +446,15 @@ fn diff_title(options: &DiffOptions) -> String {
     }
 }
 
-fn git_diff_text(repo: &Path, args: &[String]) -> HzResult<String> {
-    git_diff_text_with_index(repo, args, None)
+fn git_diff_bytes(repo: &Path, args: &[String]) -> HzResult<Vec<u8>> {
+    git_diff_bytes_with_index(repo, args, None)
 }
 
-fn git_diff_text_with_index(
+fn git_diff_bytes_with_index(
     repo: &Path,
     args: &[String],
     index: Option<&Path>,
-) -> HzResult<String> {
+) -> HzResult<Vec<u8>> {
     let mut command = Command::new("git");
     command.arg("-C").arg(repo).args(args);
     if let Some(index) = index {
@@ -453,18 +465,18 @@ fn git_diff_text_with_index(
     if !output.status.success() {
         return Err(git_error("failed to render git diff", &output));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
 }
 
-fn git_diff_text_with_untracked(repo: &Path, args: &[String]) -> HzResult<String> {
+fn git_diff_bytes_with_untracked(repo: &Path, args: &[String]) -> HzResult<Vec<u8>> {
     let untracked = untracked_paths(repo)?;
     if untracked.is_empty() {
-        return git_diff_text(repo, args);
+        return git_diff_bytes(repo, args);
     }
 
     let temp_index = create_temp_index(repo)?;
     add_intent_to_add(repo, temp_index.path(), &untracked)?;
-    git_diff_text_with_index(repo, args, Some(temp_index.path()))
+    git_diff_bytes_with_index(repo, args, Some(temp_index.path()))
 }
 
 fn add_intent_to_add(repo: &Path, index: &Path, paths: &[PathBuf]) -> HzResult<()> {
@@ -1151,7 +1163,7 @@ mod tests {
             files: parse_patch(
                 "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n",
             ),
-            raw_patch: String::new(),
+            raw_patch: Vec::new(),
         };
         let model = DiffViewModel::new(&changeset);
 
@@ -1181,9 +1193,63 @@ mod tests {
     }
 
     #[test]
+    fn render_bytes_preserves_non_utf8_git_diff_output() {
+        let test_dir = temp_test_dir("non-utf8-diff");
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        init_repo(&repo);
+
+        fs::write(repo.join("bytes.txt"), b"same\n\xff\n")
+            .expect("non-UTF-8 base file should be written");
+        git(["add", "bytes.txt"], &repo);
+        git(["commit", "-q", "-m", "bytes"], &repo);
+        fs::write(repo.join("bytes.txt"), b"same\n\xfe\n")
+            .expect("non-UTF-8 worktree file should be written");
+
+        let expected = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "diff",
+                "--binary",
+                "--no-ext-diff",
+                "--no-color",
+                "--find-renames",
+                "--end-of-options",
+                "HEAD",
+            ])
+            .output()
+            .expect("git diff should run");
+        assert!(
+            expected.status.success(),
+            "git diff failed: {}",
+            String::from_utf8_lossy(&expected.stderr)
+        );
+        assert!(expected.stdout.contains(&0xff));
+        assert!(expected.stdout.contains(&0xfe));
+
+        let actual = render_bytes(DiffOptions {
+            repo: Some(repo.clone()),
+            include_untracked: false,
+            ..DiffOptions::default()
+        })
+        .expect("diff bytes should render");
+
+        assert_eq!(actual, expected.stdout);
+        let error = render(DiffOptions {
+            repo: Some(repo),
+            include_untracked: false,
+            ..DiffOptions::default()
+        })
+        .expect_err("text rendering should reject non-UTF-8 output");
+        assert!(error.to_string().contains("not valid UTF-8"));
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
     fn patch_stdin_source_parses_stats_without_raw_patch_retention() {
-        let patch = Arc::<str>::from(
-            "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\n-old\n+new\n+again\n",
+        let patch = Arc::<[u8]>::from(
+            b"diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\n-old\n+new\n+again\n".as_slice(),
         );
         let options = DiffOptions {
             source: DiffSource::Patch(PatchSource::Stdin(patch)),
@@ -1201,8 +1267,9 @@ mod tests {
 
     #[test]
     fn patch_text_source_uses_label_title() {
-        let patch = Arc::<str>::from(
-            "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n",
+        let patch = Arc::<[u8]>::from(
+            b"diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
+                .as_slice(),
         );
         let options = DiffOptions {
             source: DiffSource::Patch(PatchSource::Text {
