@@ -20,7 +20,7 @@ use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub(crate) fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
+pub(crate) fn remove_worktree(args: RemoveWorktreeArgs) -> CliResult<()> {
     let debug = args.debug;
     let force = args.force;
     let requested_target_count = args.targets.len();
@@ -72,7 +72,8 @@ pub(crate) fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
         return Err(hz_core::HzError::Usage(format!(
             "failed to remove one or more worktrees: {}",
             removal_errors.join("; ")
-        )));
+        ))
+        .into());
     }
 
     Ok(())
@@ -157,7 +158,7 @@ pub(crate) fn should_confirm_unmanaged_removal_with_stdin(
     Ok(true)
 }
 
-pub(crate) fn confirm_unmanaged_removal(worktree: &hz_command::WorktreeEntry) -> HzResult<bool> {
+pub(crate) fn confirm_unmanaged_removal(worktree: &hz_command::WorktreeEntry) -> CliResult<bool> {
     let color = io::stderr().is_terminal();
     write_stderr(format_args!(
         "{} {} at {} is not managed by hz. Delete it with git worktree remove? [y/N] ",
@@ -188,7 +189,7 @@ pub(crate) fn worktree_branch_or_handle(worktree: &hz_command::WorktreeEntry) ->
     worktree.branch.as_deref().unwrap_or(&worktree.handle)
 }
 
-pub(crate) fn handoff_worktree(args: HandoffWorktreeArgs) -> HzResult<()> {
+pub(crate) fn handoff_worktree(args: HandoffWorktreeArgs) -> CliResult<()> {
     let handoff = hz_command::handoff_worktree(hz_command::HandoffWorktree {
         target: args.target,
         mode: if args.branch {

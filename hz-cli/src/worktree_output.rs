@@ -20,7 +20,7 @@ use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub(crate) fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
+pub(crate) fn create_worktree(args: NewWorktreeArgs) -> CliResult<()> {
     let debug = args.debug;
     let run_setup = !args.no_setup;
     let created = hz_command::create_worktree_with_lifecycle(
@@ -55,7 +55,7 @@ pub(crate) fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
     Ok(())
 }
 
-pub(crate) fn path_worktree(args: PathWorktreeArgs) -> HzResult<()> {
+pub(crate) fn path_worktree(args: PathWorktreeArgs) -> CliResult<()> {
     let _ = args.path_only;
     let target = hz_command::path_worktree(hz_command::PathWorktree {
         target: args.target.unwrap_or_else(|| "local".to_owned()),
@@ -71,7 +71,7 @@ pub(crate) fn path_worktree(args: PathWorktreeArgs) -> HzResult<()> {
     Ok(())
 }
 
-pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
+pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> CliResult<()> {
     let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees {
         repo: args.repo.clone(),
     })?;
@@ -812,7 +812,7 @@ pub(crate) fn render_created_worktree(
     output
 }
 
-pub(crate) fn print_warnings(warnings: &[String], color: bool) -> HzResult<()> {
+pub(crate) fn print_warnings(warnings: &[String], color: bool) -> CliResult<()> {
     for warning in warnings {
         write_stderr(format_args!(
             "{} {warning}\n",

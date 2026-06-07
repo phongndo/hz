@@ -20,7 +20,7 @@ use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub(crate) fn update(args: UpdateArgs) -> HzResult<()> {
+pub(crate) fn update(args: UpdateArgs) -> CliResult<()> {
     let argv0 = env::args_os().next().ok_or_else(|| {
         hz_core::HzError::Usage("could not determine current executable".to_owned())
     })?;
@@ -69,7 +69,8 @@ pub(crate) fn update(args: UpdateArgs) -> HzResult<()> {
             status
                 .code()
                 .map_or_else(|| "unknown".to_owned(), |code| code.to_string())
-        )));
+        ))
+        .into());
     }
 
     Ok(())

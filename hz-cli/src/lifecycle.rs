@@ -20,7 +20,7 @@ use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub(crate) fn run_lifecycle(args: LifecycleArgs, kind: hz_command::LifecycleKind) -> HzResult<()> {
+pub(crate) fn run_lifecycle(args: LifecycleArgs, kind: hz_command::LifecycleKind) -> CliResult<()> {
     let run = hz_command::run_lifecycle(hz_command::RunLifecycle {
         target: args.target,
         repo: args.repo,

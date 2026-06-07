@@ -20,12 +20,13 @@ use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub(crate) fn init_repo_or_shell(args: InitArgs) -> HzResult<()> {
+pub(crate) fn init_repo_or_shell(args: InitArgs) -> CliResult<()> {
     if let Some(shell) = args.shell {
         if args.repo.is_some() {
             return Err(hz_core::HzError::Usage(
                 "hz init <shell> does not accept --repo; use hz install <shell>".to_owned(),
-            ));
+            )
+            .into());
         }
         return install_shell(ShellArgs { shell });
     }
@@ -39,7 +40,7 @@ pub(crate) fn init_repo_or_shell(args: InitArgs) -> HzResult<()> {
     Ok(())
 }
 
-pub(crate) fn install_shell(args: ShellArgs) -> HzResult<()> {
+pub(crate) fn install_shell(args: ShellArgs) -> CliResult<()> {
     let shell = shell_to_command(args.shell);
 
     let init = hz_command::install_shell_integration(shell)?;
@@ -51,7 +52,7 @@ pub(crate) fn install_shell(args: ShellArgs) -> HzResult<()> {
     Ok(())
 }
 
-pub(crate) fn shell_script(args: ShellArgs) -> HzResult<()> {
+pub(crate) fn shell_script(args: ShellArgs) -> CliResult<()> {
     let shell = shell_to_command(args.shell);
 
     write_stdout(format_args!("{}", hz_command::shell_integration(shell)))?;

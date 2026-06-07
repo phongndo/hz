@@ -20,7 +20,7 @@ use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub(crate) fn tree_sitter(command: TreeSitterCommand) -> HzResult<()> {
+pub(crate) fn tree_sitter(command: TreeSitterCommand) -> CliResult<()> {
     match command {
         TreeSitterCommand::Add(args) => {
             let result = hz_command::syntax_add(&args.languages)?;
@@ -200,7 +200,7 @@ pub(crate) fn patch_source(path: PathBuf) -> HzResult<hz_command::DiffSource> {
     ))
 }
 
-pub(crate) fn print_tree_sitter_add_result(result: &hz_command::SyntaxAddResult) -> HzResult<()> {
+pub(crate) fn print_tree_sitter_add_result(result: &hz_command::SyntaxAddResult) -> CliResult<()> {
     for language in &result.added {
         write_stdout(format_args!("+ enabled {language}\n"))?;
     }
@@ -217,7 +217,7 @@ pub(crate) fn print_tree_sitter_add_result(result: &hz_command::SyntaxAddResult)
 
 pub(crate) fn print_tree_sitter_update_result(
     result: &hz_command::SyntaxUpdateResult,
-) -> HzResult<()> {
+) -> CliResult<()> {
     if result.updated.is_empty()
         && result.bundled.is_empty()
         && result.not_installed.is_empty()
@@ -247,7 +247,7 @@ pub(crate) fn print_tree_sitter_update_result(
 
 pub(crate) fn print_tree_sitter_remove_result(
     result: &hz_command::SyntaxRemoveResult,
-) -> HzResult<()> {
+) -> CliResult<()> {
     for language in &result.removed {
         write_stdout(format_args!("- disabled {language} in config\n"))?;
     }
@@ -266,7 +266,7 @@ pub(crate) fn print_tree_sitter_remove_result(
 pub(crate) fn print_tree_sitter_statuses(
     statuses: &[hz_command::SyntaxLanguageStatus],
     detail: bool,
-) -> HzResult<()> {
+) -> CliResult<()> {
     if statuses.is_empty() {
         write_stdout(format_args!("no tree-sitter languages enabled\n"))?;
         return Ok(());
