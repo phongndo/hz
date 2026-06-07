@@ -63,6 +63,11 @@ jobs:
       - name: Install Rust 1.85
         uses: dtolnay/rust-toolchain@1.85
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
       - name: Check MSRV
         run: cargo check --workspace --all-targets --all-features --locked
 
