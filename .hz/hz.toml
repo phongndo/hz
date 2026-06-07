@@ -1,0 +1,15 @@
+[worktree]
+max_detached = 15
+# default_base = "dev"
+
+[list]
+headers = "auto"
+columns = ["marker", "target", "status", "modified", "path"]
+
+[color]
+mode = "auto"
+scheme = "terminal"
+
+[lifecycle]
+setup = [".hz/environment/setup"]
+cleanup = [".hz/environment/cleanup"]
