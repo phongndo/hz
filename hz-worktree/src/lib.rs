@@ -1586,10 +1586,45 @@ fn default_worktree_path(repo: &Path, id: &str) -> HzResult<PathBuf> {
 }
 
 fn registry_path() -> HzResult<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = registry_path_override() {
+        return Ok(path);
+    }
+
     registry_path_from_env(
         env_path("HOME"),
         env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
     )
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static REGISTRY_PATH_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn registry_path_override() -> Option<PathBuf> {
+    REGISTRY_PATH_OVERRIDE.with(|path| path.borrow().clone())
+}
+
+#[cfg(test)]
+struct RegistryPathOverrideGuard(Option<PathBuf>);
+
+#[cfg(test)]
+impl RegistryPathOverrideGuard {
+    fn set(path: PathBuf) -> Self {
+        Self(REGISTRY_PATH_OVERRIDE.with(|override_path| override_path.replace(Some(path))))
+    }
+}
+
+#[cfg(test)]
+impl Drop for RegistryPathOverrideGuard {
+    fn drop(&mut self) {
+        REGISTRY_PATH_OVERRIDE.with(|override_path| {
+            override_path.replace(self.0.take());
+        });
+    }
 }
 
 fn registry_path_from_env(
@@ -2327,6 +2362,80 @@ mod tests {
             hz_git::current_head(&destination).unwrap(),
             destination_head
         );
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn local_to_worktree_branch_handoff_rolls_back_when_registry_save_fails() {
+        let test_dir = test_dir("hz-worktree-local-branch-save-failure-test");
+        let repo = test_dir.join("repo");
+        let destination = test_dir.join("destination");
+        init_committed_repo(&repo);
+        git(["branch", "-m", "main"], &repo);
+        git(["switch", "-q", "-c", "feature"], &repo);
+        git(
+            [
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                destination.to_str().unwrap(),
+                "main",
+            ],
+            &repo,
+        );
+        let destination_head = hz_git::current_head(&destination).unwrap();
+        let destination_entry = WorktreeEntry {
+            id: "destination".to_owned(),
+            handle: "destination".to_owned(),
+            repo: repo.clone(),
+            path: destination.clone(),
+            branch: None,
+            base: None,
+            source: WorktreeSource::Git,
+            created_at_unix: 0,
+            modified_at_unix: 0,
+            status: WorktreeStatus::Unknown,
+        };
+        let mut registry = Registry::default();
+        registry
+            .remember_handoff(
+                &repo,
+                "feature",
+                &destination,
+                "destination",
+                Some("main".to_owned()),
+            )
+            .unwrap();
+        let blocked_parent = test_dir.join("blocked-registry-parent");
+        fs::write(&blocked_parent, "not a directory")
+            .expect("blocked registry parent should be written");
+        let _registry_path_override =
+            RegistryPathOverrideGuard::set(blocked_parent.join("registry.json"));
+
+        let error = handoff_local_to_worktree(
+            &mut registry,
+            repo.clone(),
+            repo.clone(),
+            "feature".to_owned(),
+            Some(destination_entry),
+        )
+        .unwrap_err();
+
+        assert!(matches!(&error, HzError::Io(_)), "{error}");
+        assert_eq!(
+            hz_git::current_branch(&repo).unwrap().as_deref(),
+            Some("feature")
+        );
+        assert_eq!(hz_git::current_branch(&destination).unwrap(), None);
+        assert_eq!(
+            hz_git::current_head(&destination).unwrap(),
+            destination_head
+        );
+        let link = registry.handoff_link(&repo, "feature").unwrap();
+        assert!(same_path(&link.path, &destination));
+        assert_eq!(link.local_restore_branch.as_deref(), Some("main"));
 
         fs::remove_dir_all(test_dir).expect("test directory should be removed");
     }
