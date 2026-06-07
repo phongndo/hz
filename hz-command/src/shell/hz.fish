@@ -226,6 +226,7 @@ complete -c hz -n "__hz_ts_subcommand_is available" -l enabled
 complete -c hz -n "__hz_ts_subcommand_is update" -l all
 complete -c hz -n "__hz_top_command_is update" -l target-version -r
 complete -c hz -n "__hz_top_command_is update" -l install-dir -r -F
+complete -c hz -n "__hz_top_command_is update" -l force-self-update
 complete -c hz -s h -l help
 complete -c hz -s V -l version
 

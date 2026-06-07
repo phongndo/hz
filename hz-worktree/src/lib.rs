@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     env, fs,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -1581,10 +1581,7 @@ fn generate_handle_from_seed(seed: u128, attempt: u128) -> String {
 
 fn handle_seed() -> u128 {
     let mut bytes = [0_u8; 16];
-    if fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .is_ok()
-    {
+    if getrandom::fill(&mut bytes).is_ok() {
         return u128::from_le_bytes(bytes);
     }
 
@@ -1615,7 +1612,11 @@ fn unix_now() -> HzResult<u64> {
 
 fn new_uuid_v4() -> HzResult<String> {
     let mut bytes = [0_u8; 16];
-    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    getrandom::fill(&mut bytes).map_err(|error| {
+        HzError::Io(std::io::Error::other(format!(
+            "failed to read random bytes: {error}"
+        )))
+    })?;
 
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;

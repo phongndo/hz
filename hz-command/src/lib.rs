@@ -1705,6 +1705,8 @@ mod tests {
         assert!(script.contains("_hz_complete_command_positionals \"$cmd\""));
         assert!(script.contains("_hz_complete_option_value \"$cmd\""));
         assert!(script.contains("_hz_git_refs"));
+        assert!(script.contains("--branch)"));
+        assert!(!script.contains("-b|--branch"));
         assert!(script.contains("compinit -C"));
         assert!(script.contains("shift words"));
         assert!(script.contains("shift 2 words"));
@@ -1721,6 +1723,7 @@ mod tests {
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
+        assert!(script.contains("--force-self-update"));
         assert!(script.contains("--pr"));
         assert!(script.contains("--patch"));
         assert!(script.contains("--staged"));
@@ -1756,6 +1759,7 @@ mod tests {
         assert!(script.contains("-l no-cleanup"));
         assert!(script.contains("-l max-detached"));
         assert!(script.contains("-l target-version"));
+        assert!(script.contains("-l force-self-update"));
         assert!(script.contains("-l pr"));
         assert!(script.contains("-l patch"));
         assert!(script.contains("-l staged"));
@@ -1791,7 +1795,8 @@ mod tests {
         assert!(script.contains("for ((index = 1; index < COMP_CWORD; index++))"));
         assert!(script.contains("_hz_complete_option_value"));
         assert!(script.contains("_hz_git_ref_reply"));
-        assert!(script.contains("-b|--branch"));
+        assert!(script.contains("--branch)"));
+        assert!(!script.contains("-b|--branch"));
         assert!(script.contains("init install setup cleanup shell update"));
         assert!(script.contains("ts tree-sitter"));
         assert!(script.contains("_hz_complete_ts_args"));
@@ -1802,6 +1807,7 @@ mod tests {
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
         assert!(script.contains("--target-version"));
+        assert!(script.contains("--force-self-update"));
         assert!(script.contains("--pr"));
         assert!(script.contains("--patch"));
         assert!(script.contains("--staged"));

@@ -3,14 +3,20 @@ set -eu
 
 version="${1:-latest}"
 install_dir="$(mktemp -d)"
-installer="$install_dir/install.sh"
+script_dir="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+installer="${HZ_INSTALLER:-$script_dir/install.sh}"
+# Set HZ_INSTALLER_URL to smoke a published installer instead of this checkout.
 
 cleanup() {
   rm -rf "$install_dir"
 }
 trap cleanup EXIT INT TERM
 
-curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh -o "$installer"
+if [ -n "${HZ_INSTALLER_URL:-}" ]; then
+  installer="$install_dir/install.sh"
+  curl -fsSL "$HZ_INSTALLER_URL" -o "$installer"
+fi
+
 HZ_INSTALL_DIR="$install_dir" HZ_VERSION="$version" sh "$installer"
 test -x "$install_dir/hz"
 "$install_dir/hz" --version
