@@ -424,12 +424,13 @@ fn github_curl_config_includes_timeouts_and_escapes_values() {
 }
 
 #[test]
-fn github_diff_stdout_rejects_invalid_utf8() {
-    assert_eq!(github_diff_from_stdout(b"diff".to_vec()).unwrap(), "diff");
+fn github_diff_stdout_preserves_bytes() {
+    assert_eq!(
+        github_diff_from_stdout(b"diff".to_vec()).unwrap(),
+        b"diff".to_vec()
+    );
 
-    let error = github_diff_from_stdout(vec![0xff]).unwrap_err();
-
-    assert!(error.to_string().contains("valid UTF-8"));
+    assert_eq!(github_diff_from_stdout(vec![0xff]).unwrap(), vec![0xff]);
 }
 
 #[test]

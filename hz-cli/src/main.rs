@@ -10,7 +10,7 @@ mod update;
 mod worktree_output;
 
 use std::{
-    io::{self, IsTerminal},
+    io::{self, IsTerminal, Write},
     process::ExitCode,
 };
 
@@ -74,8 +74,8 @@ fn run() -> HzResult<()> {
             if io::stdout().is_terminal() && !stat {
                 hz_tui::run_diff_with_live_updates_and_syntax(options, live_updates, syntax_enabled)
             } else {
-                let output = hz_command::diff(options)?;
-                print!("{output}");
+                let output = hz_command::diff_bytes(options)?;
+                io::stdout().write_all(&output)?;
                 Ok(())
             }
         }
