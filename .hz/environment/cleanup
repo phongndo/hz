@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+
+# Add repo cleanup commands here.
