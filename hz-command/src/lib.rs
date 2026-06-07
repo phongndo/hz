@@ -1495,7 +1495,11 @@ mod tests {
         assert!(script.contains("handoff)"));
         assert!(script.contains("--json|--path-only|--help|-h|-j"));
         assert!(script.contains("builtin cd \"$hz_target_path\" || return"));
-        assert!(script.contains("command hz __complete worktree-targets"));
+        assert!(script.contains("command hz __complete worktree-targets \"${complete_args[@]}\""));
+        assert!(
+            script.contains("command hz __complete removable-worktrees \"${complete_args[@]}\"")
+        );
+        assert!(script.contains("complete_args=(-r \"$repo\")"));
         assert!(script.contains("compdef _hz_completion hz _hz"));
         assert!(script.contains("compdef _hzcd_completion hzcd _hzcd"));
         assert!(script.contains("compdef _hzlocal_completion hzlocal _hzlocal"));
@@ -1538,7 +1542,8 @@ mod tests {
 
         assert!(script.contains("case --json --path-only --help -h -j"));
         assert!(script.contains("or return"));
-        assert!(script.contains("command hz __complete removable-worktrees"));
+        assert!(script.contains("command hz __complete worktree-targets -r \"$repo\""));
+        assert!(script.contains("command hz __complete removable-worktrees -r \"$repo\""));
         assert!(script.contains("__hz_command_is"));
         assert!(script.contains("__hz_top_command_is update"));
         assert!(script.contains("__hz_diff_position_is_revision"));
@@ -1586,6 +1591,8 @@ mod tests {
         assert!(script.contains("complete -F _hz_completion hz"));
         assert!(script.contains("_hz_dynamic_reply worktree-targets"));
         assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
+        assert!(script.contains("command hz __complete \"$command\" -r \"$repo\""));
+        assert!(script.contains("for ((index = 1; index < COMP_CWORD; index++))"));
         assert!(script.contains("_hz_complete_option_value"));
         assert!(script.contains("_hz_git_ref_reply"));
         assert!(script.contains("-b|--branch"));
