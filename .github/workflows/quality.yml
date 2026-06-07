@@ -50,6 +50,22 @@ jobs:
       - name: Run rust-analyzer diagnostics
         run: rust-analyzer diagnostics .
 
+  msrv:
+    name: MSRV (Rust 1.85)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.85
+        uses: dtolnay/rust-toolchain@1.85
+
+      - name: Check MSRV
+        run: cargo check --workspace --all-targets --all-features --locked
+
   quality:
     name: Formatter, linter, tests, and build
     runs-on: ubuntu-latest
