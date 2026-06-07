@@ -11,7 +11,8 @@ use crate::{
     StoredDiffContextExpansion, StoredDiffContextExpansionMode, StoredDiffSettings,
     StoredParserArtifact, StoredSyntaxConfig, StoredSyntaxLimits, StoredSyntaxSettings,
     StoredSyntaxThemeConfig, StoredSyntaxThemeTable, SyntaxLimits, SyntaxMode, SyntaxSettings,
-    SyntaxThemeConfig, SyntaxThemeSource, cache_dir, config_path, load_settings,
+    SyntaxThemeConfig, SyntaxThemeSource, TRUSTED_PARSER_MANIFEST, TRUSTED_PARSER_MANIFEST_SHA256,
+    cache_dir, config_path, load_settings,
 };
 use hz_core::{HzError, HzResult};
 use sha2::{Digest, Sha256};

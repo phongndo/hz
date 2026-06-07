@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use crate::{
     CreateWorktree, CreatedWorktree, DEFAULT_MAX_DETACHED_WORKTREES, PathWorktree, Registry,

@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use crate::{
-    Registry, WorktreeEntry, WorktreeSource, remove_registered_entry_from_registry, same_path,
+    Registry, WorktreeEntry, WorktreeSource, remove_registered_entry_with_force_from_registry,
+    same_path,
 };
 use hz_core::{HzError, HzResult};
 

@@ -2,12 +2,67 @@ use std::{
     collections::{BTreeSet, HashMap},
     env,
     ffi::{OsStr, OsString},
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
 use super::*;
 use crate::{args::*, complete::*, removal::*, tree_sitter::*, update::*, worktree_output::*};
+
+struct FailingWriter(io::ErrorKind);
+
+impl Write for FailingWriter {
+    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+        Err(io::Error::from(self.0))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct FlushFailingWriter {
+    bytes: Vec<u8>,
+}
+
+impl Write for FlushFailingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::BrokenPipe))
+    }
+}
+
+#[test]
+fn stdout_write_ignores_broken_pipe() {
+    assert!(
+        write_all_ignore_broken_pipe(FailingWriter(io::ErrorKind::BrokenPipe), b"diff").is_ok()
+    );
+}
+
+#[test]
+fn stdout_flush_ignores_broken_pipe_after_successful_write() {
+    let mut writer = FlushFailingWriter { bytes: Vec::new() };
+
+    assert!(write_all_ignore_broken_pipe(&mut writer, b"diff").is_ok());
+    assert_eq!(writer.bytes, b"diff");
+}
+
+#[test]
+fn stdout_write_returns_other_errors() {
+    let error =
+        write_all_ignore_broken_pipe(FailingWriter(io::ErrorKind::PermissionDenied), b"diff")
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CliError::Hz(hz_core::HzError::Io(error))
+            if error.kind() == io::ErrorKind::PermissionDenied
+    ));
+}
 
 #[test]
 fn stdout_broken_pipe_errors_exit_cleanly() {

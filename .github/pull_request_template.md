@@ -20,7 +20,7 @@
 - [ ] `cargo build --workspace --all-targets --all-features --locked`
 - Not run:
 
-## AI Review
+## Review
 
 - [ ] CodeRabbit reviewed or was requested
 - [ ] Greptile reviewed or was requested
