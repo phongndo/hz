@@ -2,11 +2,35 @@ use std::{
     collections::HashMap,
     env,
     ffi::{OsStr, OsString},
+    io,
     path::{Path, PathBuf},
 };
 
 use super::*;
 use crate::{args::*, complete::*, removal::*, tree_sitter::*, update::*, worktree_output::*};
+
+#[test]
+fn stdout_broken_pipe_errors_exit_cleanly() {
+    let error = stdout_write_error(io::Error::from(io::ErrorKind::BrokenPipe));
+
+    assert!(is_clean_exit_error(&error));
+}
+
+#[test]
+fn non_stdout_or_non_broken_pipe_errors_do_not_exit_cleanly() {
+    let stderr_broken_pipe = CliError::from(hz_core::HzError::Io(io::Error::from(
+        io::ErrorKind::BrokenPipe,
+    )));
+    let stdout_permission_denied =
+        stdout_write_error(io::Error::from(io::ErrorKind::PermissionDenied));
+    let json_error = CliError::from(serde_json::from_str::<serde_json::Value>("{").unwrap_err());
+    let usage_error = CliError::from(hz_core::HzError::Usage("usage".to_owned()));
+
+    assert!(!is_clean_exit_error(&stderr_broken_pipe));
+    assert!(!is_clean_exit_error(&stdout_permission_denied));
+    assert!(!is_clean_exit_error(&json_error));
+    assert!(!is_clean_exit_error(&usage_error));
+}
 
 #[test]
 fn list_output_uses_branch_as_display_identifier() {

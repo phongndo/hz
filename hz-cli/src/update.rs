@@ -9,9 +9,13 @@ use std::{
 
 use hz_core::HzResult;
 
-use crate::args::{INSTALL_SCRIPT, RELEASE_REPO, UpdateArgs};
+use crate::{
+    CliResult,
+    args::{INSTALL_SCRIPT, RELEASE_REPO, UpdateArgs},
+    write_stderr,
+};
 
-pub(crate) fn update(args: UpdateArgs) -> HzResult<()> {
+pub(crate) fn update(args: UpdateArgs) -> CliResult<()> {
     let argv0 = env::args_os().next().ok_or_else(|| {
         hz_core::HzError::Usage("could not determine current executable".to_owned())
     })?;
@@ -28,10 +32,10 @@ pub(crate) fn update(args: UpdateArgs) -> HzResult<()> {
         explicit_install_dir,
         force_self_update,
     )? {
-        eprintln!(
-            "{}",
+        write_stderr(format_args!(
+            "{}\n",
             managed_update_warning(manager, &install_dir, binary.as_os_str())
-        );
+        ))?;
     }
     let version = args.version.unwrap_or_else(|| "latest".to_owned());
     let repo = update_repo(env::var_os("HZ_REPO"));
@@ -60,7 +64,8 @@ pub(crate) fn update(args: UpdateArgs) -> HzResult<()> {
             status
                 .code()
                 .map_or_else(|| "unknown".to_owned(), |code| code.to_string())
-        )));
+        ))
+        .into());
     }
 
     Ok(())

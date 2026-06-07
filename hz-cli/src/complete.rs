@@ -1,19 +1,21 @@
 use crate::{
+    CliResult,
     args::{CompleteArgs, CompletionKind},
     removal::worktree_branch_or_handle,
+    write_stdout,
 };
 use std::path::PathBuf;
 
 use hz_core::HzResult;
 
-pub(crate) fn complete(args: CompleteArgs) -> HzResult<()> {
+pub(crate) fn complete(args: CompleteArgs) -> CliResult<()> {
     let include_local = args.kind == CompletionKind::WorktreeTargets;
     let Ok(candidates) = worktree_completion_candidates(args.repo, include_local) else {
         return Ok(());
     };
 
     for candidate in candidates {
-        println!("{candidate}");
+        write_stdout(format_args!("{candidate}\n"))?;
     }
 
     Ok(())
