@@ -1,24 +1,19 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::HashSet,
     env,
     ffi::{OsStr, OsString},
     fs,
-    io::{self, IsTerminal, Read, Write},
+    io::Write,
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode, Stdio},
-    sync::Arc,
+    process::{Command as ProcessCommand, Stdio},
 };
 
-use clap::{
-    Args, Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Styles},
-};
-use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::{
+    CliResult,
+    args::{INSTALL_SCRIPT, RELEASE_REPO, UpdateArgs},
+    write_stderr,
+};
 
 pub(crate) fn update(args: UpdateArgs) -> CliResult<()> {
     let argv0 = env::args_os().next().ok_or_else(|| {

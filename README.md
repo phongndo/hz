@@ -408,7 +408,8 @@ For contribution guidelines, dev-shell details, and CI expectations, see
 ## CI and releases
 
 `.github/workflows/quality.yml` runs rust-analyzer diagnostics, formatter,
-Clippy, workspace tests, and a full workspace build.
+Clippy, workspace tests, a full workspace build, and installer/update smoke
+tests against a local release fixture.
 `.github/workflows/release.yml` builds release archives with SHA-256 checksum
 files for supported macOS and Linux targets when a `v*.*.*` tag is pushed.
 

@@ -1,24 +1,19 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::HashSet,
-    env,
-    ffi::{OsStr, OsString},
-    fs,
-    io::{self, IsTerminal, Read, Write},
+    env, fs,
+    io::{self, IsTerminal},
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode, Stdio},
-    sync::Arc,
+    process::Command as ProcessCommand,
 };
 
-use clap::{
-    Args, Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Styles},
-};
 use crossterm::terminal as crossterm_terminal;
-use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::{
+    CliResult,
+    args::{ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs},
+    removal::worktree_branch_or_handle,
+    write_stderr, write_stdout,
+};
 
 pub(crate) fn create_worktree(args: NewWorktreeArgs) -> CliResult<()> {
     let debug = args.debug;

@@ -1,4 +1,26 @@
-use super::*;
+use crate::render::{
+    diff::{
+        SplitCellRender, SplitSide, content_spans_at_scroll, context_hide_line, context_show_line,
+        empty_diff_fill_from, inline_bg, render_row, render_split_line,
+        render_unified_line_at_scroll, row_bg, split_cell_spans_at_scroll, syntax_fg,
+    },
+    grep::{grep_highlight_target_for_columns, highlighted_grep_text_line},
+    headers::{file_header_line, file_separator_line, hunk_header_line, hunk_header_spans},
+    menus::{
+        diff_comparison_label, diff_selector_text, diff_selector_width, help_menu_bg,
+        help_menu_content_rows, help_menu_lines, help_menu_row_spans, help_menu_title_color,
+    },
+    sidebar::file_sidebar_lines,
+    statusline::{
+        filter_bar_line, filter_bar_visible, statusline_file_count_label, statusline_header_line,
+    },
+    style::base_bg,
+    text::{
+        fit, fit_padded, fit_padded_from, fit_with_ellipsis, format_count, progress_label,
+        skip_display_prefix,
+    },
+};
+use crate::{app::*, controls::*, live_diff::*, model::*, syntax::*, theme::*};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, FileStatus};
 use hz_syntax::{
@@ -2583,7 +2605,7 @@ fn full_file_sources_cover_diff_modes_and_statuses() {
     );
 
     let patch = DiffOptions {
-        source: DiffSource::Patch(hz_diff::PatchSource::Stdin(Arc::from(""))),
+        source: DiffSource::Patch(hz_diff::PatchSource::Stdin(Arc::from(&b""[..]))),
         ..DiffOptions::default()
     };
     assert!(full_file_source(&repo, &patch, &file, DiffSide::New).is_none());
@@ -2751,7 +2773,7 @@ fn changeset_with_context_lines(line_count: usize) -> Changeset {
             deletions: 0,
             is_binary: false,
         }],
-        raw_patch: String::new(),
+        raw_patch: Vec::new(),
     }
 }
 
@@ -2780,7 +2802,7 @@ fn changeset_with_line_text(text: &str) -> Changeset {
             deletions: 0,
             is_binary: false,
         }],
-        raw_patch: String::new(),
+        raw_patch: Vec::new(),
     }
 }
 
@@ -2818,7 +2840,7 @@ fn changeset_with_hunks_at(repo: PathBuf, line_numbers: &[usize]) -> Changeset {
             deletions: 0,
             is_binary: false,
         }],
-        raw_patch: String::new(),
+        raw_patch: Vec::new(),
     }
 }
 
@@ -2853,7 +2875,7 @@ fn changeset_with_files(paths: &[&str]) -> Changeset {
         repo: PathBuf::from("/repo"),
         title: "test".to_owned(),
         files,
-        raw_patch: String::new(),
+        raw_patch: Vec::new(),
     }
 }
 

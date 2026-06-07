@@ -7,6 +7,7 @@ use std::{
 };
 
 use super::*;
+use crate::{args::*, complete::*, removal::*, tree_sitter::*, update::*, worktree_output::*};
 
 #[test]
 fn stdout_broken_pipe_errors_exit_cleanly() {

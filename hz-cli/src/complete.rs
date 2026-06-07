@@ -1,4 +1,9 @@
-use crate::{CliResult, CompleteArgs, CompletionKind, worktree_branch_or_handle, write_stdout};
+use crate::{
+    CliResult,
+    args::{CompleteArgs, CompletionKind},
+    removal::worktree_branch_or_handle,
+    write_stdout,
+};
 use std::path::PathBuf;
 
 use hz_core::HzResult;

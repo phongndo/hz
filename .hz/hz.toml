@@ -1,0 +1,3 @@
+[lifecycle]
+setup = [".hz/environment/setup"]
+cleanup = [".hz/environment/cleanup"]

@@ -1,24 +1,11 @@
-#![allow(unused_imports)]
+use std::io::{self, IsTerminal};
 
-use crate::*;
-use std::{
-    collections::HashSet,
-    env,
-    ffi::{OsStr, OsString},
-    fs,
-    io::{self, IsTerminal, Read, Write},
-    path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode, Stdio},
-    sync::Arc,
+use crate::{
+    CliResult,
+    args::{InitArgs, ShellArg, ShellArgs},
+    worktree_output::{render_repo_init, render_shell_init},
+    write_stdout,
 };
-
-use clap::{
-    Args, Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Styles},
-};
-use crossterm::terminal as crossterm_terminal;
-use hz_core::HzResult;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(crate) fn init_repo_or_shell(args: InitArgs) -> CliResult<()> {
     if let Some(shell) = args.shell {

@@ -10,7 +10,7 @@ check:
 build:
     cargo build -p hz-cli --locked
 
-smoke: smoke-cli smoke-zsh
+smoke: smoke-cli smoke-zsh smoke-installer-update
 
 smoke-cli:
     cargo build -p hz-cli --locked
@@ -22,8 +22,14 @@ smoke-cli:
 smoke-zsh:
     zsh scripts/smoke-zsh
 
+smoke-installer-update version="latest":
+    scripts/smoke-installer-update {{version}}
+
 smoke-curl-install version="latest":
     scripts/smoke-curl-install {{version}}
+
+smoke-update version="latest":
+    scripts/smoke-update {{version}}
 
 smoke-mise version="latest":
     scripts/smoke-mise {{version}}

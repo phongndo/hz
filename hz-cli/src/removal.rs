@@ -1,24 +1,18 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
     collections::HashSet,
-    env,
-    ffi::{OsStr, OsString},
-    fs,
-    io::{self, IsTerminal, Read, Write},
-    path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode, Stdio},
-    sync::Arc,
+    io::{self, IsTerminal, Write},
 };
 
-use clap::{
-    Args, Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Styles},
-};
-use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::{
+    CliResult,
+    args::{HandoffWorktreeArgs, RemoveWorktreeArgs},
+    worktree_output::{
+        StyleColor, print_warnings, render_handoff, render_removed_worktree, styled,
+    },
+    write_stderr, write_stdout,
+};
 
 pub(crate) fn remove_worktree(args: RemoveWorktreeArgs) -> CliResult<()> {
     let debug = args.debug;
