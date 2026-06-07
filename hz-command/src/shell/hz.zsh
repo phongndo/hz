@@ -180,6 +180,7 @@ _hz_complete_ts_subcommand() {
     'rm:remove syntax highlighting languages'
     'remove:remove syntax highlighting languages'
     'list:list syntax highlighting languages'
+    'ls:list syntax highlighting languages'
     'available:list syntax highlighting languages'
     'clean:remove cached parser libraries'
     'path:print tree-sitter cache and syntax config paths'
@@ -329,7 +330,7 @@ _hz_complete_ts_args() {
       update)
         compadd -- --all -h --help
         ;;
-      add|rm|remove|list|clean|path|doctor)
+      add|rm|remove|list|ls|clean|path|doctor)
         compadd -- -h --help
         ;;
     esac
@@ -399,7 +400,11 @@ _hz_completion() {
   local cmd="${words[2]}"
   if [[ "$cmd" == "worktree" || "$cmd" == "wt" ]]; then
     if (( CURRENT == 3 )); then
-      _hz_complete_worktree_subcommand
+      if [[ "$PREFIX" == -* ]]; then
+        compadd -- -h --help
+      else
+        _hz_complete_worktree_subcommand
+      fi
       return
     fi
     local subcmd="${words[3]}"
@@ -411,7 +416,11 @@ _hz_completion() {
 
   if [[ "$cmd" == "ts" || "$cmd" == "tree-sitter" ]]; then
     if (( CURRENT == 3 )); then
-      _hz_complete_ts_subcommand
+      if [[ "$PREFIX" == -* ]]; then
+        compadd -- -h --help
+      else
+        _hz_complete_ts_subcommand
+      fi
       return
     fi
     local subcmd="${words[3]}"

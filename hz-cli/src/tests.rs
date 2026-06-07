@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     env,
     ffi::{OsStr, OsString},
     io,
@@ -1100,6 +1100,151 @@ fn hidden_completion_command_accepts_kind_and_repo() {
     }
 }
 
+// The shell integrations are hand-written to support auto-cd and dynamic
+// worktree target completion. Keep their command/flag surface pinned to Clap so
+// adding a CLI flag without updating bash/zsh/fish completions fails in tests.
+#[test]
+fn shell_completion_command_lists_match_clap() {
+    let bash = hz_command::shell_integration(hz_command::Shell::Bash);
+    let zsh = hz_command::shell_integration(hz_command::Shell::Zsh);
+    let fish = hz_command::shell_integration(hz_command::Shell::Fish);
+
+    let top_commands = clap_completion_subcommands(&[]);
+    assert_eq!(bash_words_variable(bash, "_hz_top_commands"), top_commands);
+    assert_eq!(
+        zsh_described_commands(zsh, "_hz_complete_main"),
+        top_commands
+    );
+    assert_eq!(
+        fish_argument_words(fish, "not __fish_seen_subcommand_from"),
+        top_commands
+    );
+
+    let worktree_commands = clap_completion_subcommands(&["worktree"]);
+    assert_eq!(
+        bash_words_variable(bash, "_hz_worktree_commands"),
+        worktree_commands
+    );
+    assert_eq!(
+        zsh_described_commands(zsh, "_hz_complete_worktree_subcommand"),
+        worktree_commands
+    );
+    assert_eq!(
+        fish_argument_words(fish, "__hz_needs_worktree_subcommand"),
+        worktree_commands
+    );
+
+    let tree_sitter_commands = clap_completion_subcommands(&["ts"]);
+    assert_eq!(
+        bash_words_variable(bash, "_hz_ts_commands"),
+        tree_sitter_commands
+    );
+    assert_eq!(
+        zsh_described_commands(zsh, "_hz_complete_ts_subcommand"),
+        tree_sitter_commands
+    );
+    assert_eq!(
+        fish_argument_words(fish, "__hz_needs_ts_subcommand"),
+        tree_sitter_commands
+    );
+}
+
+#[test]
+fn shell_completion_option_flags_match_clap() {
+    let bash = hz_command::shell_integration(hz_command::Shell::Bash);
+    let zsh = hz_command::shell_integration(hz_command::Shell::Zsh);
+    let fish = hz_command::shell_integration(hz_command::Shell::Fish);
+
+    let root_flags = clap_completion_flags(&[]);
+    assert_eq!(bash_root_flags(bash), root_flags, "bash options for hz");
+    assert_eq!(zsh_root_flags(zsh), root_flags, "zsh options for hz");
+    assert_eq!(
+        fish_completion_flags(fish, FishCompletionContext::Root),
+        root_flags,
+        "fish options for hz"
+    );
+
+    for group in ["worktree", "wt", "ts", "tree-sitter"] {
+        let expected = clap_completion_flags(&[group]);
+        assert_eq!(
+            bash_group_flags(bash, group),
+            expected,
+            "bash options for hz {group}"
+        );
+        assert_eq!(
+            zsh_group_flags(zsh, group),
+            expected,
+            "zsh options for hz {group}"
+        );
+        assert_eq!(
+            fish_completion_flags(fish, FishCompletionContext::Top(group)),
+            expected,
+            "fish options for hz {group}"
+        );
+    }
+
+    for command in clap_completion_subcommands(&[]) {
+        if matches!(command.as_str(), "worktree" | "wt" | "ts" | "tree-sitter") {
+            continue;
+        }
+
+        let expected = clap_completion_flags(&[&command]);
+        assert_eq!(
+            bash_command_flags(bash, &command),
+            expected,
+            "bash options for hz {command}"
+        );
+        assert_eq!(
+            zsh_command_flags(zsh, &command),
+            expected,
+            "zsh options for hz {command}"
+        );
+        assert_eq!(
+            fish_completion_flags(fish, FishCompletionContext::Top(&command)),
+            expected,
+            "fish options for hz {command}"
+        );
+    }
+
+    for command in clap_completion_subcommands(&["worktree"]) {
+        let expected = clap_completion_flags(&["worktree", &command]);
+        assert_eq!(
+            bash_command_flags(bash, &command),
+            expected,
+            "bash options for hz worktree {command}"
+        );
+        assert_eq!(
+            zsh_command_flags(zsh, &command),
+            expected,
+            "zsh options for hz worktree {command}"
+        );
+        assert_eq!(
+            fish_completion_flags(fish, FishCompletionContext::Worktree(&command)),
+            expected,
+            "fish options for hz worktree {command}"
+        );
+    }
+
+    for command in clap_completion_subcommands(&["ts"]) {
+        let expected = clap_completion_flags(&["ts", &command]);
+        assert_eq!(
+            bash_tree_sitter_flags(bash, &command),
+            expected,
+            "bash options for hz ts {command}"
+        );
+        assert_eq!(
+            zsh_tree_sitter_flags(zsh, &command),
+            expected,
+            "zsh options for hz ts {command}"
+        );
+        assert_eq!(
+            fish_completion_flags(fish, FishCompletionContext::TreeSitter(&command)),
+            expected,
+            "fish options for hz ts {command}"
+        );
+    }
+}
+
 #[test]
 fn init_install_and_lifecycle_commands_parse() {
     let cli = Cli::try_parse_from(["hz", "init", "-r", "/repo"]).unwrap();
@@ -1399,6 +1544,366 @@ fn single_target_json_uses_array_when_nothing_was_removed() {
     let output = removed_worktrees_json(1, &[]).unwrap();
 
     assert_eq!(output, "[]");
+}
+
+#[derive(Clone, Copy)]
+enum FishCompletionContext<'a> {
+    Root,
+    Top(&'a str),
+    Worktree(&'a str),
+    TreeSitter(&'a str),
+}
+
+fn clap_completion_subcommands(path: &[&str]) -> BTreeSet<String> {
+    let command = built_cli_command();
+    let command = clap_find_command(&command, path);
+
+    command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set() && subcommand.get_name() != "help")
+        .flat_map(|subcommand| {
+            let mut names = vec![subcommand.get_name().to_owned()];
+            names.extend(subcommand.get_all_aliases().map(str::to_owned));
+            names
+        })
+        .collect()
+}
+
+fn clap_completion_flags(path: &[&str]) -> BTreeSet<String> {
+    let command = built_cli_command();
+    let command = clap_find_command(&command, path);
+    let mut flags = BTreeSet::new();
+
+    for arg in command
+        .get_arguments()
+        .filter(|arg| !arg.is_positional() && !arg.is_hide_set())
+    {
+        if let Some(short) = arg.get_short() {
+            flags.insert(format!("-{short}"));
+        }
+        if let Some(short_aliases) = arg.get_all_short_aliases() {
+            flags.extend(short_aliases.into_iter().map(|short| format!("-{short}")));
+        }
+        if let Some(long) = arg.get_long() {
+            flags.insert(format!("--{long}"));
+        }
+        if let Some(long_aliases) = arg.get_all_aliases() {
+            flags.extend(long_aliases.into_iter().map(|long| format!("--{long}")));
+        }
+    }
+
+    flags
+}
+
+fn built_cli_command() -> clap::Command {
+    let mut command = <Cli as clap::CommandFactory>::command();
+    command.build();
+    command
+}
+
+fn clap_find_command<'a>(mut command: &'a clap::Command, path: &[&str]) -> &'a clap::Command {
+    for name in path {
+        command = command
+            .get_subcommands()
+            .find(|subcommand| clap_command_matches(subcommand, name))
+            .unwrap_or_else(|| panic!("missing clap command path component: {name}"));
+    }
+
+    command
+}
+
+fn clap_command_matches(command: &clap::Command, name: &str) -> bool {
+    command.get_name() == name || command.get_all_aliases().any(|alias| alias == name)
+}
+
+fn bash_words_variable(script: &str, variable: &str) -> BTreeSet<String> {
+    let marker = format!("{variable}=\"");
+    let value = script
+        .split(&marker)
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("missing bash variable: {variable}"));
+
+    words(value)
+}
+
+fn zsh_described_commands(script: &str, function: &str) -> BTreeSet<String> {
+    shell_function_body(script, function)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let description = line.strip_prefix('\'')?;
+            let (command, _) = description.split_once(':')?;
+            Some(command.to_owned())
+        })
+        .collect()
+}
+
+fn fish_argument_words(script: &str, condition: &str) -> BTreeSet<String> {
+    let line = script
+        .lines()
+        .find(|line| line.contains(condition) && line.contains(" -a \""))
+        .unwrap_or_else(|| panic!("missing fish completion arguments for: {condition}"));
+    let value = line
+        .split(" -a \"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("missing fish completion argument list for: {condition}"));
+
+    words(value)
+}
+
+fn bash_root_flags(script: &str) -> BTreeSet<String> {
+    shell_root_flags(script)
+}
+
+fn zsh_root_flags(script: &str) -> BTreeSet<String> {
+    shell_root_flags(script)
+}
+
+fn shell_root_flags(script: &str) -> BTreeSet<String> {
+    let body = shell_function_body(script, "_hz_completion");
+    let root_branch = body.split("local cmd").next().unwrap_or(body);
+
+    extract_shell_flags(root_branch)
+}
+
+fn bash_group_flags(script: &str, group: &str) -> BTreeSet<String> {
+    shell_group_flags(script, group)
+}
+
+fn zsh_group_flags(script: &str, group: &str) -> BTreeSet<String> {
+    shell_group_flags(script, group)
+}
+
+fn shell_group_flags(script: &str, group: &str) -> BTreeSet<String> {
+    let body = shell_function_body(script, "_hz_completion");
+    let marker = match group {
+        "worktree" | "wt" => "if [[ \"$cmd\" == \"worktree\" || \"$cmd\" == \"wt\" ]]; then",
+        "ts" | "tree-sitter" => "if [[ \"$cmd\" == \"ts\" || \"$cmd\" == \"tree-sitter\" ]]; then",
+        _ => panic!("unsupported shell group: {group}"),
+    };
+    let branch = shell_branch_body(body, marker);
+
+    extract_shell_flags(branch)
+}
+
+fn bash_command_flags(script: &str, command: &str) -> BTreeSet<String> {
+    shell_case_flags(script, "_hz_complete_command_args", command)
+}
+
+fn zsh_command_flags(script: &str, command: &str) -> BTreeSet<String> {
+    shell_case_flags(script, "_hz_complete_command_options", command)
+}
+
+fn bash_tree_sitter_flags(script: &str, command: &str) -> BTreeSet<String> {
+    shell_case_flags(script, "_hz_complete_ts_args", command)
+}
+
+fn zsh_tree_sitter_flags(script: &str, command: &str) -> BTreeSet<String> {
+    shell_case_flags(script, "_hz_complete_ts_args", command)
+}
+
+fn shell_case_flags(script: &str, function: &str, command: &str) -> BTreeSet<String> {
+    let body = shell_function_body(script, function);
+    let mut found = false;
+    let mut selected = false;
+    let mut selected_body = String::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed == ";;" {
+            selected = false;
+            continue;
+        }
+
+        if let Some(pattern) = shell_case_pattern(trimmed) {
+            selected = pattern.split('|').any(|candidate| candidate == command);
+            found |= selected;
+            continue;
+        }
+
+        if selected {
+            selected_body.push_str(line);
+            selected_body.push('\n');
+        }
+    }
+
+    if !found {
+        panic!("missing {function} case arm for: {command}");
+    }
+
+    extract_shell_flags(&selected_body)
+}
+
+fn shell_case_pattern(line: &str) -> Option<&str> {
+    let pattern = line.strip_suffix(')')?;
+    if pattern
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '|')
+    {
+        Some(pattern)
+    } else {
+        None
+    }
+}
+
+fn shell_function_body<'a>(script: &'a str, function: &str) -> &'a str {
+    let marker = format!("{function}() {{");
+    script
+        .split(&marker)
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .unwrap_or_else(|| panic!("missing shell function: {function}"))
+}
+
+fn shell_branch_body<'a>(body: &'a str, marker: &str) -> &'a str {
+    body.split(marker)
+        .nth(1)
+        .and_then(|rest| rest.split("\n  fi\n\n").next())
+        .unwrap_or_else(|| panic!("missing shell branch: {marker}"))
+}
+
+fn extract_shell_flags(text: &str) -> BTreeSet<String> {
+    text.split(|character: char| {
+        character.is_whitespace()
+            || matches!(character, '"' | '\'' | '(' | ')' | ';' | ',' | '[' | ']')
+    })
+    .filter_map(normalize_shell_flag)
+    .collect()
+}
+
+fn normalize_shell_flag(token: &str) -> Option<String> {
+    if token == "--" {
+        return None;
+    }
+
+    if let Some(long) = token.strip_prefix("--") {
+        if is_long_completion_flag(long) {
+            return Some(token.to_owned());
+        }
+    }
+
+    let mut characters = token.chars();
+    if characters.next() == Some('-') {
+        if let (Some(short), None) = (characters.next(), characters.next()) {
+            if short.is_ascii_alphanumeric() {
+                return Some(token.to_owned());
+            }
+        }
+    }
+
+    None
+}
+
+fn is_long_completion_flag(flag: &str) -> bool {
+    flag.chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_alphanumeric())
+        && flag
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+}
+
+fn fish_completion_flags(script: &str, context: FishCompletionContext<'_>) -> BTreeSet<String> {
+    let mut flags = BTreeSet::new();
+
+    for line in script.lines().map(str::trim) {
+        if !line.starts_with("complete -c hz ") || !fish_line_applies(line, context) {
+            continue;
+        }
+
+        flags.extend(fish_line_flags(line));
+    }
+
+    flags
+}
+
+fn fish_line_applies(line: &str, context: FishCompletionContext<'_>) -> bool {
+    let condition = fish_line_condition(line);
+
+    // Fish entries without a condition are global flags and apply in every context.
+    match context {
+        FishCompletionContext::Root => condition
+            .is_none_or(|condition| condition.starts_with("not __fish_seen_subcommand_from")),
+        FishCompletionContext::Top(command) => condition.is_none_or(|condition| {
+            fish_condition_contains(condition, "__hz_command_is", command)
+                || fish_condition_contains(condition, "__hz_top_command_is", command)
+        }),
+        FishCompletionContext::Worktree(command) => condition
+            .is_none_or(|condition| fish_condition_contains(condition, "__hz_command_is", command)),
+        FishCompletionContext::TreeSitter(command) => condition.is_none_or(|condition| {
+            fish_condition_contains(condition, "__hz_ts_subcommand_is", command)
+        }),
+    }
+}
+
+fn fish_line_condition(line: &str) -> Option<&str> {
+    line.split(" -n \"")
+        .nth(1)
+        .and_then(|condition| condition.split('"').next())
+}
+
+fn fish_condition_contains(condition: &str, prefix: &str, command: &str) -> bool {
+    condition.strip_prefix(prefix).is_some_and(|rest| {
+        rest.starts_with(char::is_whitespace)
+            && rest
+                .split_whitespace()
+                .any(|candidate| candidate == command)
+    })
+}
+
+#[test]
+fn fish_condition_contains_requires_helper_word_boundary() {
+    assert!(fish_condition_contains(
+        "__hz_command_is remove rm",
+        "__hz_command_is",
+        "remove"
+    ));
+    assert!(fish_condition_contains(
+        "__hz_command_is\tremove rm",
+        "__hz_command_is",
+        "remove"
+    ));
+    assert!(!fish_condition_contains(
+        "__hz_command_is_extra remove rm",
+        "__hz_command_is",
+        "remove"
+    ));
+    assert!(!fish_condition_contains(
+        "__hz_command_isremove rm",
+        "__hz_command_is",
+        "remove"
+    ));
+}
+
+fn fish_line_flags(line: &str) -> BTreeSet<String> {
+    let mut flags = BTreeSet::new();
+    let mut tokens = line.split_whitespace();
+
+    while let Some(token) = tokens.next() {
+        match token {
+            "-s" => {
+                let short = tokens
+                    .next()
+                    .unwrap_or_else(|| panic!("missing fish short flag name in: {line}"));
+                flags.insert(format!("-{}", short.trim_matches('"')));
+            }
+            "-l" => {
+                let long = tokens
+                    .next()
+                    .unwrap_or_else(|| panic!("missing fish long flag name in: {line}"));
+                flags.insert(format!("--{}", long.trim_matches('"')));
+            }
+            _ => {}
+        }
+    }
+
+    flags
+}
+
+fn words(text: &str) -> BTreeSet<String> {
+    text.split_whitespace().map(str::to_owned).collect()
 }
 
 fn remove_args(json: bool, force: bool) -> RemoveWorktreeArgs {
