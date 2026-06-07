@@ -226,11 +226,7 @@ pub(crate) fn fetch_github_pull_request_diff(
         return Err(github_fetch_error(pull_request, &output, token.is_some()));
     }
 
-    github_diff_from_stdout(output.stdout)
-}
-
-pub(crate) fn github_diff_from_stdout(stdout: Vec<u8>) -> HzResult<Vec<u8>> {
-    Ok(stdout)
+    Ok(output.stdout)
 }
 
 pub(crate) fn github_curl_config(url: &str, token: Option<&str>) -> String {
