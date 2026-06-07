@@ -1027,12 +1027,15 @@ pub fn remove_found(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
 pub fn remove_found_with_force(entry: WorktreeEntry, force: bool) -> HzResult<WorktreeEntry> {
     match entry.source {
         WorktreeSource::Managed => remove_registered_entry_with_force(entry, force),
-        WorktreeSource::Git => {
-            let _registry_lock = RegistryLock::acquire()?;
-            hz_git::remove_worktree_with_force(&entry.repo, &entry.path, force)?;
-            Ok(entry)
-        }
+        WorktreeSource::Git => remove_git_entry_with_force(entry, force),
     }
+}
+
+fn remove_git_entry_with_force(entry: WorktreeEntry, force: bool) -> HzResult<WorktreeEntry> {
+    run_with_registry_lock_for_git_side_effect(|| {
+        hz_git::remove_worktree_with_force(&entry.repo, &entry.path, force)?;
+        Ok(entry)
+    })
 }
 
 fn remove_registered_entry_with_force(
@@ -1477,20 +1480,54 @@ impl RegistryLock {
     fn acquire() -> HzResult<Self> {
         let registry_path = registry_path()?;
         let lock_path = registry_lock_path(&registry_path)?;
+        Self::acquire_path(&lock_path)
+    }
+
+    fn acquire_path(lock_path: &Path) -> HzResult<Self> {
+        if Self::is_held_by_current_thread() {
+            return Err(HzError::Usage(
+                "registry lock is already held by this thread".to_owned(),
+            ));
+        }
+
         if let Some(parent) = lock_path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        let file = open_registry_lock_file(&lock_path)?;
+        let file = open_registry_lock_file(lock_path)?;
         lock_registry_file(&file)?;
+        REGISTRY_LOCK_HELD.with(|held| held.set(true));
         Ok(Self { file })
+    }
+
+    fn is_held_by_current_thread() -> bool {
+        REGISTRY_LOCK_HELD.with(|held| held.get())
     }
 }
 
 impl Drop for RegistryLock {
     fn drop(&mut self) {
         let _ = unlock_registry_file(&self.file);
+        REGISTRY_LOCK_HELD.with(|held| held.set(false));
     }
+}
+
+thread_local! {
+    static REGISTRY_LOCK_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// Git worktree removal is a Git side effect, not a registry mutation. Reuse an
+// existing registry critical section when one is already held so internal
+// callers cannot re-enter flock on a second file descriptor and deadlock.
+fn run_with_registry_lock_for_git_side_effect<T>(
+    operation: impl FnOnce() -> HzResult<T>,
+) -> HzResult<T> {
+    if RegistryLock::is_held_by_current_thread() {
+        return operation();
+    }
+
+    let _registry_lock = RegistryLock::acquire()?;
+    operation()
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
@@ -2336,6 +2373,40 @@ mod tests {
         unlock_registry_file(&first).unwrap();
         fs2::FileExt::lock_exclusive(&second).unwrap();
         fs2::FileExt::unlock(&second).unwrap();
+        fs::remove_file(lock_path).unwrap();
+    }
+
+    #[test]
+    fn registry_lock_acquire_rejects_same_thread_reentry() {
+        let lock_path = env::temp_dir().join(format!(
+            "hz-registry-reentry-{}.lock",
+            new_uuid_v4().unwrap()
+        ));
+        let first = RegistryLock::acquire_path(&lock_path).unwrap();
+
+        let second = RegistryLock::acquire_path(&lock_path);
+        assert!(second.is_err());
+        assert_eq!(
+            second.err().unwrap().to_string(),
+            "registry lock is already held by this thread"
+        );
+
+        drop(first);
+        fs::remove_file(lock_path).unwrap();
+    }
+
+    #[test]
+    fn registry_lock_for_git_side_effect_reuses_current_lock() {
+        let lock_path = env::temp_dir().join(format!(
+            "hz-registry-git-side-effect-{}.lock",
+            new_uuid_v4().unwrap()
+        ));
+        let first = RegistryLock::acquire_path(&lock_path).unwrap();
+
+        let result = run_with_registry_lock_for_git_side_effect(|| Ok("removed"));
+
+        assert_eq!(result.unwrap(), "removed");
+        drop(first);
         fs::remove_file(lock_path).unwrap();
     }
 
