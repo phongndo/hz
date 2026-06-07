@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     env, fs,
-    io::{self, ErrorKind, Write},
+    io::{self, ErrorKind, Read, Write},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
     sync::Arc,
@@ -940,16 +940,10 @@ fn require_home(home: Option<PathBuf>) -> HzResult<PathBuf> {
 
 fn install_line(path: &Path, line: &'static str) -> HzResult<bool> {
     let write_path = shell_rc_write_path(path)?;
-    let existing_metadata = match fs::metadata(&write_path) {
-        Ok(metadata) => Some(metadata),
-        Err(error) if error.kind() == ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
-    let existing = if path.exists() {
-        fs::read_to_string(path)?
-    } else {
-        String::new()
-    };
+    // Once an existing rc symlink is resolved, use that same write path for the
+    // snapshot and final rename so one install does not mix target contents and
+    // metadata from different paths.
+    let (existing, existing_metadata) = read_shell_rc(&write_path)?;
 
     if existing.lines().any(|existing_line| existing_line == line) {
         return Ok(false);
@@ -965,7 +959,7 @@ fn install_line(path: &Path, line: &'static str) -> HzResult<bool> {
         }
     }
 
-    create_parent_dir(path)?;
+    create_parent_dir(&write_path)?;
 
     if let Some(metadata) = existing_metadata.as_ref() {
         write_install_backup(path, &existing, metadata)?;
@@ -995,35 +989,56 @@ fn shell_rc_write_path(path: &Path) -> HzResult<PathBuf> {
     }
 }
 
+fn read_shell_rc(path: &Path) -> HzResult<(String, Option<fs::Metadata>)> {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok((String::new(), None)),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    Ok((contents, Some(metadata)))
+}
+
 fn write_install_backup(path: &Path, contents: &str, metadata: &fs::Metadata) -> HzResult<()> {
     let backup_path = shell_rc_backup_path(path)?;
     create_parent_dir(&backup_path)?;
-    let mut file = match new_shell_rc_file_options()
-        .write(true)
-        .create_new(true)
-        .open(&backup_path)
-    {
-        Ok(file) => file,
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
+    let mut temp_path = None;
 
     let result = (|| -> HzResult<()> {
+        let (created_temp_path, mut file) = create_shell_rc_temp_file(&backup_path)?;
+        temp_path = Some(created_temp_path.clone());
+
         file.set_permissions(metadata.permissions())?;
         file.write_all(contents.as_bytes())?;
         file.sync_all()?;
+        drop(file);
+
+        // Link the fully-written temp file into place instead of writing the
+        // backup path directly. hard_link is an atomic no-clobber create, so an
+        // interrupted process leaves either no backup or a complete backup.
+        let backup_created = match fs::hard_link(&created_temp_path, &backup_path) {
+            Ok(()) => true,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => false,
+            Err(error) => return Err(error.into()),
+        };
+
+        if backup_created {
+            sync_parent_dir(&backup_path)?;
+        }
+
+        fs::remove_file(&created_temp_path)?;
+        temp_path = None;
+        sync_parent_dir(&backup_path)?;
         Ok(())
     })();
 
-    if let Err(error) = result {
-        drop(file);
-        let _ = fs::remove_file(&backup_path);
-        return Err(error);
+    if let Some(temp_path) = temp_path {
+        let _ = fs::remove_file(temp_path);
     }
 
-    drop(file);
-    sync_parent_dir(&backup_path)?;
-    Ok(())
+    result
 }
 
 fn atomic_write_shell_rc(
@@ -1839,13 +1854,7 @@ mod tests {
             fs::read_to_string(shell_rc_backup_path(&rc_file).unwrap()).unwrap(),
             original
         );
-        assert!(!fs::read_dir(&test_dir).unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .ends_with(".tmp")
-        }));
+        assert_no_shell_rc_temp_files(&test_dir);
 
         fs::remove_dir_all(test_dir).unwrap();
     }
@@ -1861,6 +1870,7 @@ mod tests {
         assert!(install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
 
         assert_eq!(fs::read_to_string(&backup_file).unwrap(), "user backup\n");
+        assert_no_shell_rc_temp_files(&test_dir);
 
         fs::remove_dir_all(test_dir).unwrap();
     }
@@ -1896,6 +1906,7 @@ mod tests {
             fs::read_to_string(shell_rc_backup_path(&rc_file).unwrap()).unwrap(),
             "# managed dotfile\n"
         );
+        assert_no_shell_rc_temp_files(&test_dir);
 
         fs::remove_dir_all(test_dir).unwrap();
     }
@@ -1932,6 +1943,16 @@ mod tests {
         ));
         fs::create_dir_all(&test_dir).unwrap();
         test_dir
+    }
+
+    fn assert_no_shell_rc_temp_files(path: &Path) {
+        assert!(!fs::read_dir(path).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
     }
 
     fn test_repo(prefix: &str) -> PathBuf {
