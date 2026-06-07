@@ -249,6 +249,13 @@ fn list_output_renders_status_and_modified_columns() {
 }
 
 #[test]
+fn modified_datetime_uses_date_like_shape() {
+    let datetime = time::OffsetDateTime::from_unix_timestamp(1_704_067_200).unwrap();
+
+    assert_eq!(format_modified_datetime(datetime), "Jan  1 00:00");
+}
+
+#[test]
 fn list_output_centers_unicode_status() {
     let output = render_worktree_rows_with_options(
         &[WorktreeListRow {

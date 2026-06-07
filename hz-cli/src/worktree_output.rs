@@ -8,7 +8,6 @@ use std::{
     fs,
     io::{self, IsTerminal, Read, Write},
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode, Stdio},
     sync::Arc,
 };
 
@@ -19,6 +18,10 @@ use clap::{
 use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+const MONTH_ABBREVIATIONS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 pub(crate) fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
     let debug = args.debug;
@@ -730,25 +733,21 @@ pub(crate) fn format_modified_at(timestamp: u64) -> String {
 }
 
 pub(crate) fn format_unix_timestamp(timestamp: u64) -> Option<String> {
-    let timestamp = timestamp.to_string();
-    let gnu_timestamp = format!("@{timestamp}");
-    run_date_command(["-r", timestamp.as_str(), "+%b %e %H:%M"])
-        .or_else(|| run_date_command(["-d", gnu_timestamp.as_str(), "+%b %e %H:%M"]))
+    let timestamp = i64::try_from(timestamp).ok()?;
+    let datetime = time::OffsetDateTime::from_unix_timestamp(timestamp).ok()?;
+    let offset = time::UtcOffset::local_offset_at(datetime).ok()?;
+    Some(format_modified_datetime(datetime.to_offset(offset)))
 }
 
-pub(crate) fn run_date_command<const N: usize>(args: [&str; N]) -> Option<String> {
-    let output = ProcessCommand::new("date").args(args).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let formatted = String::from_utf8(output.stdout).ok()?;
-    let formatted = formatted.trim_end();
-    if formatted.is_empty() {
-        None
-    } else {
-        Some(formatted.to_owned())
-    }
+pub(crate) fn format_modified_datetime(datetime: time::OffsetDateTime) -> String {
+    let month = MONTH_ABBREVIATIONS[usize::from(u8::from(datetime.month()) - 1)];
+    format!(
+        "{} {:>2} {:02}:{:02}",
+        month,
+        datetime.day(),
+        datetime.hour(),
+        datetime.minute()
+    )
 }
 
 #[cfg(test)]
