@@ -91,8 +91,7 @@ pub(crate) fn prune_detached_worktrees(
     candidates: Vec<WorktreeEntry>,
 ) -> HzResult<()> {
     for entry in candidates {
-        remove_registered_entry_from_registry(registry, &entry, false)?;
-        registry.save()?;
+        remove_registered_entry_with_force_from_registry(registry, entry, false)?;
     }
 
     Ok(())

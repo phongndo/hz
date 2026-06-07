@@ -197,6 +197,207 @@ fn created_handoff_destination_preserves_prune_warnings() {
 }
 
 #[test]
+fn create_rolls_back_git_state_when_registry_save_fails() {
+    let test_dir = test_dir("hz-worktree-create-save-failure-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    let blocked_parent = test_dir.join("blocked-registry-parent");
+    fs::write(&blocked_parent, "not a directory")
+        .expect("blocked registry parent should be written");
+    let _registry_path_override =
+        RegistryPathOverrideGuard::set(blocked_parent.join("registry.json"));
+    let mut registry = Registry::default();
+
+    let error = create_with_registry(
+        &mut registry,
+        CreateWorktree {
+            name: Some("feature".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(destination.clone()),
+            base: None,
+            branch: None,
+            max_detached_worktrees: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(&error, HzError::Io(_)), "{error}");
+    assert!(registry.entries.is_empty());
+    assert!(!destination.exists());
+    assert!(!git_worktree_listed(&repo, &destination));
+    assert!(!hz_git::branch_exists(&repo, "feature").unwrap());
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn remove_does_not_remove_git_worktree_when_registry_save_fails() {
+    let test_dir = test_dir("hz-worktree-remove-save-failure-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    git(["branch", "feature"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            destination.to_str().unwrap(),
+            "feature",
+        ],
+        &repo,
+    );
+    let destination = fs::canonicalize(destination).unwrap();
+    let entry = WorktreeEntry {
+        id: "feature".to_owned(),
+        handle: "feature".to_owned(),
+        repo: repo.clone(),
+        path: destination.clone(),
+        branch: Some("feature".to_owned()),
+        base: None,
+        source: WorktreeSource::Managed,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
+    };
+    let mut registry = Registry {
+        entries: vec![entry.clone()],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+    let blocked_parent = test_dir.join("blocked-registry-parent");
+    fs::write(&blocked_parent, "not a directory")
+        .expect("blocked registry parent should be written");
+    let _registry_path_override =
+        RegistryPathOverrideGuard::set(blocked_parent.join("registry.json"));
+
+    let error =
+        remove_registered_entry_with_force_from_registry(&mut registry, entry.clone(), false)
+            .unwrap_err();
+
+    assert!(matches!(&error, HzError::Io(_)), "{error}");
+    assert_eq!(registry.entries, vec![entry]);
+    assert!(git_worktree_listed(&repo, &destination));
+    assert_eq!(
+        hz_git::current_branch(&destination).unwrap().as_deref(),
+        Some("feature")
+    );
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn remove_restores_registry_when_git_removal_fails() {
+    let test_dir = test_dir("hz-worktree-remove-git-failure-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    git(["branch", "feature"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            destination.to_str().unwrap(),
+            "feature",
+        ],
+        &repo,
+    );
+    let destination = fs::canonicalize(destination).unwrap();
+    fs::write(destination.join("file.txt"), "dirty\n").expect("worktree should be dirtied");
+    let entry = WorktreeEntry {
+        id: "feature".to_owned(),
+        handle: "feature".to_owned(),
+        repo: repo.clone(),
+        path: destination.clone(),
+        branch: Some("feature".to_owned()),
+        base: None,
+        source: WorktreeSource::Managed,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
+    };
+    let mut registry = Registry {
+        entries: vec![entry.clone()],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    registry.save().expect("registry should be saved");
+
+    let error =
+        remove_registered_entry_with_force_from_registry(&mut registry, entry.clone(), false)
+            .unwrap_err();
+
+    assert!(
+        error.to_string().contains("failed to remove git worktree"),
+        "{error}"
+    );
+    assert_eq!(registry.entries, vec![entry.clone()]);
+    assert_eq!(Registry::load().unwrap().entries, vec![entry]);
+    assert!(git_worktree_listed(&repo, &destination));
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn prune_does_not_remove_git_worktree_when_registry_save_fails() {
+    let test_dir = test_dir("hz-worktree-prune-save-failure-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            destination.to_str().unwrap(),
+            "HEAD",
+        ],
+        &repo,
+    );
+    let destination = fs::canonicalize(destination).unwrap();
+    let entry = WorktreeEntry {
+        id: "detached".to_owned(),
+        handle: "detached".to_owned(),
+        repo: repo.clone(),
+        path: destination.clone(),
+        branch: None,
+        base: None,
+        source: WorktreeSource::Managed,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
+    };
+    let mut registry = Registry {
+        entries: vec![entry.clone()],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+    let blocked_parent = test_dir.join("blocked-registry-parent");
+    fs::write(&blocked_parent, "not a directory")
+        .expect("blocked registry parent should be written");
+    let _registry_path_override =
+        RegistryPathOverrideGuard::set(blocked_parent.join("registry.json"));
+
+    let error = prune_detached_worktrees(&mut registry, vec![entry.clone()]).unwrap_err();
+
+    assert!(matches!(&error, HzError::Io(_)), "{error}");
+    assert_eq!(registry.entries, vec![entry]);
+    assert!(git_worktree_listed(&repo, &destination));
+    assert_eq!(hz_git::current_branch(&destination).unwrap(), None);
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
 fn generated_unique_handle_searches_past_old_probe_window() {
     let repo = PathBuf::from("/repo");
     let seed = 0;
@@ -984,6 +1185,13 @@ fn git_detached(entry: &WorktreeEntry) -> hz_git::GitWorktree {
         path: entry.path.clone(),
         branch: None,
     }
+}
+
+fn git_worktree_listed(repo: &Path, path: &Path) -> bool {
+    hz_git::list_worktrees(repo)
+        .unwrap()
+        .into_iter()
+        .any(|worktree| same_path(&worktree.path, path))
 }
 
 fn test_dir(prefix: &str) -> PathBuf {

@@ -207,6 +207,21 @@ pub fn branch_exists(repo: &Path, branch: &str) -> HzResult<bool> {
     }
 }
 
+pub fn delete_branch(repo: &Path, branch: &str) -> HzResult<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["branch", "-D", "--"])
+        .arg(branch)
+        .output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to delete git branch", &output));
+    }
+
+    Ok(())
+}
+
 pub fn switch_branch(repo: &Path, branch: &str) -> HzResult<()> {
     let output = Command::new("git")
         .arg("-C")
