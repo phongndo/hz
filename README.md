@@ -272,11 +272,14 @@ grep matches. Active filters stay visible in the bottom bar. In filter prompts,
 
 Syntax highlighting is Tree-sitter based. Common languages are bundled for
 zero-config highlighting; `hz ts add <language>` installs extra languages.
-`hz diff` never downloads parsers while rendering and verifies recorded parser
-checksums before loading user-cache parser libraries. Use `--no-syntax` to force
-plain diff text, and `hz ts rm <language>`, `hz ts ls`, `hz ts doctor`, or
-`hz ts clean` to maintain the parser cache. `hz ts update <language>` refreshes
-cached parsers, and `hz ts available --installed` / `--enabled` filters the
+`hz ts add` seeds a shipped parser-release lockfile, verifies the downloaded
+release bundle against that lock before loading, and records the resulting
+parser checksum. `hz diff` never downloads parsers while rendering and verifies
+recorded parser checksums before loading user-cache parser libraries. Use
+`--no-syntax` to force plain diff text, and `hz ts rm <language>`, `hz ts ls`,
+`hz ts doctor`, or `hz ts clean` to maintain the parser cache. `hz ts update
+<language>` refreshes cached parsers, and `hz ts available --installed` /
+`--enabled` filters the
 language list. Repo-backed diffs highlight full old/new file sides and map spans
 back to diff lines; patch input and unavailable file contents fall back to
 hunk-local highlighting. Highlighting stays lazy and cached, and falls back to

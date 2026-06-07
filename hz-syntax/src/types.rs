@@ -15,7 +15,13 @@ pub(crate) const SETTINGS_FILE: &str = "config.toml";
 pub(crate) const LEGACY_SETTINGS_FILE: &str = "syntax.toml";
 pub(crate) const COLORSCHEME_DIR: &str = "colorscheme";
 pub(crate) const LANGUAGE_PACK_VERSION: &str = "1.9.0-rc.18";
-pub(crate) const ARTIFACT_SOURCE: &str = "github:kreuzberg-dev/tree-sitter-language-pack";
+// Lockfile copied from the matching tree-sitter-language-pack GitHub release.
+// Non-bundled parser installs seed this manifest before any download so the
+// release bundle hash is pinned by hz instead of trusted on first use.
+pub(crate) const TRUSTED_PARSER_MANIFEST: &str = include_str!("tree_sitter_parsers_lock.json");
+pub(crate) const TRUSTED_PARSER_MANIFEST_SHA256: &str =
+    "be3db342638e23ceac0844de831ce86baa2d7dacf2666fd42f42619d831da115";
+pub(crate) const ARTIFACT_SOURCE: &str = "github:kreuzberg-dev/tree-sitter-language-pack@parsers.json-sha256:be3db342638e23ceac0844de831ce86baa2d7dacf2666fd42f42619d831da115";
 
 pub const DEFAULT_MAX_HIGHLIGHT_SOURCE_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_HIGHLIGHT_LINE_BYTES: usize = 8 * 1024;
