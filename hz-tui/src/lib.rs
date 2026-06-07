@@ -3442,8 +3442,10 @@ impl TextMatcher {
         Some(Self {
             query: query.to_owned(),
             lowercase_query: query.to_ascii_lowercase(),
-            case_sensitive: !query.is_ascii()
-                || query.bytes().any(|byte| byte.is_ascii_uppercase()),
+            case_sensitive: query
+                .as_bytes()
+                .iter()
+                .any(|byte| byte.is_ascii_uppercase()),
         })
     }
 
@@ -10166,8 +10168,9 @@ mod tests {
         assert!(!uppercase.matches("line"));
 
         let unicode = TextMatcher::new("éclair").expect("matcher should be created");
-        assert!(unicode.case_sensitive);
+        assert!(!unicode.case_sensitive);
         assert!(unicode.matches("éclair"));
+        assert!(unicode.matches("éCLAIR"));
         assert!(!unicode.matches("Éclair"));
 
         let addition = DiffLine {
