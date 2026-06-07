@@ -2,10 +2,42 @@ use std::{
     collections::HashMap,
     env,
     ffi::{OsStr, OsString},
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
 use super::*;
+
+struct FailingWriter(io::ErrorKind);
+
+impl Write for FailingWriter {
+    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+        Err(io::Error::from(self.0))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn stdout_write_ignores_broken_pipe() {
+    assert!(
+        write_all_ignore_broken_pipe(FailingWriter(io::ErrorKind::BrokenPipe), b"diff").is_ok()
+    );
+}
+
+#[test]
+fn stdout_write_returns_other_errors() {
+    let error =
+        write_all_ignore_broken_pipe(FailingWriter(io::ErrorKind::PermissionDenied), b"diff")
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        hz_core::HzError::Io(error) if error.kind() == io::ErrorKind::PermissionDenied
+    ));
+}
 
 #[test]
 fn list_output_uses_branch_as_display_identifier() {

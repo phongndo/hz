@@ -10,7 +10,7 @@ mod update;
 mod worktree_output;
 
 use std::{
-    io::{self, IsTerminal},
+    io::{self, IsTerminal, Write},
     process::ExitCode,
 };
 
@@ -75,11 +75,28 @@ fn run() -> HzResult<()> {
                 hz_tui::run_diff_with_live_updates_and_syntax(options, live_updates, syntax_enabled)
             } else {
                 let output = hz_command::diff(options)?;
-                print!("{output}");
-                Ok(())
+                write_stdout(&output)
             }
         }
         Some(Command::TreeSitter { command }) => tree_sitter(command),
         Some(Command::Complete(args)) => complete(args),
+    }
+}
+
+fn write_stdout(output: &str) -> HzResult<()> {
+    write_all_ignore_broken_pipe(io::stdout().lock(), output.as_bytes())
+}
+
+fn write_all_ignore_broken_pipe(mut writer: impl Write, bytes: &[u8]) -> HzResult<()> {
+    match writer.write_all(bytes) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+
+    match writer.flush() {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
