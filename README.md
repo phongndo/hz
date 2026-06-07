@@ -86,7 +86,7 @@ verifies its SHA-256 file with `shasum` or `sha256sum`, and installs `hz` to
 want to install without checksum verification.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_VERSION=0.1.9 sh
+curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_VERSION=0.1.10 sh
 curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_INSTALL_DIR=/usr/local/bin sh
 ```
 
@@ -104,7 +104,7 @@ Update an installer-managed binary in place:
 
 ```sh
 hz update
-hz update --target-version 0.1.9
+hz update --target-version 0.1.10
 ```
 
 `hz update` refuses to infer common package-manager-managed locations (for
@@ -123,7 +123,7 @@ hz --version
 With Cargo, install the package `hz-cli`; it provides the `hz` binary:
 
 ```sh
-cargo install --locked --git https://github.com/phongndo/hz --tag v0.1.9 hz-cli
+cargo install --locked --git https://github.com/phongndo/hz --tag v0.1.10 hz-cli
 ```
 
 After installing the binary, install shell integration for auto-cd and

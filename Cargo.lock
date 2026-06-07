@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "hz-bench"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "clap",
  "hz-diff",
@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "hz-cli"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "clap",
  "crossterm",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "hz-command"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "hz-core",
  "hz-diff",
@@ -593,7 +593,7 @@ dependencies = [
 
 [[package]]
 name = "hz-core"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "serde",
  "serde_json",
@@ -601,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "hz-diff"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "hz-core",
  "hz-git",
@@ -609,14 +609,14 @@ dependencies = [
 
 [[package]]
 name = "hz-git"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "hz-core",
 ]
 
 [[package]]
 name = "hz-syntax"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "hz-core",
  "serde",
@@ -629,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "hz-tui"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "crossterm",
  "hz-core",
@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "hz-worktree"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "fs2",
  "getrandom 0.2.17",
