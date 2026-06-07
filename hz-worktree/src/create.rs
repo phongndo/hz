@@ -126,10 +126,14 @@ pub(crate) fn rollback_created_worktree(
     let rollback = {
         let mut errors = Vec::new();
 
-        if let Err(error) = hz_git::remove_worktree_with_force(repo, path, true) {
-            errors.push(format!("worktree: {error}"));
-        }
-        if let Some(branch) = branch {
+        let worktree_removed = match hz_git::remove_worktree_with_force(repo, path, true) {
+            Ok(()) => true,
+            Err(error) => {
+                errors.push(format!("worktree: {error}"));
+                false
+            }
+        };
+        if worktree_removed && let Some(branch) = branch {
             match hz_git::branch_exists(repo, branch) {
                 Ok(true) => {
                     if let Err(error) = hz_git::delete_branch(repo, branch) {

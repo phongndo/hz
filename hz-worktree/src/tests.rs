@@ -233,6 +233,32 @@ fn create_rolls_back_git_state_when_registry_save_fails() {
 }
 
 #[test]
+fn create_rollback_keeps_branch_when_worktree_removal_fails() {
+    let test_dir = test_dir("hz-worktree-create-rollback-remove-failure-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    git(["branch", "feature"], &repo);
+    fs::create_dir_all(&destination).expect("destination directory should be created");
+
+    let error = rollback_created_worktree(
+        &repo,
+        &destination,
+        Some("feature"),
+        HzError::Usage("registry save failed".to_owned()),
+    );
+
+    assert!(error.to_string().contains("rollback failed"), "{error}");
+    assert!(
+        hz_git::branch_exists(&repo, "feature").unwrap(),
+        "branch should remain when worktree cleanup fails"
+    );
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
 fn remove_does_not_remove_git_worktree_when_registry_save_fails() {
     let test_dir = test_dir("hz-worktree-remove-save-failure-test");
     let repo = test_dir.join("repo");
