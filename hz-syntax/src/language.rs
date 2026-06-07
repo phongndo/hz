@@ -1,18 +1,16 @@
-#![allow(unused_imports)]
+use std::collections::BTreeSet;
 
-use crate::*;
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    env, fs,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+use crate::{
+    SyntaxAddResult, SyntaxAvailableFilter, SyntaxCleanResult, SyntaxDoctorIssue,
+    SyntaxDoctorReport, SyntaxLanguageStatus, SyntaxParserArtifact, SyntaxRemoveResult,
+    SyntaxUpdateResult, core_enabled_language_set, enabled_language_set,
+    enabled_language_set_for_mode, has_highlights, install_language, installed_language_set,
+    language_pack_version, language_vec_to_set, load_config, load_language_without_download,
+    load_settings, local_parser_language_set, normalize_language_names, parser_artifact_map,
+    reject_core_language_removal, remove_cached_language, save_config, trusted_language_set,
+    update_all_language_set, upsert_parser_artifact,
 };
-
 use hz_core::{HzError, HzResult};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
-use tree_sitter_language_pack::LanguageRegistry;
 
 pub fn available_languages(filter: SyntaxAvailableFilter) -> HzResult<Vec<String>> {
     match filter {

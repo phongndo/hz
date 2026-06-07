@@ -1,18 +1,12 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::HashMap,
-    env, fs,
-    io::{self, ErrorKind, Read, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::{CreatedWorktree, FindWorktree, HzConfig, LocalWorktree, WorktreeEntry};
 use hz_core::{HzError, HzResult};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

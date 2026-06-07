@@ -1,18 +1,12 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::HashMap,
-    env, fs,
-    io::{self, ErrorKind, Read, Write},
+    fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, Stdio},
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
-use hz_core::{HzError, HzResult};
-use serde::{Deserialize, Serialize};
+use crate::{CLEANUP_SCRIPT, ENVIRONMENT_DIR, HZ_DIR, SETUP_SCRIPT, config_path, config_repo};
+use hz_core::HzResult;
+use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitRepo {

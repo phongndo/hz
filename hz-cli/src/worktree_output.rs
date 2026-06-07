@@ -1,21 +1,11 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::HashSet,
-    env,
-    ffi::{OsStr, OsString},
-    fs,
-    io::{self, IsTerminal, Read, Write},
+    env, fs,
+    io::{self, IsTerminal},
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode, Stdio},
-    sync::Arc,
+    process::Command as ProcessCommand,
 };
 
-use clap::{
-    Args, Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Styles},
-};
+use crate::{ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs, worktree_branch_or_handle};
 use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};

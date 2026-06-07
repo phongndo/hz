@@ -1,51 +1,35 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
-    env,
-    ffi::OsStr,
-    fs,
-    hash::{Hash, Hasher},
-    io,
-    panic::{self, AssertUnwindSafe},
-    path::{Component, Path, PathBuf},
-    process::Command,
-    sync::{
-        Arc, Condvar, Mutex,
-        mpsc::{self, Receiver, RecvTimeoutError, Sender},
-    },
-    thread,
+    collections::{HashMap, HashSet},
+    sync::{Arc, mpsc::Receiver},
     time::{Duration, Instant},
 };
 
-use crossterm::{
-    cursor::Show,
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseButton, MouseEvent, MouseEventKind,
-    },
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+use crate::{
+    BASE_BRANCH_MARKER, BRANCH_COMPARISON_SEPARATOR, BranchMenu, CURRENT_BRANCH_MARKER,
+    ContextExpansionDirection, ContextKey, ContextSourceEntry, ContextSourceKey, CrosstermTerminal,
+    DiffChoice, DiffFilterKind, DiffLayoutMode, DiffSide, DiffTheme, EVENT_POLL,
+    FILE_SIDEBAR_MIN_WIDTH, GUTTER_WIDTH, HORIZONTAL_SCROLL_STEP, InlineHunkEmphasisCache,
+    InlineHunkKey, InlineRange, LiveDiff, LiveDiffReload, LruCache, MAX_BRANCH_MENU_ROWS,
+    MAX_INLINE_DIFF_CACHE_ENTRIES, MAX_READY_EVENTS_PER_FRAME, MAX_SYNTAX_RESULTS_PER_FRAME,
+    MOUSE_SCROLL_ACCEL_A, MOUSE_SCROLL_ACCEL_TAU, MOUSE_SCROLL_HISTORY_SIZE,
+    MOUSE_SCROLL_MAX_MULTIPLIER, MOUSE_SCROLL_MIN_TICK_INTERVAL,
+    MOUSE_SCROLL_REFERENCE_INTERVAL_MS, MOUSE_SCROLL_STREAK_TIMEOUT, NOTICE_TTL,
+    STATUSLINE_SELECTOR_GAP, SyntaxBenchmarkReport, SyntaxPosition, SyntaxPriority, SyntaxRuntime,
+    UNIFIED_GUTTER_WIDTH, UiModel, UiRow, WORKTREE_DIFF_CHOICES, available_context_lines,
+    branch_base_from_options, branch_head_from_options, branch_match_score, branch_menu_width,
+    comparison_branches, context_expansion_direction, current_head_label, default_branch_base,
+    default_layout_for_width, diff_menu_width, diff_selector_width, diff_stats_for_files,
+    diff_theme_from_config, draw, filtered_file_indices, fit_padded, full_file_source,
+    grep_match_rows, live_diff_supported, load_full_file_source, max_file_sidebar_width,
+    split_context_source_lines, unified_syntax_side,
 };
-use hz_core::{HzError, HzResult};
-use hz_diff::{
-    Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, DiffStats, FileStatus,
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use hz_syntax::{
-    ColorOverrides, DiffBackground, DiffGutterBackground, DiffSettings, DiffSignStyle,
-    HighlightedLine, SyntaxClass, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits,
-    SyntaxSettings, SyntaxThemeConfig, SyntaxThemeSource,
-};
-use notify::{RecursiveMode, Watcher};
-use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
-    layout::Rect,
-    prelude::{Color, Line, Modifier, Span, Style, Text},
-    widgets::{Block, BorderType, Clear, Padding, Paragraph},
-};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use hz_core::HzResult;
+use hz_diff::{Changeset, DiffOptions, DiffScope, DiffSource, DiffStats};
+use hz_syntax::{HighlightedLine, SyntaxLimits, SyntaxSettings};
+use unicode_width::UnicodeWidthStr;
 
 pub(crate) fn run_loop(
     terminal: &mut CrosstermTerminal,

@@ -1,24 +1,15 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::HashSet,
-    env,
-    ffi::{OsStr, OsString},
-    fs,
-    io::{self, IsTerminal, Read, Write},
+    io::{self, IsTerminal, Read},
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode, Stdio},
     sync::Arc,
 };
 
-use clap::{
-    Args, Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Styles},
+use crate::{
+    DiffArgs, ListGlyphs, StyleColor, TreeSitterAvailableArgs, TreeSitterCommand,
+    ascii_output_requested, display_width, list_glyphs, list_row_width, styled_cell,
+    styled_centered_cell, terminal_width, truncate_middle,
 };
-use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(crate) fn tree_sitter(command: TreeSitterCommand) -> HzResult<()> {
     match command {

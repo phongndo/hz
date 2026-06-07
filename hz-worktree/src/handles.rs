@@ -1,16 +1,13 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
     collections::HashSet,
-    env, fs,
-    io::{self, Write},
-    path::{Path, PathBuf},
+    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use hz_core::{HzError, HzResult, paths::WorktreeTarget};
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use crate::same_path;
+use crate::{Registry, WorktreeEntry, discover_entries};
+use hz_core::{HzError, HzResult};
 
 pub(crate) fn generate_unique_handle(registry: &Registry, repo: &Path) -> HzResult<String> {
     let targets = discover_entries(registry, repo)?

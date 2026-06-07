@@ -1,16 +1,12 @@
-#![allow(unused_imports)]
+use std::path::{Path, PathBuf};
 
-use crate::*;
-use std::{
-    collections::HashSet,
-    env, fs,
-    io::{self, Write},
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+use crate::{
+    CreateWorktree, CreatedWorktree, HandoffMode, HandoffWorktree, Registry, WorktreeEntry,
+    WorktreeHandoff, WorktreeSource, WorktreeStatus, create_with_registry, discover_entries,
+    matches_target, remove_registered_entry_with_force_from_registry, resolve_registered_repo,
+    same_path, unix_now, validate_worktree_name,
 };
-
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
-use serde::{Deserialize, Serialize};
 
 pub fn handoff(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {
     let mut registry = Registry::load_for_update()?;

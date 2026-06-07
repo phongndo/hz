@@ -1,46 +1,18 @@
-#![allow(unused_imports)]
-
-use crate::*;
-use std::{
-    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
-    env,
-    ffi::OsStr,
-    fs,
-    hash::{Hash, Hasher},
-    io,
-    panic::{self, AssertUnwindSafe},
-    path::{Component, Path, PathBuf},
-    process::Command,
-    sync::{
-        Arc, Condvar, Mutex,
-        mpsc::{self, Receiver, RecvTimeoutError, Sender},
-    },
-    thread,
-    time::{Duration, Instant},
+use crate::{
+    BRANCH_COMPARISON_SEPARATOR, BranchMenu, DIFF_INDICATOR, DiffApp, DiffChoice, DiffFilterKind,
+    DiffLayoutMode, DiffSide, DiffTheme, EMPTY_DIFF_FILL, EMPTY_DIFF_FILL_SPACING,
+    FILE_SIDEBAR_MAX_WIDTH, FILE_SIDEBAR_MIN_DIFF_WIDTH, FILE_SIDEBAR_MIN_WIDTH, GUTTER_WIDTH,
+    HELP_KEY_COLUMN_WIDTH, HELP_MENU_COLUMN_GAP, HELP_MENU_HORIZONTAL_PADDING, HELP_MENU_LEFT_ROWS,
+    HELP_MENU_RIGHT_ROWS, HELP_MENU_TWO_COLUMN_MIN_WIDTH, HELP_MENU_VERTICAL_PADDING,
+    HELP_MENU_WIDTH, HelpMenuRow, InlineRange, STATUSLINE_ACCENT_BG, STATUSLINE_ACCENT_FG,
+    STATUSLINE_BG, STATUSLINE_INFO_BG, STATUSLINE_INFO_FG, STATUSLINE_SELECTOR_GAP, TextMatcher,
+    UNIFIED_GUTTER_WIDTH, UiRow, diff_line_grep_prefix, line_gutter_bg, line_gutter_fg,
+    split_cell_content_width, unified_content_width, unified_syntax_side,
 };
-
-use crossterm::{
-    cursor::Show,
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseButton, MouseEvent, MouseEventKind,
-    },
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-use hz_core::{HzError, HzResult};
-use hz_diff::{
-    Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, DiffStats, FileStatus,
-};
-use hz_syntax::{
-    ColorOverrides, DiffBackground, DiffGutterBackground, DiffSettings, DiffSignStyle,
-    HighlightedLine, SyntaxClass, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits,
-    SyntaxSettings, SyntaxThemeConfig, SyntaxThemeSource,
-};
-use notify::{RecursiveMode, Watcher};
+use hz_diff::{DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, FileStatus};
+use hz_syntax::{DiffBackground, DiffSignStyle, HighlightedLine, SyntaxClass};
 use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
+    Frame,
     layout::Rect,
     prelude::{Color, Line, Modifier, Span, Style, Text},
     widgets::{Block, BorderType, Clear, Padding, Paragraph},
