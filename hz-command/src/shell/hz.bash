@@ -70,7 +70,7 @@ hzlocal() {
 
 _hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt"
 _hz_worktree_commands="new path cd list ls remove rm handoff"
-_hz_ts_commands="add update rm remove list available clean path doctor"
+_hz_ts_commands="add update rm remove list ls available clean path doctor"
 _hz_shells="zsh bash fish"
 
 _hz_reply() {
@@ -301,7 +301,7 @@ _hz_complete_ts_args() {
     update)
       [[ "$current" == -* ]] && _hz_reply "--all -h --help" "$current"
       ;;
-    add|rm|remove|list|clean|path|doctor)
+    add|rm|remove|list|ls|clean|path|doctor)
       [[ "$current" == -* ]] && _hz_reply "-h --help" "$current"
       ;;
   esac
@@ -323,7 +323,11 @@ _hz_completion() {
   local cmd="${COMP_WORDS[1]}"
   if [[ "$cmd" == "worktree" || "$cmd" == "wt" ]]; then
     if [[ "$COMP_CWORD" -eq 2 ]]; then
-      _hz_reply "$_hz_worktree_commands" "$current"
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-h --help" "$current"
+      else
+        _hz_reply "$_hz_worktree_commands" "$current"
+      fi
       return
     fi
     _hz_complete_command_args "${COMP_WORDS[2]}" "$current"
@@ -332,7 +336,11 @@ _hz_completion() {
 
   if [[ "$cmd" == "ts" || "$cmd" == "tree-sitter" ]]; then
     if [[ "$COMP_CWORD" -eq 2 ]]; then
-      _hz_reply "$_hz_ts_commands" "$current"
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-h --help" "$current"
+      else
+        _hz_reply "$_hz_ts_commands" "$current"
+      fi
       return
     fi
     _hz_complete_ts_args "${COMP_WORDS[2]}" "$current"

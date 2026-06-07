@@ -582,7 +582,8 @@ fn fish_integration_passes_json_short_flag_through() {
     assert!(script.contains("init install setup cleanup shell update"));
     assert!(script.contains("ts tree-sitter"));
     assert!(script.contains("__hz_needs_ts_subcommand"));
-    assert!(script.contains("add update rm remove list available clean path doctor"));
+    assert!(script.contains("add update rm remove list ls available clean path doctor"));
+    assert!(script.contains("not __fish_seen_subcommand_from new path cd list ls"));
     assert!(script.contains("-l installed"));
     assert!(script.contains("-l enabled"));
     assert!(script.contains("-l all"));
@@ -631,7 +632,7 @@ fn bash_integration_registers_completion() {
     assert!(script.contains("init install setup cleanup shell update"));
     assert!(script.contains("ts tree-sitter"));
     assert!(script.contains("_hz_complete_ts_args"));
-    assert!(script.contains("add update rm remove list available clean path doctor"));
+    assert!(script.contains("add update rm remove list ls available clean path doctor"));
     assert!(script.contains("--installed --enabled"));
     assert!(script.contains("--all -h --help"));
     assert!(script.contains("--no-setup"));
