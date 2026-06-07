@@ -35,6 +35,8 @@ sha2 = "0.11"
 toml = "1.1"
 tree-sitter-highlight = "0.26.9"
 tree-sitter-language-pack = "1.9.0-rc.18"
+# time 0.3.47 raises MSRV above the workspace Rust 1.85.
+time = { version = "=0.3.45", default-features = false, features = ["local-offset", "std"] }
 unicode-width = "0.2"
 
 hz-core = { path = "hz-core" }

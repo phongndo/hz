@@ -1,16 +1,11 @@
-#![allow(unused_imports)]
+use std::path::{Path, PathBuf};
 
-use crate::*;
-use std::{
-    collections::HashSet,
-    env, fs,
-    io::{self, Write},
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+use crate::{
+    FindWorktree, ListWorktrees, LocalWorktree, LocalWorktreeInfo, Registry, WorktreeEntry,
+    WorktreeStatus, add_git_worktrees, find_entry, linked_worktree_exists, resolve_repo, same_path,
+    worktree_path_timestamp,
 };
-
-use hz_core::{HzError, HzResult, paths::WorktreeTarget};
-use serde::{Deserialize, Serialize};
+use hz_core::HzResult;
 
 pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
     let mut entries = list_targets(input)?;

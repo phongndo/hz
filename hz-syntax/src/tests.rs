@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use sha2::{Digest, Sha256};
+
 #[test]
 fn language_pack_version_matches_workspace_dependency() {
     let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -20,6 +22,25 @@ fn language_pack_version_matches_workspace_dependency() {
         .expect("workspace tree-sitter-language-pack version should be declared");
 
     assert_eq!(LANGUAGE_PACK_VERSION, version);
+}
+
+#[test]
+fn trusted_parser_manifest_matches_pinned_language_pack_version() {
+    let manifest: serde_json::Value = serde_json::from_str(TRUSTED_PARSER_MANIFEST).unwrap();
+
+    assert_eq!(manifest["version"], LANGUAGE_PACK_VERSION);
+    assert_eq!(
+        hex_encode(&Sha256::digest(TRUSTED_PARSER_MANIFEST.as_bytes())),
+        TRUSTED_PARSER_MANIFEST_SHA256
+    );
+    assert_eq!(
+        sha256_file(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tree_sitter_parsers_lock.json")
+        )
+        .unwrap(),
+        TRUSTED_PARSER_MANIFEST_SHA256
+    );
+    assert!(ARTIFACT_SOURCE.contains(TRUSTED_PARSER_MANIFEST_SHA256));
 }
 
 #[test]

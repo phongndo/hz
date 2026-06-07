@@ -1,17 +1,21 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::{
+    ARTIFACT_SOURCE, ASM_HIGHLIGHTS_QUERY, BASENAME_LANGUAGES, CORE_LANGUAGES,
+    DiffContextExpansion, DiffSettings, LANGUAGE_ALIASES, LANGUAGE_PACK_VERSION,
+    StoredDiffContextExpansion, StoredDiffContextExpansionMode, StoredDiffSettings,
+    StoredParserArtifact, StoredSyntaxConfig, StoredSyntaxLimits, StoredSyntaxSettings,
+    StoredSyntaxThemeConfig, StoredSyntaxThemeTable, SyntaxLimits, SyntaxMode, SyntaxSettings,
+    SyntaxThemeConfig, SyntaxThemeSource, TRUSTED_PARSER_MANIFEST, TRUSTED_PARSER_MANIFEST_SHA256,
+    cache_dir, config_path, load_settings,
+};
 use hz_core::{HzError, HzResult};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 use tree_sitter_language_pack::LanguageRegistry;
 
 pub(crate) fn config_home() -> HzResult<PathBuf> {
@@ -390,8 +394,16 @@ pub(crate) fn highlights_query(language: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn install_language(language: &str) -> HzResult<Option<StoredParserArtifact>> {
-    if !tree_sitter_language_pack::has_parser(language)
-        && !is_language_trusted(language)
+    if tree_sitter_language_pack::has_parser(language) {
+        tree_sitter_language_pack::get_language(language).map_err(|error| {
+            HzError::Usage(format!(
+                "failed to load bundled tree-sitter language '{language}': {error}"
+            ))
+        })?;
+        return Ok(None);
+    }
+
+    if !is_language_trusted(language)
         && let Some(path) = expected_cached_language_path(language)?
     {
         match fs::remove_file(&path) {
@@ -401,16 +413,30 @@ pub(crate) fn install_language(language: &str) -> HzResult<Option<StoredParserAr
         }
     }
 
-    tree_sitter_language_pack::get_language(language).map_err(|error| {
+    // DownloadManager downloads and extracts without loading the native library.
+    // Keep it that way until hz has seeded and re-verified its pinned manifest.
+    write_trusted_parser_manifest()?;
+    let cache = PathBuf::from(cache_dir()?);
+    tree_sitter_language_pack::DownloadManager::with_cache_dir(&language_pack_version(), cache)
+        .ensure_languages(&[language])
+        .map_err(|error| {
+            HzError::Usage(format!(
+                "failed to install tree-sitter language '{language}' from trusted parser lock: {error}"
+            ))
+        })?;
+    verify_trusted_parser_manifest()?;
+
+    let artifact = stored_parser_artifact(language)?;
+    load_language_without_download(language).map_err(|error| {
         HzError::Usage(format!(
-            "failed to install tree-sitter language '{language}': {error}"
+            "failed to load tree-sitter language '{language}' from verified parser cache: {error}"
         ))
     })?;
 
-    if tree_sitter_language_pack::has_parser(language) {
-        return Ok(None);
-    }
+    Ok(Some(artifact))
+}
 
+pub(crate) fn stored_parser_artifact(language: &str) -> HzResult<StoredParserArtifact> {
     let path = expected_cached_language_path(language)?.ok_or_else(|| {
         HzError::Usage(format!(
             "failed to resolve parser artifact path for tree-sitter language '{language}'"
@@ -423,14 +449,14 @@ pub(crate) fn install_language(language: &str) -> HzResult<Option<StoredParserAr
         )));
     }
 
-    Ok(Some(StoredParserArtifact {
+    Ok(StoredParserArtifact {
         language: language.to_owned(),
         version: language_pack_version(),
         sha256: sha256_file(&path)?,
         installed_at_unix: unix_time_now(),
         source: ARTIFACT_SOURCE.to_owned(),
         path,
-    }))
+    })
 }
 
 pub(crate) fn upsert_parser_artifact(
@@ -471,6 +497,44 @@ pub(crate) fn expected_cached_language_path(language: &str) -> HzResult<Option<P
         tree_sitter_language_pack::DownloadManager::with_cache_dir(&language_pack_version(), cache)
             .lib_path(language),
     ))
+}
+
+pub(crate) fn write_trusted_parser_manifest() -> HzResult<()> {
+    let path = trusted_parser_manifest_path()?;
+    if path.exists()
+        && sha256_file(&path).is_ok_and(|sha256| sha256 == TRUSTED_PARSER_MANIFEST_SHA256)
+    {
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, TRUSTED_PARSER_MANIFEST.as_bytes())?;
+    Ok(())
+}
+
+pub(crate) fn verify_trusted_parser_manifest() -> HzResult<()> {
+    let path = trusted_parser_manifest_path()?;
+    let sha256 = sha256_file(&path)?;
+    if sha256 == TRUSTED_PARSER_MANIFEST_SHA256 {
+        return Ok(());
+    }
+
+    Err(HzError::Usage(format!(
+        "tree-sitter parser manifest at {} did not match shipped parser lock (expected {}, got {})",
+        path.display(),
+        TRUSTED_PARSER_MANIFEST_SHA256,
+        sha256
+    )))
+}
+
+pub(crate) fn trusted_parser_manifest_path() -> HzResult<PathBuf> {
+    let cache = PathBuf::from(cache_dir()?);
+    cache
+        .parent()
+        .map(|path| path.join("manifest.json"))
+        .ok_or_else(|| HzError::Usage("tree-sitter cache directory has no parent".to_owned()))
 }
 
 pub(crate) fn sha256_file(path: &Path) -> HzResult<String> {

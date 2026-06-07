@@ -1,16 +1,12 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::HashSet,
-    env, fs,
-    io::{self, Write},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::UNIX_EPOCH,
 };
 
+use crate::{
+    Registry, WorktreeEntry, WorktreeSource, WorktreeStatus, find_target_worktree, same_path,
+};
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
-use serde::{Deserialize, Serialize};
 
 pub(crate) fn resolve_repo(repo: Option<&Path>, registry: &Registry) -> HzResult<PathBuf> {
     let current = hz_git::repository_root(repo)?;

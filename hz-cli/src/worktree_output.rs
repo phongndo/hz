@@ -2,19 +2,23 @@ use std::{
     env, fs,
     io::{self, IsTerminal},
     path::{Path, PathBuf},
-    process::Command as ProcessCommand,
 };
 
 use crossterm::terminal as crossterm_terminal;
-use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+const MONTH_ABBREVIATIONS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
 use crate::{
+    CliResult,
     args::{ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs},
     removal::worktree_branch_or_handle,
+    write_stderr, write_stdout,
 };
 
-pub(crate) fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
+pub(crate) fn create_worktree(args: NewWorktreeArgs) -> CliResult<()> {
     let debug = args.debug;
     let run_setup = !args.no_setup;
     let created = hz_command::create_worktree_with_lifecycle(
@@ -30,23 +34,26 @@ pub(crate) fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
     )?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&created)?);
+        write_stdout(format_args!(
+            "{}\n",
+            serde_json::to_string_pretty(&created)?
+        ))?;
     } else if args.path_only {
-        println!("{}", created.path.display());
-        print_warnings(&created.warnings, io::stderr().is_terminal());
+        write_stdout(format_args!("{}\n", created.path.display()))?;
+        print_warnings(&created.warnings, io::stderr().is_terminal())?;
     } else if debug {
-        print!(
+        write_stdout(format_args!(
             "{}",
             render_created_worktree(&created, io::stdout().is_terminal())
-        );
+        ))?;
     } else {
-        print_warnings(&created.warnings, io::stderr().is_terminal());
+        print_warnings(&created.warnings, io::stderr().is_terminal())?;
     }
 
     Ok(())
 }
 
-pub(crate) fn path_worktree(args: PathWorktreeArgs) -> HzResult<()> {
+pub(crate) fn path_worktree(args: PathWorktreeArgs) -> CliResult<()> {
     let _ = args.path_only;
     let target = hz_command::path_worktree(hz_command::PathWorktree {
         target: args.target.unwrap_or_else(|| "local".to_owned()),
@@ -54,21 +61,24 @@ pub(crate) fn path_worktree(args: PathWorktreeArgs) -> HzResult<()> {
     })?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&target)?);
+        write_stdout(format_args!("{}\n", serde_json::to_string_pretty(&target)?))?;
     } else {
-        println!("{}", target.path.display());
+        write_stdout(format_args!("{}\n", target.path.display()))?;
     }
 
     Ok(())
 }
 
-pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
+pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> CliResult<()> {
     let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees {
         repo: args.repo.clone(),
     })?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&worktrees)?);
+        write_stdout(format_args!(
+            "{}\n",
+            serde_json::to_string_pretty(&worktrees)?
+        ))?;
     } else {
         let config = hz_command::load_repo_config(hz_command::LoadRepoConfig {
             repo: args.repo.clone(),
@@ -80,7 +90,7 @@ pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
             hz_command::current_worktree_path(hz_command::ListWorktrees { repo: None }).ok();
         let terminal = io::stdout().is_terminal();
         let color = color_output_enabled(config.color.as_ref(), terminal);
-        print!(
+        write_stdout(format_args!(
             "{}",
             render_worktree_list_with_options(
                 &local,
@@ -91,7 +101,7 @@ pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
                 terminal.then(terminal_width).flatten(),
                 list_options(config.list.as_ref(), config.color.as_ref()),
             )
-        );
+        ))?;
     }
 
     Ok(())
@@ -724,25 +734,21 @@ pub(crate) fn format_modified_at(timestamp: u64) -> String {
 }
 
 pub(crate) fn format_unix_timestamp(timestamp: u64) -> Option<String> {
-    let timestamp = timestamp.to_string();
-    let gnu_timestamp = format!("@{timestamp}");
-    run_date_command(["-r", timestamp.as_str(), "+%b %e %H:%M"])
-        .or_else(|| run_date_command(["-d", gnu_timestamp.as_str(), "+%b %e %H:%M"]))
+    let timestamp = i64::try_from(timestamp).ok()?;
+    let datetime = time::OffsetDateTime::from_unix_timestamp(timestamp).ok()?;
+    let offset = time::UtcOffset::local_offset_at(datetime).unwrap_or(time::UtcOffset::UTC);
+    Some(format_modified_datetime(datetime.to_offset(offset)))
 }
 
-pub(crate) fn run_date_command<const N: usize>(args: [&str; N]) -> Option<String> {
-    let output = ProcessCommand::new("date").args(args).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let formatted = String::from_utf8(output.stdout).ok()?;
-    let formatted = formatted.trim_end();
-    if formatted.is_empty() {
-        None
-    } else {
-        Some(formatted.to_owned())
-    }
+pub(crate) fn format_modified_datetime(datetime: time::OffsetDateTime) -> String {
+    let month = MONTH_ABBREVIATIONS[usize::from(u8::from(datetime.month()) - 1)];
+    format!(
+        "{} {:>2} {:02}:{:02}",
+        month,
+        datetime.day(),
+        datetime.hour(),
+        datetime.minute()
+    )
 }
 
 #[cfg(test)]
@@ -800,13 +806,14 @@ pub(crate) fn render_created_worktree(
     output
 }
 
-pub(crate) fn print_warnings(warnings: &[String], color: bool) {
+pub(crate) fn print_warnings(warnings: &[String], color: bool) -> CliResult<()> {
     for warning in warnings {
-        eprintln!(
-            "{} {warning}",
+        write_stderr(format_args!(
+            "{} {warning}\n",
             styled("warning:", StyleColor::Yellow, color)
-        );
+        ))?;
     }
+    Ok(())
 }
 
 pub(crate) fn render_removed_worktree(worktree: &hz_command::WorktreeEntry, color: bool) -> String {

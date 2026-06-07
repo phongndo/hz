@@ -1,14 +1,10 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::HashSet,
     env, fs,
     io::{self, Write},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::{HandoffLink, PatchHandoffLink, WorktreeEntry, new_uuid_v4, unix_now};
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
 use serde::{Deserialize, Serialize};
 
@@ -190,10 +186,6 @@ impl LockedRegistry {
             _lock: lock,
             registry,
         })
-    }
-
-    pub(crate) fn save(&self) -> HzResult<()> {
-        self.registry.save()
     }
 }
 

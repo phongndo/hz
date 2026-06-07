@@ -1,18 +1,11 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::HashMap,
     env, fs,
     io::{self, ErrorKind, Read, Write},
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, Stdio},
-    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use hz_core::{HzError, HzResult};
-use serde::{Deserialize, Serialize};
 
 pub fn shell_init_line(shell: Shell) -> &'static str {
     match shell {

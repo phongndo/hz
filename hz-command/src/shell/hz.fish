@@ -192,7 +192,7 @@ complete -c hzlocal -e
 complete -c hz -f
 complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt" -a "new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt"
 complete -c hz -n "__hz_needs_worktree_subcommand" -a "new path cd list ls remove rm handoff"
-complete -c hz -n "__hz_needs_ts_subcommand" -a "add update rm remove list available clean path doctor"
+complete -c hz -n "__hz_needs_ts_subcommand" -a "add update rm remove list ls available clean path doctor"
 
 complete -c hz -n "__hz_command_is cd path handoff setup cleanup" -a "(__hz_complete_worktree_targets)"
 complete -c hz -n "__hz_command_is rm remove" -a "(__hz_complete_removable_worktrees)"
@@ -228,7 +228,7 @@ complete -c hz -n "__hz_top_command_is update" -l target-version -r
 complete -c hz -n "__hz_top_command_is update" -l install-dir -r -F
 complete -c hz -n "__hz_top_command_is update" -l force-self-update
 complete -c hz -s h -l help
-complete -c hz -s V -l version
+complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt" -s V -l version
 
 complete -c hzcd -f
 complete -c hzcd -a "(__hz_complete_worktree_targets)"

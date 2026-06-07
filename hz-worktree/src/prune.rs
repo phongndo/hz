@@ -1,16 +1,10 @@
-#![allow(unused_imports)]
+use std::path::Path;
 
-use crate::*;
-use std::{
-    collections::HashSet,
-    env, fs,
-    io::{self, Write},
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+use crate::{
+    Registry, WorktreeEntry, WorktreeSource, remove_registered_entry_with_force_from_registry,
+    same_path,
 };
-
-use hz_core::{HzError, HzResult, paths::WorktreeTarget};
-use serde::{Deserialize, Serialize};
+use hz_core::{HzError, HzResult};
 
 pub(crate) fn detached_worktree_prune_candidates(
     registry: &Registry,
@@ -91,8 +85,7 @@ pub(crate) fn prune_detached_worktrees(
     candidates: Vec<WorktreeEntry>,
 ) -> HzResult<()> {
     for entry in candidates {
-        remove_registered_entry_from_registry(registry, &entry, false)?;
-        registry.save()?;
+        remove_registered_entry_with_force_from_registry(registry, entry, false)?;
     }
 
     Ok(())

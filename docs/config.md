@@ -176,6 +176,11 @@ hz ts doctor
 hz ts clean
 ```
 
+`hz ts add` writes hz's shipped Tree-sitter parser-release lockfile into the
+user cache, verifies the downloaded release bundle against that lock before
+loading native parser code, and records the installed parser checksum for later
+loads.
+
 The interactive diff viewer only uses bundled parsers or already-enabled,
 already-installed Tree-sitter parsers with matching checksum records. It does not
 download parsers while rendering. `hz diff --no-syntax` disables syntax for a run.
