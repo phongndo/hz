@@ -81,8 +81,17 @@ pub(crate) fn create_with_registry(
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,
     };
-    registry.entries.push(entry);
-    registry.save()?;
+    let mut next_registry = registry.clone();
+    next_registry.entries.push(entry);
+    if let Err(error) = next_registry.save() {
+        return Err(rollback_created_worktree(
+            &repo,
+            &path,
+            branch.as_deref(),
+            error,
+        ));
+    }
+    *registry = next_registry;
     let warnings = match prune_detached_worktrees(registry, prune_candidates) {
         Ok(()) => Vec::new(),
         Err(error) => vec![detached_prune_warning(error)],
@@ -103,6 +112,52 @@ pub(crate) fn create_with_registry(
 
 pub(crate) fn derive_worktree_branch(name: Option<&str>, branch: Option<&str>) -> Option<String> {
     branch.or(name).map(str::to_owned)
+}
+
+pub(crate) fn rollback_created_worktree(
+    repo: &Path,
+    path: &Path,
+    branch: Option<&str>,
+    save_error: HzError,
+) -> HzError {
+    let rollback = {
+        let mut errors = Vec::new();
+
+        let worktree_removed = match hz_git::remove_worktree_with_force(repo, path, true) {
+            Ok(()) => true,
+            Err(error) => {
+                errors.push(format!("worktree: {error}"));
+                false
+            }
+        };
+        if worktree_removed && let Some(branch) = branch {
+            match hz_git::branch_exists(repo, branch) {
+                Ok(true) => {
+                    if let Err(error) = hz_git::delete_branch(repo, branch) {
+                        errors.push(format!("branch {branch}: {error}"));
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => errors.push(format!("branch {branch}: {error}")),
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(HzError::Usage(format!(
+                "failed to roll back created git state: {}",
+                errors.join("; ")
+            )))
+        }
+    };
+
+    match rollback {
+        Ok(()) => save_error,
+        Err(rollback_error) => HzError::Usage(format!(
+            "{save_error}; rollback failed, created git state was not fully restored: {rollback_error}"
+        )),
+    }
 }
 
 pub fn path(input: PathWorktree) -> HzResult<WorktreeTarget> {

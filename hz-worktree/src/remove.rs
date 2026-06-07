@@ -12,12 +12,8 @@ pub fn remove(input: RemoveWorktree) -> HzResult<WorktreeEntry> {
         .iter()
         .position(|entry| same_path(&entry.repo, &repo) && matches_target(entry, &input.target))
     {
-        let entry = registry.entries.remove(index);
-
-        hz_git::remove_worktree(&repo, &entry.path)?;
-        registry.save()?;
-
-        return Ok(entry);
+        let entry = registry.entries[index].clone();
+        return remove_registered_entry_with_force_from_registry(&mut registry, entry, false);
     }
 
     Err(HzError::Usage(format!(
@@ -60,17 +56,6 @@ pub(crate) fn remove_registered_entry_with_force_from_registry(
     entry: WorktreeEntry,
     force: bool,
 ) -> HzResult<WorktreeEntry> {
-    let entry = remove_registered_entry_from_registry(registry, &entry, force)?;
-    registry.save()?;
-
-    Ok(entry)
-}
-
-pub(crate) fn remove_registered_entry_from_registry(
-    registry: &mut Registry,
-    entry: &WorktreeEntry,
-    force: bool,
-) -> HzResult<WorktreeEntry> {
     let index = registry
         .entries
         .iter()
@@ -82,8 +67,20 @@ pub(crate) fn remove_registered_entry_from_registry(
         .ok_or_else(|| HzError::Usage(format!("unknown worktree: {}", entry.handle)))?;
     let entry = registry.entries[index].clone();
 
-    hz_git::remove_worktree_with_force(&entry.repo, &entry.path, force)?;
-    registry.entries.remove(index);
+    let mut next_registry = registry.clone();
+    next_registry.entries.remove(index);
+    next_registry.save()?;
+
+    if let Err(error) = hz_git::remove_worktree_with_force(&entry.repo, &entry.path, force) {
+        if let Err(rollback_error) = registry.save() {
+            return Err(HzError::Usage(format!(
+                "{error}; rollback failed, registry was not restored: {rollback_error}"
+            )));
+        }
+        return Err(error);
+    }
+
+    *registry = next_registry;
 
     Ok(entry)
 }

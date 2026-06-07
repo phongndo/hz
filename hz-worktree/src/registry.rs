@@ -187,10 +187,6 @@ impl LockedRegistry {
             registry,
         })
     }
-
-    pub(crate) fn save(&self) -> HzResult<()> {
-        self.registry.save()
-    }
 }
 
 impl std::ops::Deref for LockedRegistry {
