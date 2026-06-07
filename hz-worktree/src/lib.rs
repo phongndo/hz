@@ -491,6 +491,65 @@ struct AppliedPatchHandoff {
     previous_destination_patch: Option<Vec<u8>>,
 }
 
+struct GitCheckout {
+    branch: Option<String>,
+    head: String,
+}
+
+impl GitCheckout {
+    fn current(path: &Path) -> HzResult<Self> {
+        Ok(Self {
+            branch: hz_git::current_branch(path)?,
+            head: hz_git::current_head(path)?,
+        })
+    }
+
+    fn restore(&self, path: &Path) -> HzResult<()> {
+        match &self.branch {
+            Some(branch) => hz_git::switch_branch(path, branch),
+            None => hz_git::switch_detached_at(path, &self.head),
+        }
+    }
+}
+
+struct BranchHandoffRollback {
+    path: PathBuf,
+    checkout: GitCheckout,
+}
+
+#[derive(Default)]
+struct AppliedBranchHandoff {
+    rollbacks: Vec<BranchHandoffRollback>,
+}
+
+impl AppliedBranchHandoff {
+    fn push(&mut self, path: &Path, checkout: GitCheckout) {
+        self.rollbacks.push(BranchHandoffRollback {
+            path: path.to_path_buf(),
+            checkout,
+        });
+    }
+
+    fn rollback(mut self) -> HzResult<()> {
+        let mut errors = Vec::new();
+
+        while let Some(rollback) = self.rollbacks.pop() {
+            if let Err(error) = rollback.checkout.restore(&rollback.path) {
+                errors.push(format!("{}: {error}", rollback.path.display()));
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(HzError::Usage(format!(
+                "failed to restore one or more worktrees: {}",
+                errors.join("; ")
+            )))
+        }
+    }
+}
+
 fn apply_patch_handoff(
     registry: &Registry,
     repo: &Path,
@@ -637,34 +696,31 @@ fn handoff_worktree_to_local(
         name: "local".to_owned(),
         path: repo.clone(),
     };
-    let source_branch = hz_git::current_branch(&current)?;
-    validate_handoff_source_branch(&current, source_branch.as_deref(), &branch)?;
+    let source_checkout = GitCheckout::current(&current)?;
+    validate_handoff_source_branch(&current, source_checkout.branch.as_deref(), &branch)?;
     ensure_branch_exists(&repo, &branch)?;
     ensure_clean(&current, "source")?;
     ensure_clean(&repo, "destination")?;
 
-    let local_restore_branch = hz_git::current_branch(&repo)?.filter(|local| local != &branch);
-    let detached_source = source_branch.as_deref() == Some(&branch);
-    if detached_source {
-        hz_git::switch_detached(&current)?;
-    }
-    if hz_git::current_branch(&repo)?.as_deref() != Some(&branch)
-        && let Err(error) = hz_git::switch_branch(&repo, &branch)
-    {
-        if detached_source {
-            let rollback = hz_git::switch_branch(&current, &branch);
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback_error) => HzError::Usage(format!(
-                    "{error}; rollback failed, source worktree is not on {branch}: {rollback_error}"
-                )),
-            });
-        }
-        return Err(error);
-    }
+    let local_checkout = GitCheckout::current(&repo)?;
+    let local_restore_branch = local_checkout
+        .branch
+        .clone()
+        .filter(|local| local != &branch);
+    let mut next_registry = registry.clone();
+    next_registry.remember_handoff(&repo, &branch, &current, &from.name, local_restore_branch)?;
 
-    registry.remember_handoff(&repo, &branch, &current, &from.name, local_restore_branch)?;
-    registry.save()?;
+    let applied = apply_worktree_to_local_branch_handoff(
+        &current,
+        &repo,
+        &branch,
+        source_checkout,
+        local_checkout,
+    )?;
+    if let Err(error) = next_registry.save() {
+        return Err(rollback_saved_branch_handoff(applied, error));
+    }
+    *registry = next_registry;
 
     Ok(WorktreeHandoff {
         repo,
@@ -677,6 +733,29 @@ fn handoff_worktree_to_local(
     })
 }
 
+fn apply_worktree_to_local_branch_handoff(
+    source: &Path,
+    local: &Path,
+    branch: &str,
+    source_checkout: GitCheckout,
+    local_checkout: GitCheckout,
+) -> HzResult<AppliedBranchHandoff> {
+    let mut applied = AppliedBranchHandoff::default();
+
+    if source_checkout.branch.as_deref() == Some(branch) {
+        hz_git::switch_detached(source)?;
+        applied.push(source, source_checkout);
+    }
+    if local_checkout.branch.as_deref() != Some(branch) {
+        if let Err(error) = hz_git::switch_branch(local, branch) {
+            return Err(rollback_failed_branch_handoff(error, applied));
+        }
+        applied.push(local, local_checkout);
+    }
+
+    Ok(applied)
+}
+
 fn handoff_local_to_worktree(
     registry: &mut Registry,
     repo: PathBuf,
@@ -684,9 +763,9 @@ fn handoff_local_to_worktree(
     branch: String,
     destination: Option<WorktreeEntry>,
 ) -> HzResult<WorktreeHandoff> {
-    let source_branch = hz_git::current_branch(&current)?;
-    validate_handoff_source_branch(&current, source_branch.as_deref(), &branch)?;
-    if source_branch.is_none() {
+    let source_checkout = GitCheckout::current(&current)?;
+    validate_handoff_source_branch(&current, source_checkout.branch.as_deref(), &branch)?;
+    if source_checkout.branch.is_none() {
         return Err(HzError::Usage(
             "local worktree is detached; check out the branch before handing it off".to_owned(),
         ));
@@ -707,28 +786,27 @@ fn handoff_local_to_worktree(
     ensure_clean(&current, "source")?;
     ensure_clean(&destination.path, "destination")?;
 
-    if let Some(restore_branch) = registry
+    let restore_branch = registry
         .handoff_link(&repo, &branch)
         .and_then(|link| link.local_restore_branch.as_deref())
         .filter(|restore_branch| *restore_branch != branch.as_str())
-    {
-        hz_git::switch_branch(&current, restore_branch)?;
-    } else {
-        hz_git::switch_detached(&current)?;
-    }
+        .map(str::to_owned);
+    let destination_checkout = GitCheckout::current(&destination.path)?;
+    let mut next_registry = registry.clone();
+    next_registry.forget_handoff(&repo, &branch);
 
-    if let Err(error) = hz_git::switch_branch(&destination.path, &branch) {
-        let rollback = hz_git::switch_branch(&current, &branch);
-        return Err(match rollback {
-            Ok(()) => error,
-            Err(rollback_error) => HzError::Usage(format!(
-                "{error}; rollback failed, local worktree is not on {branch}: {rollback_error}"
-            )),
-        });
+    let applied = apply_local_to_worktree_branch_handoff(
+        &current,
+        &destination.path,
+        &branch,
+        restore_branch.as_deref(),
+        source_checkout,
+        destination_checkout,
+    )?;
+    if let Err(error) = next_registry.save() {
+        return Err(rollback_saved_branch_handoff(applied, error));
     }
-
-    registry.forget_handoff(&repo, &branch);
-    registry.save()?;
+    *registry = next_registry;
 
     Ok(WorktreeHandoff {
         repo,
@@ -739,6 +817,49 @@ fn handoff_local_to_worktree(
         changed: true,
         warnings: Vec::new(),
     })
+}
+
+fn apply_local_to_worktree_branch_handoff(
+    local: &Path,
+    destination: &Path,
+    branch: &str,
+    restore_branch: Option<&str>,
+    local_checkout: GitCheckout,
+    destination_checkout: GitCheckout,
+) -> HzResult<AppliedBranchHandoff> {
+    let mut applied = AppliedBranchHandoff::default();
+
+    if let Some(restore_branch) = restore_branch {
+        hz_git::switch_branch(local, restore_branch)?;
+    } else {
+        hz_git::switch_detached(local)?;
+    }
+    applied.push(local, local_checkout);
+
+    if let Err(error) = hz_git::switch_branch(destination, branch) {
+        return Err(rollback_failed_branch_handoff(error, applied));
+    }
+    applied.push(destination, destination_checkout);
+
+    Ok(applied)
+}
+
+fn rollback_saved_branch_handoff(applied: AppliedBranchHandoff, save_error: HzError) -> HzError {
+    match applied.rollback() {
+        Ok(()) => save_error,
+        Err(rollback_error) => HzError::Usage(format!(
+            "{save_error}; rollback failed, branch handoff was not restored: {rollback_error}"
+        )),
+    }
+}
+
+fn rollback_failed_branch_handoff(error: HzError, applied: AppliedBranchHandoff) -> HzError {
+    match applied.rollback() {
+        Ok(()) => error,
+        Err(rollback_error) => HzError::Usage(format!(
+            "{error}; rollback failed, branch handoff was not restored: {rollback_error}"
+        )),
+    }
 }
 
 fn find_target_worktree(
@@ -1623,10 +1744,45 @@ fn default_worktree_path(repo: &Path, id: &str) -> HzResult<PathBuf> {
 }
 
 fn registry_path() -> HzResult<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = registry_path_override() {
+        return Ok(path);
+    }
+
     registry_path_from_env(
         env_path("HOME"),
         env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
     )
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static REGISTRY_PATH_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn registry_path_override() -> Option<PathBuf> {
+    REGISTRY_PATH_OVERRIDE.with(|path| path.borrow().clone())
+}
+
+#[cfg(test)]
+struct RegistryPathOverrideGuard(Option<PathBuf>);
+
+#[cfg(test)]
+impl RegistryPathOverrideGuard {
+    fn set(path: PathBuf) -> Self {
+        Self(REGISTRY_PATH_OVERRIDE.with(|override_path| override_path.replace(Some(path))))
+    }
+}
+
+#[cfg(test)]
+impl Drop for RegistryPathOverrideGuard {
+    fn drop(&mut self) {
+        REGISTRY_PATH_OVERRIDE.with(|override_path| {
+            override_path.replace(self.0.take());
+        });
+    }
 }
 
 fn registry_path_from_env(
@@ -1803,6 +1959,7 @@ fn new_uuid_v4() -> HzResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn generated_handle_is_easy_to_type() {
@@ -2283,6 +2440,207 @@ mod tests {
     }
 
     #[test]
+    fn branch_handoff_rollback_continues_after_restore_failure() {
+        let test_dir = test_dir("hz-worktree-branch-rollback-continue-test");
+        let repo = test_dir.join("repo");
+        init_committed_repo(&repo);
+        git(["branch", "-m", "main"], &repo);
+        let main_checkout = GitCheckout::current(&repo).unwrap();
+        git(["switch", "-q", "-c", "other"], &repo);
+
+        let mut applied = AppliedBranchHandoff::default();
+        applied.push(&repo, main_checkout);
+        applied.push(
+            &test_dir.join("missing-worktree"),
+            GitCheckout {
+                branch: Some("main".to_owned()),
+                head: "HEAD".to_owned(),
+            },
+        );
+
+        let error = applied.rollback().unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to restore one or more worktrees"),
+            "{error}"
+        );
+        assert_eq!(
+            hz_git::current_branch(&repo).unwrap().as_deref(),
+            Some("main")
+        );
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn local_to_worktree_branch_handoff_rolls_back_on_save_failure() {
+        let test_dir = test_dir("hz-worktree-local-branch-rollback-test");
+        let repo = test_dir.join("repo");
+        let destination = test_dir.join("destination");
+        init_committed_repo(&repo);
+        git(["branch", "-m", "main"], &repo);
+        git(["switch", "-q", "-c", "feature"], &repo);
+        git(
+            [
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                destination.to_str().unwrap(),
+                "main",
+            ],
+            &repo,
+        );
+        let destination_head = hz_git::current_head(&destination).unwrap();
+        let local_checkout = GitCheckout::current(&repo).unwrap();
+        let destination_checkout = GitCheckout::current(&destination).unwrap();
+
+        let applied = apply_local_to_worktree_branch_handoff(
+            &repo,
+            &destination,
+            "feature",
+            None,
+            local_checkout,
+            destination_checkout,
+        )
+        .unwrap();
+        let error = rollback_saved_branch_handoff(
+            applied,
+            HzError::Usage("registry save failed".to_owned()),
+        );
+
+        assert_eq!(error.to_string(), "registry save failed");
+        assert_eq!(
+            hz_git::current_branch(&repo).unwrap().as_deref(),
+            Some("feature")
+        );
+        assert_eq!(hz_git::current_branch(&destination).unwrap(), None);
+        assert_eq!(
+            hz_git::current_head(&destination).unwrap(),
+            destination_head
+        );
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn local_to_worktree_branch_handoff_rolls_back_when_registry_save_fails() {
+        let test_dir = test_dir("hz-worktree-local-branch-save-failure-test");
+        let repo = test_dir.join("repo");
+        let destination = test_dir.join("destination");
+        init_committed_repo(&repo);
+        git(["branch", "-m", "main"], &repo);
+        git(["switch", "-q", "-c", "feature"], &repo);
+        git(
+            [
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                destination.to_str().unwrap(),
+                "main",
+            ],
+            &repo,
+        );
+        let destination_head = hz_git::current_head(&destination).unwrap();
+        let destination_entry = WorktreeEntry {
+            id: "destination".to_owned(),
+            handle: "destination".to_owned(),
+            repo: repo.clone(),
+            path: destination.clone(),
+            branch: None,
+            base: None,
+            source: WorktreeSource::Git,
+            created_at_unix: 0,
+            modified_at_unix: 0,
+            status: WorktreeStatus::Unknown,
+        };
+        let mut registry = Registry::default();
+        registry
+            .remember_handoff(
+                &repo,
+                "feature",
+                &destination,
+                "destination",
+                Some("main".to_owned()),
+            )
+            .unwrap();
+        let blocked_parent = test_dir.join("blocked-registry-parent");
+        fs::write(&blocked_parent, "not a directory")
+            .expect("blocked registry parent should be written");
+        let _registry_path_override =
+            RegistryPathOverrideGuard::set(blocked_parent.join("registry.json"));
+
+        let error = handoff_local_to_worktree(
+            &mut registry,
+            repo.clone(),
+            repo.clone(),
+            "feature".to_owned(),
+            Some(destination_entry),
+        )
+        .unwrap_err();
+
+        assert!(matches!(&error, HzError::Io(_)), "{error}");
+        assert_eq!(
+            hz_git::current_branch(&repo).unwrap().as_deref(),
+            Some("feature")
+        );
+        assert_eq!(hz_git::current_branch(&destination).unwrap(), None);
+        assert_eq!(
+            hz_git::current_head(&destination).unwrap(),
+            destination_head
+        );
+        let link = registry.handoff_link(&repo, "feature").unwrap();
+        assert!(same_path(&link.path, &destination));
+        assert_eq!(link.local_restore_branch.as_deref(), Some("main"));
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn worktree_to_local_branch_handoff_rolls_back_on_save_failure() {
+        let test_dir = test_dir("hz-worktree-worktree-branch-rollback-test");
+        let repo = test_dir.join("repo");
+        let source = test_dir.join("source");
+        init_committed_repo(&repo);
+        git(["branch", "-m", "main"], &repo);
+        git(["branch", "feature"], &repo);
+        git(
+            ["worktree", "add", "-q", source.to_str().unwrap(), "feature"],
+            &repo,
+        );
+        let source_checkout = GitCheckout::current(&source).unwrap();
+        let local_checkout = GitCheckout::current(&repo).unwrap();
+
+        let applied = apply_worktree_to_local_branch_handoff(
+            &source,
+            &repo,
+            "feature",
+            source_checkout,
+            local_checkout,
+        )
+        .unwrap();
+        let error = rollback_saved_branch_handoff(
+            applied,
+            HzError::Usage("registry save failed".to_owned()),
+        );
+
+        assert_eq!(error.to_string(), "registry save failed");
+        assert_eq!(
+            hz_git::current_branch(&repo).unwrap().as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            hz_git::current_branch(&source).unwrap().as_deref(),
+            Some("feature")
+        );
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
     fn local_handoff_target_can_match_detached_codex_worktree_handle() {
         let repo = PathBuf::from("/repo/hz");
         let entry = git_entry(
@@ -2588,5 +2946,41 @@ mod tests {
             path: entry.path.clone(),
             branch: None,
         }
+    }
+
+    fn test_dir(prefix: &str) -> PathBuf {
+        let test_dir = env::temp_dir().join(format!(
+            "{}-{}",
+            prefix,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        test_dir
+    }
+
+    fn init_committed_repo(repo: &Path) {
+        let parent = repo.parent().expect("repo should have parent");
+        git(["init", "-q", repo.to_str().unwrap()], parent);
+        git(["config", "user.email", "test@example.com"], repo);
+        git(["config", "user.name", "Test"], repo);
+        fs::write(repo.join("file.txt"), "base\n").expect("tracked file should be written");
+        git(["add", "file.txt"], repo);
+        git(["commit", "-q", "-m", "init"], repo);
+    }
+
+    fn git<const N: usize>(args: [&str; N], cwd: &Path) {
+        let output = Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

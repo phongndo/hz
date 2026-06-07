@@ -154,6 +154,25 @@ pub fn current_branch(repo: &Path) -> HzResult<Option<String>> {
     }
 }
 
+pub fn current_head(repo: &Path) -> HzResult<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to read current git HEAD", &output));
+    }
+
+    let head = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if head.is_empty() {
+        return Err(HzError::Usage("git HEAD was empty".to_owned()));
+    }
+
+    Ok(head)
+}
+
 pub fn remote_url(repo: &Path, remote: &str) -> HzResult<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -208,6 +227,22 @@ pub fn switch_detached(repo: &Path) -> HzResult<()> {
         .arg("-C")
         .arg(repo)
         .args(["switch", "--detach"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to detach git worktree", &output));
+    }
+
+    Ok(())
+}
+
+pub fn switch_detached_at(repo: &Path, rev: &str) -> HzResult<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["switch", "--detach"])
+        .arg("--")
+        .arg(rev)
         .output()?;
 
     if !output.status.success() {
@@ -811,6 +846,38 @@ mod tests {
         assert!(list_worktrees(&repo).unwrap().into_iter().any(|worktree| {
             fs::canonicalize(worktree.path).unwrap() == destination && worktree.branch.is_none()
         }));
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn switch_detached_at_restores_specific_head() {
+        let test_dir = env::temp_dir().join(format!(
+            "hz-git-detached-head-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+
+        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
+        git(["config", "user.email", "test@example.com"], &repo);
+        git(["config", "user.name", "Test"], &repo);
+        fs::write(repo.join("file.txt"), "base\n").expect("tracked file should be written");
+        git(["add", "file.txt"], &repo);
+        git(["commit", "-q", "-m", "init"], &repo);
+        let first = current_head(&repo).expect("first HEAD should be read");
+
+        fs::write(repo.join("file.txt"), "base\nchanged\n")
+            .expect("tracked file should be changed");
+        git(["commit", "-q", "-am", "change"], &repo);
+
+        switch_detached_at(&repo, &first).expect("worktree should detach at first commit");
+
+        assert_eq!(current_branch(&repo).unwrap(), None);
+        assert_eq!(current_head(&repo).unwrap(), first);
 
         fs::remove_dir_all(test_dir).expect("test directory should be removed");
     }
