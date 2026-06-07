@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+set -eu
+
+version="${1:-latest}"
+repo_dir="$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
+install_dir="$(mktemp -d)"
+
+cleanup() {
+  rm -rf "$install_dir"
+}
+trap cleanup EXIT INT TERM
+
+cd "$repo_dir"
+cargo build -p hz-cli --locked
+
+install -m 755 "$repo_dir/target/debug/hz" "$install_dir/hz"
+
+"$install_dir/hz" update --target-version "$version" --install-dir "$install_dir"
+test -x "$install_dir/hz"
+"$install_dir/hz" --version
