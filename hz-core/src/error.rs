@@ -6,7 +6,6 @@ pub type HzResult<T> = Result<T, HzError>;
 pub enum HzError {
     Io(io::Error),
     Json(serde_json::Error),
-    NotImplemented(&'static str),
     Usage(String),
 }
 
@@ -15,7 +14,6 @@ impl fmt::Display for HzError {
         match self {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Json(error) => write!(formatter, "{error}"),
-            Self::NotImplemented(feature) => write!(formatter, "{feature} is not implemented yet"),
             Self::Usage(message) => write!(formatter, "{message}"),
         }
     }

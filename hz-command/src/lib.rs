@@ -1,10 +1,11 @@
 use std::{
     collections::HashMap,
     env, fs,
-    io::{self, ErrorKind, Write},
+    io::{self, ErrorKind, Read, Write},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use hz_core::{HzError, HzResult};
@@ -938,18 +939,30 @@ fn require_home(home: Option<PathBuf>) -> HzResult<PathBuf> {
 }
 
 fn install_line(path: &Path, line: &'static str) -> HzResult<bool> {
-    let existing = if path.exists() {
-        fs::read_to_string(path)?
-    } else {
-        String::new()
-    };
+    let write_path = shell_rc_write_path(path)?;
+    // Once an existing rc symlink is resolved, use that same write path for the
+    // snapshot and final rename so one install does not mix target contents and
+    // metadata from different paths.
+    let (existing, existing_metadata) = read_shell_rc(&write_path)?;
 
     if existing.lines().any(|existing_line| existing_line == line) {
         return Ok(false);
     }
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    if let Some(metadata) = existing_metadata.as_ref() {
+        if metadata.permissions().readonly() {
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                format!("shell rc file is read-only: {}", write_path.display()),
+            )
+            .into());
+        }
+    }
+
+    create_parent_dir(&write_path)?;
+
+    if let Some(metadata) = existing_metadata.as_ref() {
+        write_install_backup(path, &existing, metadata)?;
     }
 
     let mut next = existing;
@@ -961,8 +974,191 @@ fn install_line(path: &Path, line: &'static str) -> HzResult<bool> {
     next.push_str(line);
     next.push('\n');
 
-    fs::write(path, next)?;
+    atomic_write_shell_rc(&write_path, &next, existing_metadata.as_ref())?;
     Ok(true)
+}
+
+fn shell_rc_write_path(path: &Path) -> HzResult<PathBuf> {
+    match fs::symlink_metadata(path) {
+        // Preserve the user's dotfile symlink and atomically replace the target
+        // that fs::write(path, ...) would have followed.
+        Ok(metadata) if metadata.file_type().is_symlink() => Ok(fs::canonicalize(path)?),
+        Ok(_) => Ok(path.to_path_buf()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn read_shell_rc(path: &Path) -> HzResult<(String, Option<fs::Metadata>)> {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok((String::new(), None)),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    Ok((contents, Some(metadata)))
+}
+
+fn write_install_backup(path: &Path, contents: &str, metadata: &fs::Metadata) -> HzResult<()> {
+    let backup_path = shell_rc_backup_path(path)?;
+    create_parent_dir(&backup_path)?;
+    let mut temp_path = None;
+
+    let result = (|| -> HzResult<()> {
+        let (created_temp_path, mut file) = create_shell_rc_temp_file(&backup_path)?;
+        temp_path = Some(created_temp_path.clone());
+
+        file.set_permissions(metadata.permissions())?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+
+        // Link the fully-written temp file into place instead of writing the
+        // backup path directly. hard_link is an atomic no-clobber create, so an
+        // interrupted process leaves either no backup or a complete backup.
+        let backup_created = match fs::hard_link(&created_temp_path, &backup_path) {
+            Ok(()) => true,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => false,
+            Err(error) => return Err(error.into()),
+        };
+
+        if backup_created {
+            sync_parent_dir(&backup_path)?;
+        }
+
+        fs::remove_file(&created_temp_path)?;
+        temp_path = None;
+        sync_parent_dir(&backup_path)?;
+        Ok(())
+    })();
+
+    if let Some(temp_path) = temp_path {
+        let _ = fs::remove_file(temp_path);
+    }
+
+    result
+}
+
+fn atomic_write_shell_rc(
+    path: &Path,
+    contents: &str,
+    metadata: Option<&fs::Metadata>,
+) -> HzResult<()> {
+    let mut temp_path = None;
+    let result = (|| -> HzResult<()> {
+        let (created_temp_path, mut file) = create_shell_rc_temp_file(path)?;
+        temp_path = Some(created_temp_path.clone());
+
+        if let Some(metadata) = metadata {
+            file.set_permissions(metadata.permissions())?;
+        }
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+
+        fs::rename(&created_temp_path, path)?;
+        temp_path = None;
+        sync_parent_dir(path)?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        if let Some(temp_path) = temp_path {
+            let _ = fs::remove_file(temp_path);
+        }
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn create_shell_rc_temp_file(path: &Path) -> HzResult<(PathBuf, fs::File)> {
+    for attempt in 0..16 {
+        let temp_path = shell_rc_temp_path(path, attempt)?;
+        match new_shell_rc_file_options()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Err(HzError::Usage(format!(
+        "failed to create a unique temporary shell rc file for {}",
+        path.display()
+    )))
+}
+
+fn new_shell_rc_file_options() -> fs::OpenOptions {
+    let mut options = fs::OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+}
+
+fn shell_rc_temp_path(path: &Path, attempt: u32) -> HzResult<PathBuf> {
+    let file_name = path.file_name().ok_or_else(|| {
+        HzError::Usage(format!(
+            "shell rc path has no file name: {}",
+            path.display()
+        ))
+    })?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| HzError::Usage(format!("system clock is before unix epoch: {error}")))?
+        .as_nanos();
+
+    Ok(path.with_file_name(format!(
+        ".{}.{}.{}.{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id(),
+        timestamp,
+        attempt
+    )))
+}
+
+fn shell_rc_backup_path(path: &Path) -> HzResult<PathBuf> {
+    let file_name = path.file_name().ok_or_else(|| {
+        HzError::Usage(format!(
+            "shell rc path has no file name: {}",
+            path.display()
+        ))
+    })?;
+    Ok(path.with_file_name(format!("{}.bak", file_name.to_string_lossy())))
+}
+
+fn create_parent_dir(path: &Path) -> HzResult<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> HzResult<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let directory = fs::File::open(parent)?;
+    directory.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) -> HzResult<()> {
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1495,7 +1691,11 @@ mod tests {
         assert!(script.contains("handoff)"));
         assert!(script.contains("--json|--path-only|--help|-h|-j"));
         assert!(script.contains("builtin cd \"$hz_target_path\" || return"));
-        assert!(script.contains("command hz __complete worktree-targets"));
+        assert!(script.contains("command hz __complete worktree-targets \"${complete_args[@]}\""));
+        assert!(
+            script.contains("command hz __complete removable-worktrees \"${complete_args[@]}\"")
+        );
+        assert!(script.contains("complete_args=(-r \"$repo\")"));
         assert!(script.contains("compdef _hz_completion hz _hz"));
         assert!(script.contains("compdef _hzcd_completion hzcd _hzcd"));
         assert!(script.contains("compdef _hzlocal_completion hzlocal _hzlocal"));
@@ -1505,6 +1705,8 @@ mod tests {
         assert!(script.contains("_hz_complete_command_positionals \"$cmd\""));
         assert!(script.contains("_hz_complete_option_value \"$cmd\""));
         assert!(script.contains("_hz_git_refs"));
+        assert!(script.contains("--branch)"));
+        assert!(!script.contains("-b|--branch"));
         assert!(script.contains("compinit -C"));
         assert!(script.contains("shift words"));
         assert!(script.contains("shift 2 words"));
@@ -1521,6 +1723,7 @@ mod tests {
         assert!(script.contains("--no-setup"));
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
+        assert!(script.contains("--force-self-update"));
         assert!(script.contains("--pr"));
         assert!(script.contains("--patch"));
         assert!(script.contains("--staged"));
@@ -1538,7 +1741,8 @@ mod tests {
 
         assert!(script.contains("case --json --path-only --help -h -j"));
         assert!(script.contains("or return"));
-        assert!(script.contains("command hz __complete removable-worktrees"));
+        assert!(script.contains("command hz __complete worktree-targets -r \"$repo\""));
+        assert!(script.contains("command hz __complete removable-worktrees -r \"$repo\""));
         assert!(script.contains("__hz_command_is"));
         assert!(script.contains("__hz_top_command_is update"));
         assert!(script.contains("__hz_diff_position_is_revision"));
@@ -1555,6 +1759,7 @@ mod tests {
         assert!(script.contains("-l no-cleanup"));
         assert!(script.contains("-l max-detached"));
         assert!(script.contains("-l target-version"));
+        assert!(script.contains("-l force-self-update"));
         assert!(script.contains("-l pr"));
         assert!(script.contains("-l patch"));
         assert!(script.contains("-l staged"));
@@ -1586,9 +1791,12 @@ mod tests {
         assert!(script.contains("complete -F _hz_completion hz"));
         assert!(script.contains("_hz_dynamic_reply worktree-targets"));
         assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
+        assert!(script.contains("command hz __complete \"$command\" -r \"$repo\""));
+        assert!(script.contains("for ((index = 1; index < COMP_CWORD; index++))"));
         assert!(script.contains("_hz_complete_option_value"));
         assert!(script.contains("_hz_git_ref_reply"));
-        assert!(script.contains("-b|--branch"));
+        assert!(script.contains("--branch)"));
+        assert!(!script.contains("-b|--branch"));
         assert!(script.contains("init install setup cleanup shell update"));
         assert!(script.contains("ts tree-sitter"));
         assert!(script.contains("_hz_complete_ts_args"));
@@ -1599,6 +1807,7 @@ mod tests {
         assert!(script.contains("--no-cleanup"));
         assert!(script.contains("--max-detached"));
         assert!(script.contains("--target-version"));
+        assert!(script.contains("--force-self-update"));
         assert!(script.contains("--pr"));
         assert!(script.contains("--patch"));
         assert!(script.contains("--staged"));
@@ -1636,6 +1845,86 @@ mod tests {
     }
 
     #[test]
+    fn creates_backup_before_first_rc_file_install() {
+        let test_dir = shell_install_test_dir("hz-init-backup-test");
+        let rc_file = test_dir.join(".zshrc");
+        let original = "export PATH=\"$HOME/bin:$PATH\"\n";
+        fs::write(&rc_file, original).unwrap();
+
+        assert!(install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
+
+        let contents = fs::read_to_string(&rc_file).unwrap();
+        assert_eq!(
+            contents,
+            format!(
+                "{}{}\n{}\n",
+                original,
+                shell_init_comment(),
+                shell_init_line(Shell::Zsh)
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(shell_rc_backup_path(&rc_file).unwrap()).unwrap(),
+            original
+        );
+        assert_no_shell_rc_temp_files(&test_dir);
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn does_not_overwrite_existing_rc_file_backup() {
+        let test_dir = shell_install_test_dir("hz-init-existing-backup-test");
+        let rc_file = test_dir.join(".zshrc");
+        let backup_file = shell_rc_backup_path(&rc_file).unwrap();
+        fs::write(&rc_file, "alias ll='ls -l'\n").unwrap();
+        fs::write(&backup_file, "user backup\n").unwrap();
+
+        assert!(install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
+
+        assert_eq!(fs::read_to_string(&backup_file).unwrap(), "user backup\n");
+        assert_no_shell_rc_temp_files(&test_dir);
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installs_line_without_replacing_symlinked_rc_file() {
+        let test_dir = shell_install_test_dir("hz-init-symlink-test");
+        let target_dir = test_dir.join("dotfiles");
+        fs::create_dir_all(&target_dir).unwrap();
+        let rc_file = test_dir.join(".zshrc");
+        let target_file = target_dir.join("zshrc");
+        fs::write(&target_file, "# managed dotfile\n").unwrap();
+        std::os::unix::fs::symlink(&target_file, &rc_file).unwrap();
+
+        assert!(install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
+
+        assert!(
+            fs::symlink_metadata(&rc_file)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(&target_file).unwrap(),
+            format!(
+                "# managed dotfile\n{}\n{}\n",
+                shell_init_comment(),
+                shell_init_line(Shell::Zsh)
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(shell_rc_backup_path(&rc_file).unwrap()).unwrap(),
+            "# managed dotfile\n"
+        );
+        assert_no_shell_rc_temp_files(&test_dir);
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
     fn does_not_duplicate_existing_bare_line() {
         let test_dir = env::temp_dir().join(format!(
             "hz-init-test-{}",
@@ -1655,6 +1944,28 @@ mod tests {
         assert_eq!(contents.matches(shell_init_comment()).count(), 0);
 
         fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    fn shell_install_test_dir(prefix: &str) -> PathBuf {
+        let test_dir = env::temp_dir().join(format!(
+            "{prefix}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&test_dir).unwrap();
+        test_dir
+    }
+
+    fn assert_no_shell_rc_temp_files(path: &Path) {
+        assert!(!fs::read_dir(path).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
     }
 
     fn test_repo(prefix: &str) -> PathBuf {

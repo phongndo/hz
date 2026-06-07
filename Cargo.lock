@@ -694,6 +694,7 @@ name = "hz-worktree"
 version = "0.1.9"
 dependencies = [
  "fs2",
+ "getrandom 0.3.4",
  "hz-core",
  "hz-git",
  "serde",

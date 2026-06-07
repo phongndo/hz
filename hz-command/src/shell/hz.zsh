@@ -73,14 +73,28 @@ _hzlocal() {
 }
 
 _hz_worktree_targets() {
+  local repo
+  local -a complete_args
+  repo="$(_hz_current_repo_arg)"
+  if [[ -n "$repo" ]]; then
+    complete_args=(-r "$repo")
+  fi
+
   local -a targets
-  targets=("${(@f)$(command hz __complete worktree-targets 2>/dev/null)}")
+  targets=("${(@f)$(command hz __complete worktree-targets "${complete_args[@]}" 2>/dev/null)}")
   compadd -a targets
 }
 
 _hz_removable_worktrees() {
+  local repo
+  local -a complete_args
+  repo="$(_hz_current_repo_arg)"
+  if [[ -n "$repo" ]]; then
+    complete_args=(-r "$repo")
+  fi
+
   local -a targets
-  targets=("${(@f)$(command hz __complete removable-worktrees 2>/dev/null)}")
+  targets=("${(@f)$(command hz __complete removable-worktrees "${complete_args[@]}" 2>/dev/null)}")
   compadd -a targets
 }
 
@@ -198,7 +212,15 @@ _hz_complete_option_value() {
         return 0
       fi
       ;;
-    -B|--base)
+    -B)
+      case "$cmd" in
+        new)
+          _hz_git_refs
+          return 0
+          ;;
+      esac
+      ;;
+    -b)
       case "$cmd" in
         new|diff)
           _hz_git_refs
@@ -206,9 +228,17 @@ _hz_complete_option_value() {
           ;;
       esac
       ;;
-    -b|--branch)
+    --base)
       case "$cmd" in
         new|diff)
+          _hz_git_refs
+          return 0
+          ;;
+      esac
+      ;;
+    --branch)
+      case "$cmd" in
+        new)
           _hz_git_refs
           return 0
           ;;
@@ -280,7 +310,7 @@ _hz_complete_command_options() {
       compadd -- -h --help
       ;;
     update)
-      compadd -- --target-version --install-dir -h --help
+      compadd -- --target-version --install-dir --force-self-update -h --help
       ;;
     diff)
       compadd -- -r --repo -b --base --pr --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help
