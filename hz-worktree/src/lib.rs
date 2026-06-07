@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     env, fs,
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -156,12 +156,19 @@ struct PatchHandoffLink {
 }
 
 pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
-    let mut registry = Registry::load()?;
-    let repo = resolve_repo(input.repo.as_deref(), &registry)?;
+    let mut registry = Registry::load_for_update()?;
+    create_with_registry(&mut registry, input)
+}
+
+fn create_with_registry(
+    registry: &mut Registry,
+    input: CreateWorktree,
+) -> HzResult<CreatedWorktree> {
+    let repo = resolve_repo(input.repo.as_deref(), registry)?;
     let name = input.name;
     let handle = match name.clone() {
         Some(name) => name,
-        None => generate_unique_handle(&registry, &repo)?,
+        None => generate_unique_handle(registry, &repo)?,
     };
     let branch = derive_worktree_branch(name.as_deref(), input.branch.as_deref());
     validate_worktree_name("worktree handle", &handle)?;
@@ -194,7 +201,7 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
 
     let prune_candidates = if branch.is_none() {
         detached_worktree_prune_candidates(
-            &registry,
+            registry,
             &repo,
             input.repo.as_deref(),
             input
@@ -222,7 +229,7 @@ pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     };
     registry.entries.push(entry);
     registry.save()?;
-    let warnings = match prune_detached_worktrees(&mut registry, prune_candidates) {
+    let warnings = match prune_detached_worktrees(registry, prune_candidates) {
         Ok(()) => Vec::new(),
         Err(error) => vec![detached_prune_warning(error)],
     };
@@ -251,7 +258,7 @@ pub fn path(input: PathWorktree) -> HzResult<WorktreeTarget> {
 }
 
 pub fn handoff(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {
-    let mut registry = Registry::load()?;
+    let mut registry = Registry::load_for_update()?;
     let current = hz_git::repository_root(input.repo.as_deref())?;
     let main = hz_git::main_worktree(&current)?;
     let repo = resolve_registered_repo(&registry, &current, &main).unwrap_or(main);
@@ -412,14 +419,14 @@ fn handoff_patch_from_local(
     let applied = match apply_patch_handoff(registry, &repo, &from, &to, &patch) {
         Ok(applied) => applied,
         Err(error) if create => {
-            return Err(cleanup_created_destination(destination, error));
+            return Err(cleanup_created_destination(registry, destination, error));
         }
         Err(error) => return Err(error),
     };
     if let Err(error) = next_registry.save() {
         let error = rollback_saved_patch_handoff(&to.path, &patch, applied, error);
         if create {
-            return Err(cleanup_created_destination(destination, error));
+            return Err(cleanup_created_destination(registry, destination, error));
         }
         return Err(error);
     }
@@ -442,15 +449,17 @@ fn create_handoff_destination(
     target: Option<String>,
     max_detached_worktrees: Option<usize>,
 ) -> HzResult<(WorktreeEntry, Vec<String>)> {
-    let created = create(CreateWorktree {
-        name: target,
-        repo: Some(repo.to_path_buf()),
-        path: None,
-        base: None,
-        branch: None,
-        max_detached_worktrees,
-    })?;
-    *registry = Registry::load()?;
+    let created = create_with_registry(
+        registry,
+        CreateWorktree {
+            name: target,
+            repo: Some(repo.to_path_buf()),
+            path: None,
+            base: None,
+            branch: None,
+            max_detached_worktrees,
+        },
+    )?;
 
     Ok(created_worktree_entry(created, unix_now()?))
 }
@@ -552,8 +561,12 @@ fn rollback_saved_patch_handoff(
     }
 }
 
-fn cleanup_created_destination(destination: WorktreeEntry, error: HzError) -> HzError {
-    match remove_found_with_force(destination, true) {
+fn cleanup_created_destination(
+    registry: &mut Registry,
+    destination: WorktreeEntry,
+    error: HzError,
+) -> HzError {
+    match remove_registered_entry_with_force_from_registry(registry, destination, true) {
         Ok(_) => error,
         Err(cleanup_error) => HzError::Usage(format!(
             "{error}; additionally failed to remove created destination worktree: {cleanup_error}"
@@ -986,7 +999,7 @@ pub fn find(input: FindWorktree) -> HzResult<WorktreeEntry> {
 }
 
 pub fn remove(input: RemoveWorktree) -> HzResult<WorktreeEntry> {
-    let mut registry = Registry::load()?;
+    let mut registry = Registry::load_for_update()?;
     let repo = resolve_repo(input.repo.as_deref(), &registry)?;
     if let Some(index) = registry
         .entries
@@ -1014,19 +1027,31 @@ pub fn remove_found(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
 pub fn remove_found_with_force(entry: WorktreeEntry, force: bool) -> HzResult<WorktreeEntry> {
     match entry.source {
         WorktreeSource::Managed => remove_registered_entry_with_force(entry, force),
-        WorktreeSource::Git => {
-            hz_git::remove_worktree_with_force(&entry.repo, &entry.path, force)?;
-            Ok(entry)
-        }
+        WorktreeSource::Git => remove_git_entry_with_force(entry, force),
     }
+}
+
+fn remove_git_entry_with_force(entry: WorktreeEntry, force: bool) -> HzResult<WorktreeEntry> {
+    run_with_registry_lock_for_git_side_effect(|| {
+        hz_git::remove_worktree_with_force(&entry.repo, &entry.path, force)?;
+        Ok(entry)
+    })
 }
 
 fn remove_registered_entry_with_force(
     entry: WorktreeEntry,
     force: bool,
 ) -> HzResult<WorktreeEntry> {
-    let mut registry = Registry::load()?;
-    let entry = remove_registered_entry_from_registry(&mut registry, &entry, force)?;
+    let mut registry = Registry::load_for_update()?;
+    remove_registered_entry_with_force_from_registry(&mut registry, entry, force)
+}
+
+fn remove_registered_entry_with_force_from_registry(
+    registry: &mut Registry,
+    entry: WorktreeEntry,
+    force: bool,
+) -> HzResult<WorktreeEntry> {
+    let entry = remove_registered_entry_from_registry(registry, &entry, force)?;
     registry.save()?;
 
     Ok(entry)
@@ -1262,6 +1287,10 @@ struct Registry {
 }
 
 impl Registry {
+    fn load_for_update() -> HzResult<LockedRegistry> {
+        LockedRegistry::load()
+    }
+
     fn load() -> HzResult<Self> {
         let path = registry_path()?;
         if !path.exists() {
@@ -1409,6 +1438,98 @@ impl Registry {
     }
 }
 
+struct LockedRegistry {
+    _lock: RegistryLock,
+    registry: Registry,
+}
+
+impl LockedRegistry {
+    fn load() -> HzResult<Self> {
+        let lock = RegistryLock::acquire()?;
+        let registry = Registry::load()?;
+        Ok(Self {
+            _lock: lock,
+            registry,
+        })
+    }
+
+    fn save(&self) -> HzResult<()> {
+        self.registry.save()
+    }
+}
+
+impl std::ops::Deref for LockedRegistry {
+    type Target = Registry;
+
+    fn deref(&self) -> &Self::Target {
+        &self.registry
+    }
+}
+
+impl std::ops::DerefMut for LockedRegistry {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.registry
+    }
+}
+
+struct RegistryLock {
+    file: fs::File,
+}
+
+impl RegistryLock {
+    fn acquire() -> HzResult<Self> {
+        let registry_path = registry_path()?;
+        let lock_path = registry_lock_path(&registry_path)?;
+        Self::acquire_path(&lock_path)
+    }
+
+    fn acquire_path(lock_path: &Path) -> HzResult<Self> {
+        if Self::is_held_by_current_thread() {
+            return Err(HzError::Usage(
+                "registry lock is already held by this thread".to_owned(),
+            ));
+        }
+
+        if let Some(parent) = lock_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let file = open_registry_lock_file(lock_path)?;
+        lock_registry_file(&file)?;
+        REGISTRY_LOCK_HELD.with(|held| held.set(true));
+        Ok(Self { file })
+    }
+
+    fn is_held_by_current_thread() -> bool {
+        REGISTRY_LOCK_HELD.with(|held| held.get())
+    }
+}
+
+impl Drop for RegistryLock {
+    fn drop(&mut self) {
+        let _ = unlock_registry_file(&self.file);
+        REGISTRY_LOCK_HELD.with(|held| held.set(false));
+    }
+}
+
+thread_local! {
+    static REGISTRY_LOCK_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// Git worktree removal is a Git side effect, not a registry mutation. Reuse an
+// existing registry critical section when one is already held so internal
+// callers cannot re-enter flock on a second file descriptor and deadlock.
+fn run_with_registry_lock_for_git_side_effect<T>(
+    operation: impl FnOnce() -> HzResult<T>,
+) -> HzResult<T> {
+    if RegistryLock::is_held_by_current_thread() {
+        return operation();
+    }
+
+    let _registry_lock = RegistryLock::acquire()?;
+    operation()
+}
+
 fn same_path(left: &Path, right: &Path) -> bool {
     left == right
         || fs::canonicalize(left)
@@ -1451,6 +1572,43 @@ fn registry_temp_path(path: &Path) -> HzResult<PathBuf> {
         file_name.to_string_lossy(),
         new_uuid_v4()?
     )))
+}
+
+fn registry_lock_path(path: &Path) -> HzResult<PathBuf> {
+    let file_name = path.file_name().ok_or_else(|| {
+        HzError::Usage(format!(
+            "registry path has no file name: {}",
+            path.display()
+        ))
+    })?;
+    let mut lock_file_name = file_name.to_os_string();
+    lock_file_name.push(".lock");
+    Ok(path.with_file_name(lock_file_name))
+}
+
+fn open_registry_lock_file(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+fn lock_registry_file(file: &fs::File) -> io::Result<()> {
+    loop {
+        match fs2::FileExt::lock_exclusive(file) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn unlock_registry_file(file: &fs::File) -> io::Result<()> {
+    fs2::FileExt::unlock(file)
 }
 
 fn default_worktree_path(repo: &Path, id: &str) -> HzResult<PathBuf> {
@@ -2190,6 +2348,67 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".registry.json.")
         );
+    }
+
+    #[test]
+    fn registry_lock_path_is_adjacent_to_registry() {
+        let registry = PathBuf::from("/config/hz/registry.json");
+
+        assert_eq!(
+            registry_lock_path(&registry).unwrap(),
+            PathBuf::from("/config/hz/registry.json.lock")
+        );
+    }
+
+    #[test]
+    fn registry_lock_file_is_exclusive() {
+        let lock_path =
+            env::temp_dir().join(format!("hz-registry-lock-{}.lock", new_uuid_v4().unwrap()));
+        let first = open_registry_lock_file(&lock_path).unwrap();
+        lock_registry_file(&first).unwrap();
+        let second = open_registry_lock_file(&lock_path).unwrap();
+
+        let blocked = fs2::FileExt::try_lock_exclusive(&second).unwrap_err();
+        assert_eq!(blocked.kind(), fs2::lock_contended_error().kind());
+
+        unlock_registry_file(&first).unwrap();
+        fs2::FileExt::lock_exclusive(&second).unwrap();
+        fs2::FileExt::unlock(&second).unwrap();
+        fs::remove_file(lock_path).unwrap();
+    }
+
+    #[test]
+    fn registry_lock_acquire_rejects_same_thread_reentry() {
+        let lock_path = env::temp_dir().join(format!(
+            "hz-registry-reentry-{}.lock",
+            new_uuid_v4().unwrap()
+        ));
+        let first = RegistryLock::acquire_path(&lock_path).unwrap();
+
+        let second = RegistryLock::acquire_path(&lock_path);
+        assert!(second.is_err());
+        assert_eq!(
+            second.err().unwrap().to_string(),
+            "registry lock is already held by this thread"
+        );
+
+        drop(first);
+        fs::remove_file(lock_path).unwrap();
+    }
+
+    #[test]
+    fn registry_lock_for_git_side_effect_reuses_current_lock() {
+        let lock_path = env::temp_dir().join(format!(
+            "hz-registry-git-side-effect-{}.lock",
+            new_uuid_v4().unwrap()
+        ));
+        let first = RegistryLock::acquire_path(&lock_path).unwrap();
+
+        let result = run_with_registry_lock_for_git_side_effect(|| Ok("removed"));
+
+        assert_eq!(result.unwrap(), "removed");
+        drop(first);
+        fs::remove_file(lock_path).unwrap();
     }
 
     #[test]
