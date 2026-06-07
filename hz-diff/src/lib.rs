@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    env, fs,
+    fs,
     io::{ErrorKind, Write},
     path::{Path, PathBuf},
     process::{self, Command},
@@ -386,13 +386,23 @@ fn git_diff_args(options: &DiffOptions) -> Vec<String> {
 
     match &options.source {
         DiffSource::Worktree => match options.scope {
-            DiffScope::All => args.push("HEAD".to_owned()),
+            DiffScope::All => {
+                args.push("--end-of-options".to_owned());
+                args.push("HEAD".to_owned());
+            }
             DiffScope::Staged => args.push("--cached".to_owned()),
             DiffScope::Unstaged => {}
         },
-        DiffSource::Base(base) => args.push(format!("{base}...HEAD")),
-        DiffSource::Branch { base, head } => args.push(format!("{base}...{head}")),
+        DiffSource::Base(base) => {
+            args.push("--end-of-options".to_owned());
+            args.push(format!("{base}...HEAD"));
+        }
+        DiffSource::Branch { base, head } => {
+            args.push("--end-of-options".to_owned());
+            args.push(format!("{base}...{head}"));
+        }
         DiffSource::Range { left, right } => {
+            args.push("--end-of-options".to_owned());
             args.push(left.clone());
             args.push(right.clone());
         }
@@ -496,12 +506,8 @@ impl Drop for TempIndex {
 fn create_temp_index(repo: &Path) -> HzResult<TempIndex> {
     let source = git_path(repo, "index")?;
     for attempt in 0..16 {
-        let path = temp_index_path(attempt)?;
-        let mut temp = match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
+        let path = temp_index_path(&source, attempt)?;
+        let mut temp = match create_private_temp_file(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.into()),
@@ -552,9 +558,26 @@ fn git_path(repo: &Path, path: &str) -> HzResult<PathBuf> {
     }
 }
 
-fn temp_index_path(attempt: u32) -> HzResult<PathBuf> {
-    Ok(env::temp_dir().join(format!(
-        "hz-diff-index-{}-{}-{}.tmp",
+fn create_private_temp_file(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+fn temp_index_path(index_path: &Path, attempt: u32) -> HzResult<PathBuf> {
+    let parent = index_path.parent().ok_or_else(|| {
+        HzError::Usage(format!(
+            "git index path has no parent: {}",
+            index_path.display()
+        ))
+    })?;
+    Ok(parent.join(format!(
+        ".hz-diff-index-{}-{}-{}.tmp",
         process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -608,12 +631,31 @@ pub fn parse_patch(patch: &str) -> Vec<DiffFile> {
     let mut files = Vec::new();
     let mut current: Option<DiffFileBuilder> = None;
     let mut current_hunk: Option<DiffHunkBuilder> = None;
+    let mut lines = patch.lines().peekable();
 
-    for line in patch.lines() {
+    while let Some(line) = lines.next() {
         if line.starts_with("diff --git ") {
             finish_hunk(&mut current, &mut current_hunk);
             finish_file(&mut files, &mut current);
             current = Some(DiffFileBuilder::from_diff_git(line));
+            continue;
+        }
+
+        if line.starts_with("--- ")
+            && (current.is_none()
+                || current_hunk
+                    .as_ref()
+                    .is_some_and(DiffHunkBuilder::is_complete))
+            && let Some(new_header) = lines
+                .peek()
+                .copied()
+                .filter(|line| line.starts_with("+++ "))
+        {
+            finish_hunk(&mut current, &mut current_hunk);
+            finish_file(&mut files, &mut current);
+            let new_header = new_header.to_owned();
+            let _ = lines.next();
+            current = Some(DiffFileBuilder::from_unified_headers(line, &new_header));
             continue;
         }
 
@@ -680,6 +722,21 @@ impl DiffFileBuilder {
         }
     }
 
+    fn from_unified_headers(old_header: &str, new_header: &str) -> Self {
+        let mut builder = Self {
+            old_path: None,
+            new_path: None,
+            status: FileStatus::Modified,
+            hunks: Vec::new(),
+            additions: 0,
+            deletions: 0,
+            is_binary: false,
+        };
+        builder.apply_header(old_header);
+        builder.apply_header(new_header);
+        builder
+    }
+
     fn apply_header(&mut self, line: &str) {
         if line.starts_with("new file mode ") {
             self.status = FileStatus::Added;
@@ -704,15 +761,17 @@ impl DiffFileBuilder {
         } else if line.starts_with("Binary files ") || line == "GIT binary patch" {
             self.is_binary = true;
         } else if let Some(path) = line.strip_prefix("--- ") {
-            if path != "/dev/null" {
-                self.old_path = strip_prefix_path(path, "a/");
+            let path = unified_header_path(path);
+            if path.as_ref() != "/dev/null" {
+                self.old_path = strip_prefix_path(path.as_ref(), "a/");
             } else {
                 self.status = FileStatus::Added;
                 self.old_path = None;
             }
         } else if let Some(path) = line.strip_prefix("+++ ") {
-            if path != "/dev/null" {
-                self.new_path = strip_prefix_path(path, "b/");
+            let path = unified_header_path(path);
+            if path.as_ref() != "/dev/null" {
+                self.new_path = strip_prefix_path(path.as_ref(), "b/");
             } else {
                 self.status = FileStatus::Deleted;
                 self.new_path = None;
@@ -737,6 +796,14 @@ fn diff_git_paths(line: &str) -> (Option<String>, Option<String>) {
     let Some(paths) = line.strip_prefix("diff --git ") else {
         return (None, None);
     };
+
+    if paths.starts_with('"')
+        && let Some((old, rest)) = parse_quoted_git_path_token(paths)
+        && let Some((new, trailing)) = parse_quoted_git_path_token(rest.trim_start())
+        && trailing.trim().is_empty()
+    {
+        return (strip_prefix_path(&old, "a/"), strip_prefix_path(&new, "b/"));
+    }
 
     split_diff_git_paths(paths)
         .map(|(old, new)| (strip_prefix_path(old, "a/"), strip_prefix_path(new, "b/")))
@@ -766,6 +833,91 @@ fn split_diff_git_paths(paths: &str) -> Option<(&str, &str)> {
 
 fn strip_prefix_path(path: &str, prefix: &str) -> Option<String> {
     Some(path.strip_prefix(prefix).unwrap_or(path).to_owned())
+}
+
+fn unified_header_path(path: &str) -> Cow<'_, str> {
+    if path.starts_with('"')
+        && let Some((path, _)) = parse_quoted_git_path_token(path)
+    {
+        return Cow::Owned(path);
+    }
+
+    Cow::Borrowed(path.split_once('\t').map_or(path, |(path, _)| path))
+}
+
+fn parse_quoted_git_path_token(input: &str) -> Option<(String, &str)> {
+    let input = input.strip_prefix('"')?;
+    let mut output = Vec::new();
+    let mut index = 0;
+    let bytes = input.as_bytes();
+    while let Some(byte) = bytes.get(index).copied() {
+        match byte {
+            b'"' => {
+                return Some((
+                    String::from_utf8_lossy(&output).into_owned(),
+                    &input[index + 1..],
+                ));
+            }
+            b'\\' => {
+                index += 1;
+                parse_git_path_escape(input, &mut index, &mut output)?;
+            }
+            byte => {
+                output.push(byte);
+                index += 1;
+            }
+        }
+    }
+    None
+}
+
+fn parse_git_path_escape(input: &str, index: &mut usize, output: &mut Vec<u8>) -> Option<()> {
+    let bytes = input.as_bytes();
+    let escaped = *bytes.get(*index)?;
+    match escaped {
+        b'a' => push_escaped_byte(index, output, b'\x07'),
+        b'b' => push_escaped_byte(index, output, b'\x08'),
+        b'f' => push_escaped_byte(index, output, b'\x0c'),
+        b'n' => push_escaped_byte(index, output, b'\n'),
+        b'r' => push_escaped_byte(index, output, b'\r'),
+        b't' => push_escaped_byte(index, output, b'\t'),
+        b'v' => push_escaped_byte(index, output, b'\x0b'),
+        b'\\' => push_escaped_byte(index, output, b'\\'),
+        b'"' => push_escaped_byte(index, output, b'"'),
+        b'0'..=b'7' => push_octal_escape(bytes, index, output),
+        byte if byte.is_ascii() => push_escaped_byte(index, output, byte),
+        _ => {
+            let character = input[*index..].chars().next()?;
+            let mut buffer = [0; 4];
+            output.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+            *index += character.len_utf8();
+        }
+    }
+    Some(())
+}
+
+fn push_escaped_byte(index: &mut usize, output: &mut Vec<u8>, byte: u8) {
+    output.push(byte);
+    *index += 1;
+}
+
+fn push_octal_escape(bytes: &[u8], index: &mut usize, output: &mut Vec<u8>) {
+    let mut value = 0u32;
+    for _ in 0..3 {
+        let Some(byte) = bytes.get(*index).copied() else {
+            break;
+        };
+        if !(b'0'..=b'7').contains(&byte) {
+            break;
+        }
+        value = value * 8 + u32::from(byte - b'0');
+        *index += 1;
+    }
+    if let Ok(byte) = u8::try_from(value) {
+        output.push(byte);
+    } else {
+        output.extend_from_slice("\u{FFFD}".as_bytes());
+    }
 }
 
 #[derive(Debug)]
@@ -840,6 +992,11 @@ impl DiffHunkBuilder {
         }
     }
 
+    fn is_complete(&self) -> bool {
+        self.old_line.saturating_sub(self.old_start) >= self.old_count
+            && self.new_line.saturating_sub(self.new_start) >= self.new_count
+    }
+
     fn push_context(&mut self, text: &str) {
         let old_line = self.old_line;
         let new_line = self.new_line;
@@ -885,7 +1042,7 @@ fn parse_hunk_range(range: &str) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{io::Write, process::Stdio};
+    use std::{env, io::Write, process::Stdio};
 
     #[test]
     fn parse_patch_reads_file_hunks_and_line_numbers() {
@@ -903,6 +1060,61 @@ mod tests {
         assert_eq!(files[0].hunks[0].lines[1].new_line, None);
         assert_eq!(files[0].hunks[0].lines[2].old_line, None);
         assert_eq!(files[0].hunks[0].lines[2].new_line, Some(2));
+    }
+
+    #[test]
+    fn parse_patch_reads_plain_unified_diff_without_git_header() {
+        let patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n";
+
+        let files = parse_patch(patch);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].display_path(), "a.txt");
+        assert_eq!(files[0].additions, 1);
+        assert_eq!(files[0].deletions, 1);
+    }
+
+    #[test]
+    fn plain_unified_file_headers_wait_for_completed_hunks() {
+        let patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n--- old marker\n+++ new marker\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-old\n+new\n";
+
+        let files = parse_patch(patch);
+
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].display_path(), "a.txt");
+        assert_eq!(files[0].hunks[0].lines[0].text, "-- old marker");
+        assert_eq!(files[0].hunks[0].lines[1].text, "++ new marker");
+        assert_eq!(files[1].display_path(), "b.txt");
+    }
+
+    #[test]
+    fn parse_patch_dequotes_git_c_style_paths() {
+        let patch = "diff --git \"a/name\\twith\\\"quote\\\\.txt\" \"b/name\\twith\\\"quote\\\\.txt\"\n--- \"a/name\\twith\\\"quote\\\\.txt\"\n+++ \"b/name\\twith\\\"quote\\\\.txt\"\n@@ -1 +1 @@\n-old\n+new\n";
+
+        let files = parse_patch(patch);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].old_path.as_deref(),
+            Some("name\twith\"quote\\.txt")
+        );
+        assert_eq!(
+            files[0].new_path.as_deref(),
+            Some("name\twith\"quote\\.txt")
+        );
+        assert_eq!(files[0].display_path(), "name\twith\"quote\\.txt");
+    }
+
+    #[test]
+    fn parse_patch_dequotes_git_octal_utf8_paths() {
+        let patch = "diff --git \"a/\\303\\251.txt\" \"b/\\303\\251.txt\"\n--- \"a/\\303\\251.txt\"\n+++ \"b/\\303\\251.txt\"\n@@ -1 +1 @@\n-old\n+new\n";
+
+        let files = parse_patch(patch);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].old_path.as_deref(), Some("é.txt"));
+        assert_eq!(files[0].new_path.as_deref(), Some("é.txt"));
+        assert_eq!(files[0].display_path(), "é.txt");
     }
 
     #[test]
@@ -1080,6 +1292,42 @@ mod tests {
         assert_eq!(target, PathBuf::from("../secret.txt"));
 
         fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn revision_operands_cannot_be_reinterpreted_as_git_diff_options() {
+        let test_dir = temp_test_dir("revision-option-boundary");
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        init_repo(&repo);
+        let output_path = test_dir.join("poc.diff");
+
+        let result = render(DiffOptions {
+            repo: Some(repo),
+            source: DiffSource::Range {
+                left: format!("--output={}", output_path.display()),
+                right: "HEAD".to_owned(),
+            },
+            ..DiffOptions::default()
+        });
+
+        assert!(result.is_err());
+        assert!(!output_path.exists());
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn temp_index_paths_are_adjacent_to_source_index() {
+        let index = PathBuf::from("/repo/.git/worktrees/feature/index");
+        let temp = temp_index_path(&index, 0).expect("temp index path should resolve");
+
+        assert_eq!(temp.parent(), index.parent());
+        assert!(
+            temp.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".hz-diff-index-")
+        );
     }
 
     fn temp_test_dir(name: &str) -> PathBuf {

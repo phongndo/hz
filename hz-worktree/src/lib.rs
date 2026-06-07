@@ -1465,17 +1465,39 @@ fn default_worktree_path(repo: &Path, id: &str) -> HzResult<PathBuf> {
 }
 
 fn registry_path() -> HzResult<PathBuf> {
-    let config_home = match env::var_os("XDG_CONFIG_HOME") {
-        Some(path) => PathBuf::from(path),
-        None => home_dir()?.join(".config"),
+    registry_path_from_env(
+        env_path("HOME"),
+        env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+    )
+}
+
+fn registry_path_from_env(
+    home: Option<PathBuf>,
+    xdg_config_home: Option<PathBuf>,
+) -> HzResult<PathBuf> {
+    let config_home = match non_empty_path(xdg_config_home) {
+        Some(path) => path,
+        None => require_home(non_empty_path(home))?.join(".config"),
     };
     Ok(config_home.join("hz").join("registry.json"))
 }
 
 fn home_dir() -> HzResult<PathBuf> {
-    env::var_os("HOME")
+    require_home(env_path("HOME"))
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .ok_or_else(|| HzError::Usage("HOME is not set".to_owned()))
+}
+
+fn non_empty_path(path: Option<PathBuf>) -> Option<PathBuf> {
+    path.filter(|path| !path.as_os_str().is_empty())
+}
+
+fn require_home(home: Option<PathBuf>) -> HzResult<PathBuf> {
+    home.ok_or_else(|| HzError::Usage("HOME is not set or empty".to_owned()))
 }
 
 fn generate_unique_handle(registry: &Registry, repo: &Path) -> HzResult<String> {
@@ -2167,6 +2189,33 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".registry.json.")
         );
+    }
+
+    #[test]
+    fn registry_path_ignores_empty_xdg_config_home() {
+        assert_eq!(
+            registry_path_from_env(Some(PathBuf::from("/home/user")), Some(PathBuf::new()))
+                .unwrap(),
+            PathBuf::from("/home/user/.config/hz/registry.json")
+        );
+        assert_eq!(
+            registry_path_from_env(
+                Some(PathBuf::from("/home/user")),
+                Some(PathBuf::from("/tmp/config")),
+            )
+            .unwrap(),
+            PathBuf::from("/tmp/config/hz/registry.json")
+        );
+    }
+
+    #[test]
+    fn registry_path_does_not_fall_back_to_empty_home() {
+        assert_eq!(
+            registry_path_from_env(Some(PathBuf::new()), Some(PathBuf::from("/tmp/config")),)
+                .unwrap(),
+            PathBuf::from("/tmp/config/hz/registry.json")
+        );
+        assert!(registry_path_from_env(Some(PathBuf::new()), Some(PathBuf::new())).is_err());
     }
 
     #[test]

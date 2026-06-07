@@ -16,7 +16,7 @@ const CONFIG_FILE: &str = "tree-sitter.json";
 const SETTINGS_FILE: &str = "config.toml";
 const LEGACY_SETTINGS_FILE: &str = "syntax.toml";
 const COLORSCHEME_DIR: &str = "colorscheme";
-const LANGUAGE_PACK_VERSION: &str = "1.9.0-rc.17";
+const LANGUAGE_PACK_VERSION: &str = "1.9.0-rc.18";
 const ARTIFACT_SOURCE: &str = "github:kreuzberg-dev/tree-sitter-language-pack";
 
 pub const DEFAULT_MAX_HIGHLIGHT_SOURCE_BYTES: usize = 1024 * 1024;

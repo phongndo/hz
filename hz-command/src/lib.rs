@@ -225,6 +225,7 @@ fn local_github_pull_request(repo: Option<&Path>, number: u64) -> HzResult<GitHu
     let root = hz_git::repository_root(repo)?;
     let remote_url = hz_git::remote_url(&root, "origin")?;
     let (owner, repo) = github_repo_from_remote_url(&remote_url).ok_or_else(|| {
+        let remote_url = redact_url_userinfo(&remote_url);
         HzError::Usage(format!(
             "origin remote is not a GitHub repository URL: {remote_url}"
         ))
@@ -301,6 +302,21 @@ fn github_repo_from_remote_url(url: &str) -> Option<(String, String)> {
     }
 
     Some((owner.to_owned(), repo.to_owned()))
+}
+
+fn redact_url_userinfo(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_owned();
+    };
+    let authority_start = scheme_end + "://".len();
+    let authority_end = url[authority_start..]
+        .find(['/', '?', '#'])
+        .map_or(url.len(), |offset| authority_start + offset);
+    let Some(at_offset) = url[authority_start..authority_end].rfind('@') else {
+        return url.to_owned();
+    };
+    let at = authority_start + at_offset;
+    format!("{}<redacted>@{}", &url[..authority_start], &url[at + 1..])
 }
 
 fn valid_github_path_segment(segment: &str) -> bool {
@@ -531,7 +547,8 @@ fn run_lifecycle_for_path(
         });
     };
 
-    run_lifecycle_command(repo, path, target, kind, command)?;
+    let mut stderr = io::stderr();
+    run_lifecycle_command(repo, path, target, kind, command, &mut stderr)?;
     Ok(LifecycleRun {
         repo: repo.to_path_buf(),
         path: path.to_path_buf(),
@@ -547,6 +564,7 @@ fn run_lifecycle_command(
     target: &str,
     kind: LifecycleKind,
     argv: &[String],
+    stdout: &mut impl Write,
 ) -> HzResult<()> {
     let (program, args) = argv
         .split_first()
@@ -559,7 +577,7 @@ fn run_lifecycle_command(
     }
 
     let program = lifecycle_program(worktree, program)?;
-    let output = ProcessCommand::new(&program)
+    let mut child = ProcessCommand::new(&program)
         .args(args)
         .current_dir(worktree)
         .env("HZ_REPO", repo)
@@ -568,14 +586,26 @@ fn run_lifecycle_command(
         .env("HZ_LIFECYCLE", kind.label())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .output()?;
-    io::stderr().write_all(&output.stdout)?;
+        .spawn()?;
+    let Some(mut child_stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(HzError::Usage(
+            "failed to open lifecycle command stdout".to_owned(),
+        ));
+    };
+    if let Err(error) = io::copy(&mut child_stdout, stdout) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error.into());
+    }
+    let status = child.wait()?;
 
-    if !output.status.success() {
+    if !status.success() {
         return Err(HzError::Usage(format!(
             "{} command failed with status {}",
             kind.label(),
-            output.status
+            status
         )));
     }
 
@@ -857,18 +887,54 @@ pub fn shell_integration(shell: Shell) -> &'static str {
 }
 
 fn shell_rc_path(shell: Shell) -> HzResult<PathBuf> {
-    let home = home_dir()?;
+    shell_rc_path_from_env(
+        shell,
+        env_path("HOME"),
+        env::var_os("ZDOTDIR").map(PathBuf::from),
+        env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+    )
+}
+
+fn shell_rc_path_from_env(
+    shell: Shell,
+    home: Option<PathBuf>,
+    zdotdir: Option<PathBuf>,
+    xdg_config_home: Option<PathBuf>,
+) -> HzResult<PathBuf> {
+    let home = non_empty_path(home);
+    let zdotdir = non_empty_path(zdotdir);
+    let xdg_config_home = non_empty_path(xdg_config_home);
     match shell {
-        Shell::Zsh => Ok(home.join(".zshrc")),
-        Shell::Bash => Ok(home.join(".bashrc")),
+        Shell::Zsh => {
+            let dotdir = match zdotdir {
+                Some(path) => path,
+                None => require_home(home)?,
+            };
+            Ok(dotdir.join(".zshrc"))
+        }
+        Shell::Bash => Ok(require_home(home)?.join(".bashrc")),
         Shell::Fish => {
-            let config_home = match env::var_os("XDG_CONFIG_HOME") {
-                Some(path) => PathBuf::from(path),
-                None => home.join(".config"),
+            let config_home = match xdg_config_home {
+                Some(path) => path,
+                None => require_home(home)?.join(".config"),
             };
             Ok(config_home.join("fish").join("config.fish"))
         }
     }
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+fn non_empty_path(path: Option<PathBuf>) -> Option<PathBuf> {
+    path.filter(|path| !path.as_os_str().is_empty())
+}
+
+fn require_home(home: Option<PathBuf>) -> HzResult<PathBuf> {
+    home.ok_or_else(|| HzError::Usage("HOME is not set or empty".to_owned()))
 }
 
 fn install_line(path: &Path, line: &'static str) -> HzResult<bool> {
@@ -897,12 +963,6 @@ fn install_line(path: &Path, line: &'static str) -> HzResult<bool> {
 
     fs::write(path, next)?;
     Ok(true)
-}
-
-fn home_dir() -> HzResult<PathBuf> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| HzError::Usage("HOME is not set".to_owned()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1063,6 +1123,29 @@ mod tests {
             "local:setup"
         );
 
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_command_streams_stdout_to_sink() {
+        let test_dir = test_repo("hz-lifecycle-stdout-test");
+        fs::create_dir_all(test_dir.join(".hz").join("environment")).unwrap();
+        let script = test_dir.join(".hz").join("environment").join("setup");
+        fs::write(&script, "#!/usr/bin/env sh\nprintf 'hello stdout'\n").unwrap();
+        make_executable(&script).unwrap();
+        let mut stdout = Vec::new();
+
+        run_lifecycle_command(
+            &test_dir,
+            &test_dir,
+            "local",
+            LifecycleKind::Setup,
+            &[".hz/environment/setup".to_owned()],
+            &mut stdout,
+        )
+        .unwrap();
+
+        assert_eq!(String::from_utf8(stdout).unwrap(), "hello stdout");
         fs::remove_dir_all(test_dir).unwrap();
     }
 
@@ -1276,6 +1359,28 @@ mod tests {
     }
 
     #[test]
+    fn github_remote_error_redacts_url_userinfo() {
+        let repo = test_repo("hz-github-pr-redact-origin-test");
+        git(
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://user:secret-token@example.com/owner/repo.git",
+            ],
+            &repo,
+        );
+
+        let error = github_pull_request_from_target(Some(&repo), "42")
+            .expect_err("non-GitHub origin should fail");
+        let message = error.to_string();
+
+        assert!(message.contains("https://<redacted>@example.com/owner/repo.git"));
+        assert!(!message.contains("secret-token"));
+        fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
     fn github_curl_config_includes_timeouts_and_escapes_values() {
         let config = github_curl_config(
             "https://github.com/owner/repo/pull/1.diff",
@@ -1324,6 +1429,51 @@ mod tests {
     #[test]
     fn zsh_init_line_is_rc_file_friendly() {
         assert_eq!(shell_init_line(Shell::Zsh), r#"eval "$(hz shell zsh)""#);
+    }
+
+    #[test]
+    fn shell_rc_paths_respect_zdotdir_and_ignore_empty_xdg_config_home() {
+        let home = Some(PathBuf::from("/home/user"));
+
+        assert_eq!(
+            shell_rc_path_from_env(
+                Shell::Zsh,
+                home.clone(),
+                Some(PathBuf::from("/tmp/zdotdir")),
+                None,
+            )
+            .unwrap(),
+            PathBuf::from("/tmp/zdotdir/.zshrc")
+        );
+        assert_eq!(
+            shell_rc_path_from_env(Shell::Fish, home, None, Some(PathBuf::new())).unwrap(),
+            PathBuf::from("/home/user/.config/fish/config.fish")
+        );
+    }
+
+    #[test]
+    fn shell_rc_paths_do_not_fall_back_to_empty_home() {
+        assert_eq!(
+            shell_rc_path_from_env(
+                Shell::Zsh,
+                Some(PathBuf::new()),
+                Some(PathBuf::from("/tmp/zdotdir")),
+                None,
+            )
+            .unwrap(),
+            PathBuf::from("/tmp/zdotdir/.zshrc")
+        );
+        assert_eq!(
+            shell_rc_path_from_env(
+                Shell::Fish,
+                Some(PathBuf::new()),
+                None,
+                Some(PathBuf::from("/tmp/config")),
+            )
+            .unwrap(),
+            PathBuf::from("/tmp/config/fish/config.fish")
+        );
+        assert!(shell_rc_path_from_env(Shell::Bash, Some(PathBuf::new()), None, None).is_err());
     }
 
     #[test]

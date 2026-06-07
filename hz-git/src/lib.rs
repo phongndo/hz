@@ -1,5 +1,4 @@
 use std::{
-    env,
     ffi::OsString,
     fs,
     io::{ErrorKind, Write},
@@ -400,12 +399,8 @@ pub fn git_path(repo: &Path, path: &str) -> HzResult<PathBuf> {
 
 fn create_temp_index(index_path: &Path) -> HzResult<PathBuf> {
     for attempt in 0..16 {
-        let temp_path = temp_index_path(attempt)?;
-        let mut temp_file = match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
+        let temp_path = temp_index_path(index_path, attempt)?;
+        let mut temp_file = match create_private_temp_file(&temp_path) {
             Ok(file) => file,
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.into()),
@@ -440,9 +435,26 @@ fn initialize_temp_index(
     Ok(())
 }
 
-fn temp_index_path(attempt: u32) -> HzResult<PathBuf> {
-    Ok(env::temp_dir().join(format!(
-        "hz-git-index-{}-{}-{}.tmp",
+fn create_private_temp_file(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+fn temp_index_path(index_path: &Path, attempt: u32) -> HzResult<PathBuf> {
+    let parent = index_path.parent().ok_or_else(|| {
+        HzError::Usage(format!(
+            "git index path has no parent: {}",
+            index_path.display()
+        ))
+    })?;
+    Ok(parent.join(format!(
+        ".hz-git-index-{}-{}-{}.tmp",
         process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -646,6 +658,20 @@ mod tests {
         assert!(result.is_err());
         assert!(!temp_path.exists());
         fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn temp_index_paths_are_adjacent_to_source_index() {
+        let index = PathBuf::from("/repo/.git/worktrees/feature/index");
+        let temp = temp_index_path(&index, 0).expect("temp index path should resolve");
+
+        assert_eq!(temp.parent(), index.parent());
+        assert!(
+            temp.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".hz-git-index-")
+        );
     }
 
     #[test]
