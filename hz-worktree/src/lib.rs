@@ -522,11 +522,22 @@ impl AppliedBranchHandoff {
     }
 
     fn rollback(mut self) -> HzResult<()> {
+        let mut errors = Vec::new();
+
         while let Some(rollback) = self.rollbacks.pop() {
-            rollback.checkout.restore(&rollback.path)?;
+            if let Err(error) = rollback.checkout.restore(&rollback.path) {
+                errors.push(format!("{}: {error}", rollback.path.display()));
+            }
         }
 
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(HzError::Usage(format!(
+                "failed to restore one or more worktrees: {}",
+                errors.join("; ")
+            )))
+        }
     }
 }
 
@@ -2232,6 +2243,41 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn branch_handoff_rollback_continues_after_restore_failure() {
+        let test_dir = test_dir("hz-worktree-branch-rollback-continue-test");
+        let repo = test_dir.join("repo");
+        init_committed_repo(&repo);
+        git(["branch", "-m", "main"], &repo);
+        let main_checkout = GitCheckout::current(&repo).unwrap();
+        git(["switch", "-q", "-c", "other"], &repo);
+
+        let mut applied = AppliedBranchHandoff::default();
+        applied.push(&repo, main_checkout);
+        applied.push(
+            &test_dir.join("missing-worktree"),
+            GitCheckout {
+                branch: Some("main".to_owned()),
+                head: "HEAD".to_owned(),
+            },
+        );
+
+        let error = applied.rollback().unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to restore one or more worktrees"),
+            "{error}"
+        );
+        assert_eq!(
+            hz_git::current_branch(&repo).unwrap().as_deref(),
+            Some("main")
+        );
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
     }
 
     #[test]
