@@ -18,6 +18,10 @@ pub fn diff(input: DiffOptions) -> HzResult<String> {
     hz_diff::render(input)
 }
 
+pub fn diff_bytes(input: DiffOptions) -> HzResult<Vec<u8>> {
+    hz_diff::render_bytes(input)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GitHubPullRequest {
     pub(crate) owner: String,
@@ -38,7 +42,7 @@ pub fn github_pr_diff_options(
         repo,
         source: DiffSource::Patch(PatchSource::Text {
             label,
-            patch: Arc::from(patch),
+            patch: Arc::from(patch.into_boxed_slice()),
         }),
         scope: DiffScope::All,
         include_untracked: false,
@@ -187,7 +191,9 @@ pub(crate) fn github_pull_request_diff_url(pull_request: &GitHubPullRequest) -> 
     )
 }
 
-pub(crate) fn fetch_github_pull_request_diff(pull_request: &GitHubPullRequest) -> HzResult<String> {
+pub(crate) fn fetch_github_pull_request_diff(
+    pull_request: &GitHubPullRequest,
+) -> HzResult<Vec<u8>> {
     let token = github_token();
     let config = github_curl_config(
         &github_pull_request_diff_url(pull_request),
@@ -220,13 +226,7 @@ pub(crate) fn fetch_github_pull_request_diff(pull_request: &GitHubPullRequest) -
         return Err(github_fetch_error(pull_request, &output, token.is_some()));
     }
 
-    github_diff_from_stdout(output.stdout)
-}
-
-pub(crate) fn github_diff_from_stdout(stdout: Vec<u8>) -> HzResult<String> {
-    String::from_utf8(stdout).map_err(|_| {
-        HzError::Usage("GitHub pull request diff response was not valid UTF-8".to_owned())
-    })
+    Ok(output.stdout)
 }
 
 pub(crate) fn github_curl_config(url: &str, token: Option<&str>) -> String {

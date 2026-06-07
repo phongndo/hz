@@ -2583,7 +2583,7 @@ fn full_file_sources_cover_diff_modes_and_statuses() {
     );
 
     let patch = DiffOptions {
-        source: DiffSource::Patch(hz_diff::PatchSource::Stdin(Arc::from(""))),
+        source: DiffSource::Patch(hz_diff::PatchSource::Stdin(Arc::from(&b""[..]))),
         ..DiffOptions::default()
     };
     assert!(full_file_source(&repo, &patch, &file, DiffSide::New).is_none());
@@ -2751,7 +2751,7 @@ fn changeset_with_context_lines(line_count: usize) -> Changeset {
             deletions: 0,
             is_binary: false,
         }],
-        raw_patch: String::new(),
+        raw_patch: Vec::new(),
     }
 }
 
@@ -2780,7 +2780,7 @@ fn changeset_with_line_text(text: &str) -> Changeset {
             deletions: 0,
             is_binary: false,
         }],
-        raw_patch: String::new(),
+        raw_patch: Vec::new(),
     }
 }
 
@@ -2818,7 +2818,7 @@ fn changeset_with_hunks_at(repo: PathBuf, line_numbers: &[usize]) -> Changeset {
             deletions: 0,
             is_binary: false,
         }],
-        raw_patch: String::new(),
+        raw_patch: Vec::new(),
     }
 }
 
@@ -2853,7 +2853,7 @@ fn changeset_with_files(paths: &[&str]) -> Changeset {
         repo: PathBuf::from("/repo"),
         title: "test".to_owned(),
         files,
-        raw_patch: String::new(),
+        raw_patch: Vec::new(),
     }
 }
 
