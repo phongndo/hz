@@ -1797,6 +1797,7 @@ fn fish_completion_flags(script: &str, context: FishCompletionContext<'_>) -> BT
 fn fish_line_applies(line: &str, context: FishCompletionContext<'_>) -> bool {
     let condition = fish_line_condition(line);
 
+    // Fish entries without a condition are global flags and apply in every context.
     match context {
         FishCompletionContext::Root => condition
             .is_none_or(|condition| condition.starts_with("not __fish_seen_subcommand_from")),
@@ -1820,9 +1821,35 @@ fn fish_line_condition(line: &str) -> Option<&str> {
 
 fn fish_condition_contains(condition: &str, prefix: &str, command: &str) -> bool {
     condition.strip_prefix(prefix).is_some_and(|rest| {
-        rest.split_whitespace()
-            .any(|candidate| candidate == command)
+        rest.starts_with(char::is_whitespace)
+            && rest
+                .split_whitespace()
+                .any(|candidate| candidate == command)
     })
+}
+
+#[test]
+fn fish_condition_contains_requires_helper_word_boundary() {
+    assert!(fish_condition_contains(
+        "__hz_command_is remove rm",
+        "__hz_command_is",
+        "remove"
+    ));
+    assert!(fish_condition_contains(
+        "__hz_command_is\tremove rm",
+        "__hz_command_is",
+        "remove"
+    ));
+    assert!(!fish_condition_contains(
+        "__hz_command_is_extra remove rm",
+        "__hz_command_is",
+        "remove"
+    ));
+    assert!(!fish_condition_contains(
+        "__hz_command_isremove rm",
+        "__hz_command_is",
+        "remove"
+    ));
 }
 
 fn fish_line_flags(line: &str) -> BTreeSet<String> {
