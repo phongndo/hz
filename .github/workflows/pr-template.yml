@@ -63,7 +63,7 @@ jobs:
           require_text "## Motivation"
           require_text "## Changes"
           require_text "## Verification"
-          require_text "## AI Review"
+          require_text "## Review"
           require_text "## Risk"
           require_text "## Reviewer Notes"
 
