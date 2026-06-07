@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use hz_core::{HzError, HzResult};
@@ -938,6 +939,12 @@ fn require_home(home: Option<PathBuf>) -> HzResult<PathBuf> {
 }
 
 fn install_line(path: &Path, line: &'static str) -> HzResult<bool> {
+    let write_path = shell_rc_write_path(path)?;
+    let existing_metadata = match fs::metadata(&write_path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
     let existing = if path.exists() {
         fs::read_to_string(path)?
     } else {
@@ -948,8 +955,20 @@ fn install_line(path: &Path, line: &'static str) -> HzResult<bool> {
         return Ok(false);
     }
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    if let Some(metadata) = existing_metadata.as_ref() {
+        if metadata.permissions().readonly() {
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                format!("shell rc file is read-only: {}", write_path.display()),
+            )
+            .into());
+        }
+    }
+
+    create_parent_dir(path)?;
+
+    if let Some(metadata) = existing_metadata.as_ref() {
+        write_install_backup(path, &existing, metadata)?;
     }
 
     let mut next = existing;
@@ -961,8 +980,170 @@ fn install_line(path: &Path, line: &'static str) -> HzResult<bool> {
     next.push_str(line);
     next.push('\n');
 
-    fs::write(path, next)?;
+    atomic_write_shell_rc(&write_path, &next, existing_metadata.as_ref())?;
     Ok(true)
+}
+
+fn shell_rc_write_path(path: &Path) -> HzResult<PathBuf> {
+    match fs::symlink_metadata(path) {
+        // Preserve the user's dotfile symlink and atomically replace the target
+        // that fs::write(path, ...) would have followed.
+        Ok(metadata) if metadata.file_type().is_symlink() => Ok(fs::canonicalize(path)?),
+        Ok(_) => Ok(path.to_path_buf()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_install_backup(path: &Path, contents: &str, metadata: &fs::Metadata) -> HzResult<()> {
+    let backup_path = shell_rc_backup_path(path)?;
+    create_parent_dir(&backup_path)?;
+    let mut file = match new_shell_rc_file_options()
+        .write(true)
+        .create_new(true)
+        .open(&backup_path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+
+    let result = (|| -> HzResult<()> {
+        file.set_permissions(metadata.permissions())?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        drop(file);
+        let _ = fs::remove_file(&backup_path);
+        return Err(error);
+    }
+
+    drop(file);
+    sync_parent_dir(&backup_path)?;
+    Ok(())
+}
+
+fn atomic_write_shell_rc(
+    path: &Path,
+    contents: &str,
+    metadata: Option<&fs::Metadata>,
+) -> HzResult<()> {
+    let mut temp_path = None;
+    let result = (|| -> HzResult<()> {
+        let (created_temp_path, mut file) = create_shell_rc_temp_file(path)?;
+        temp_path = Some(created_temp_path.clone());
+
+        if let Some(metadata) = metadata {
+            file.set_permissions(metadata.permissions())?;
+        }
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+
+        fs::rename(&created_temp_path, path)?;
+        temp_path = None;
+        sync_parent_dir(path)?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        if let Some(temp_path) = temp_path {
+            let _ = fs::remove_file(temp_path);
+        }
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+fn create_shell_rc_temp_file(path: &Path) -> HzResult<(PathBuf, fs::File)> {
+    for attempt in 0..16 {
+        let temp_path = shell_rc_temp_path(path, attempt)?;
+        match new_shell_rc_file_options()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Err(HzError::Usage(format!(
+        "failed to create a unique temporary shell rc file for {}",
+        path.display()
+    )))
+}
+
+fn new_shell_rc_file_options() -> fs::OpenOptions {
+    let mut options = fs::OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+}
+
+fn shell_rc_temp_path(path: &Path, attempt: u32) -> HzResult<PathBuf> {
+    let file_name = path.file_name().ok_or_else(|| {
+        HzError::Usage(format!(
+            "shell rc path has no file name: {}",
+            path.display()
+        ))
+    })?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| HzError::Usage(format!("system clock is before unix epoch: {error}")))?
+        .as_nanos();
+
+    Ok(path.with_file_name(format!(
+        ".{}.{}.{}.{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id(),
+        timestamp,
+        attempt
+    )))
+}
+
+fn shell_rc_backup_path(path: &Path) -> HzResult<PathBuf> {
+    let file_name = path.file_name().ok_or_else(|| {
+        HzError::Usage(format!(
+            "shell rc path has no file name: {}",
+            path.display()
+        ))
+    })?;
+    Ok(path.with_file_name(format!("{}.bak", file_name.to_string_lossy())))
+}
+
+fn create_parent_dir(path: &Path) -> HzResult<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> HzResult<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let directory = fs::File::open(parent)?;
+    directory.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) -> HzResult<()> {
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1636,6 +1817,90 @@ mod tests {
     }
 
     #[test]
+    fn creates_backup_before_first_rc_file_install() {
+        let test_dir = shell_install_test_dir("hz-init-backup-test");
+        let rc_file = test_dir.join(".zshrc");
+        let original = "export PATH=\"$HOME/bin:$PATH\"\n";
+        fs::write(&rc_file, original).unwrap();
+
+        assert!(install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
+
+        let contents = fs::read_to_string(&rc_file).unwrap();
+        assert_eq!(
+            contents,
+            format!(
+                "{}{}\n{}\n",
+                original,
+                shell_init_comment(),
+                shell_init_line(Shell::Zsh)
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(shell_rc_backup_path(&rc_file).unwrap()).unwrap(),
+            original
+        );
+        assert!(!fs::read_dir(&test_dir).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn does_not_overwrite_existing_rc_file_backup() {
+        let test_dir = shell_install_test_dir("hz-init-existing-backup-test");
+        let rc_file = test_dir.join(".zshrc");
+        let backup_file = shell_rc_backup_path(&rc_file).unwrap();
+        fs::write(&rc_file, "alias ll='ls -l'\n").unwrap();
+        fs::write(&backup_file, "user backup\n").unwrap();
+
+        assert!(install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
+
+        assert_eq!(fs::read_to_string(&backup_file).unwrap(), "user backup\n");
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installs_line_without_replacing_symlinked_rc_file() {
+        let test_dir = shell_install_test_dir("hz-init-symlink-test");
+        let target_dir = test_dir.join("dotfiles");
+        fs::create_dir_all(&target_dir).unwrap();
+        let rc_file = test_dir.join(".zshrc");
+        let target_file = target_dir.join("zshrc");
+        fs::write(&target_file, "# managed dotfile\n").unwrap();
+        std::os::unix::fs::symlink(&target_file, &rc_file).unwrap();
+
+        assert!(install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
+
+        assert!(
+            fs::symlink_metadata(&rc_file)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_to_string(&target_file).unwrap(),
+            format!(
+                "# managed dotfile\n{}\n{}\n",
+                shell_init_comment(),
+                shell_init_line(Shell::Zsh)
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(shell_rc_backup_path(&rc_file).unwrap()).unwrap(),
+            "# managed dotfile\n"
+        );
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
     fn does_not_duplicate_existing_bare_line() {
         let test_dir = env::temp_dir().join(format!(
             "hz-init-test-{}",
@@ -1655,6 +1920,18 @@ mod tests {
         assert_eq!(contents.matches(shell_init_comment()).count(), 0);
 
         fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    fn shell_install_test_dir(prefix: &str) -> PathBuf {
+        let test_dir = env::temp_dir().join(format!(
+            "{prefix}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&test_dir).unwrap();
+        test_dir
     }
 
     fn test_repo(prefix: &str) -> PathBuf {
