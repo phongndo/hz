@@ -40,6 +40,8 @@ See [docs/roadmap.md](docs/roadmap.md) for the product direction.
 ```sh
 # one-time repo setup
 hz init
+git add .hz
+git commit -m "Add hz lifecycle config"
 hz install zsh      # or bash/fish; restart or source your shell rc file
 
 # create an isolated workspace for a task/agent and cd into it
@@ -58,6 +60,11 @@ hz rm -f fix-login    # force is needed if the source worktree still has handed-
 
 Without shell integration, use `hz path <target>` to print a worktree path and
 `cd "$(hz path <target>)"` from your shell.
+
+`hz init` writes repo-local lifecycle files under `.hz/`. Commit them before
+starting the task flow above so the destination worktree is clean when
+`hz handoff` applies changes back to it. For a throwaway first demo where you do
+not need lifecycle hooks, skip `hz init`.
 
 ## Installation
 
