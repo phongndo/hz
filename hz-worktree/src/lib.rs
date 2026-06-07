@@ -1612,8 +1612,11 @@ fn unix_now() -> HzResult<u64> {
 
 fn new_uuid_v4() -> HzResult<String> {
     let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes)
-        .map_err(|error| HzError::Usage(format!("failed to read random bytes: {error}")))?;
+    getrandom::fill(&mut bytes).map_err(|error| {
+        HzError::Io(std::io::Error::other(format!(
+            "failed to read random bytes: {error}"
+        )))
+    })?;
 
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
