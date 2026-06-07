@@ -1,51 +1,8 @@
-#![allow(unused_imports)]
+use std::{collections::HashMap, sync::Arc};
 
-use crate::*;
-use std::{
-    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
-    env,
-    ffi::OsStr,
-    fs,
-    hash::{Hash, Hasher},
-    io,
-    panic::{self, AssertUnwindSafe},
-    path::{Component, Path, PathBuf},
-    process::Command,
-    sync::{
-        Arc, Condvar, Mutex,
-        mpsc::{self, Receiver, RecvTimeoutError, Sender},
-    },
-    thread,
-    time::{Duration, Instant},
-};
+use hz_diff::{Changeset, DiffLine, DiffLineKind};
 
-use crossterm::{
-    cursor::Show,
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseButton, MouseEvent, MouseEventKind,
-    },
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-use hz_core::{HzError, HzResult};
-use hz_diff::{
-    Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, DiffStats, FileStatus,
-};
-use hz_syntax::{
-    ColorOverrides, DiffBackground, DiffGutterBackground, DiffSettings, DiffSignStyle,
-    HighlightedLine, SyntaxClass, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits,
-    SyntaxSettings, SyntaxThemeConfig, SyntaxThemeSource,
-};
-use notify::{RecursiveMode, Watcher};
-use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
-    layout::Rect,
-    prelude::{Color, Line, Modifier, Span, Style, Text},
-    widgets::{Block, BorderType, Clear, Padding, Paragraph},
-};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use crate::{controls::DiffLayoutMode, syntax::DiffSide};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UiRow {
