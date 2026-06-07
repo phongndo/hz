@@ -1,18 +1,10 @@
-#![allow(unused_imports)]
+use std::path::PathBuf;
 
-use crate::*;
-use std::{
-    collections::HashMap,
-    env, fs,
-    io::{self, ErrorKind, Read, Write},
-    path::{Path, PathBuf},
-    process::{Command as ProcessCommand, Stdio},
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+use crate::{
+    SyntaxAddResult, SyntaxAvailableFilter, SyntaxCleanResult, SyntaxDoctorReport,
+    SyntaxLanguageStatus, SyntaxRemoveResult, SyntaxUpdateResult,
 };
-
-use hz_core::{HzError, HzResult};
-use serde::{Deserialize, Serialize};
+use hz_core::HzResult;
 
 pub fn syntax_add(languages: &[String]) -> HzResult<SyntaxAddResult> {
     hz_syntax::add_languages(languages)

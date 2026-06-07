@@ -1,16 +1,8 @@
-#![allow(unused_imports)]
-
-use crate::*;
-use std::{
-    collections::HashSet,
-    env, fs,
-    io::{self, Write},
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+use crate::{
+    Registry, RemoveWorktree, WorktreeEntry, WorktreeSource, matches_target, resolve_repo,
+    run_with_registry_lock_for_git_side_effect, same_path,
 };
-
-use hz_core::{HzError, HzResult, paths::WorktreeTarget};
-use serde::{Deserialize, Serialize};
+use hz_core::{HzError, HzResult};
 
 pub fn remove(input: RemoveWorktree) -> HzResult<WorktreeEntry> {
     let mut registry = Registry::load_for_update()?;

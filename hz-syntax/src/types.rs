@@ -1,9 +1,13 @@
-use crate::*;
 use std::{
     collections::{BTreeSet, HashMap},
     path::PathBuf,
 };
 
+use crate::{
+    cache_dir, detect_language_name, enabled_language_set_for_mode, has_highlights,
+    highlighted_text_from_events, highlights_query, installed_language_set, is_language_trusted,
+    language_vec_to_set, load_config, load_settings, normalize_language_name, trusted_language_set,
+};
 use hz_core::{HzError, HzResult};
 use serde::{Deserialize, Serialize};
 use tree_sitter_highlight::{HighlightConfiguration, Highlighter};

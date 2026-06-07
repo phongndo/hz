@@ -1,16 +1,13 @@
-#![allow(unused_imports)]
+use std::fs;
 
-use crate::*;
-use std::{
-    collections::HashSet,
-    env, fs,
-    io::{self, Write},
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+use crate::{
+    CreateWorktree, CreatedWorktree, DEFAULT_MAX_DETACHED_WORKTREES, PathWorktree, Registry,
+    WorktreeEntry, WorktreeSource, WorktreeStatus, default_worktree_path, detached_prune_warning,
+    detached_worktree_prune_candidates, generate_unique_handle, new_uuid_v4,
+    prune_detached_worktrees, resolve_repo, resolve_target, resolve_worktree_path, unix_now,
+    validate_worktree_name,
 };
-
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
-use serde::{Deserialize, Serialize};
 
 pub fn create(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     let mut registry = Registry::load_for_update()?;

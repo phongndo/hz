@@ -1,6 +1,9 @@
-use crate::*;
 use std::{fs, path::PathBuf};
 
+use crate::{
+    COLORSCHEME_DIR, CONFIG_DIR, CONFIG_FILE, LEGACY_SETTINGS_FILE, SETTINGS_FILE, SyntaxSettings,
+    config_home, parse_settings,
+};
 use hz_core::{HzError, HzResult};
 
 pub fn config_path() -> HzResult<PathBuf> {

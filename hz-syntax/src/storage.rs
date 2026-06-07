@@ -1,17 +1,20 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::{
+    ARTIFACT_SOURCE, ASM_HIGHLIGHTS_QUERY, BASENAME_LANGUAGES, CORE_LANGUAGES,
+    DiffContextExpansion, DiffSettings, LANGUAGE_ALIASES, LANGUAGE_PACK_VERSION,
+    StoredDiffContextExpansion, StoredDiffContextExpansionMode, StoredDiffSettings,
+    StoredParserArtifact, StoredSyntaxConfig, StoredSyntaxLimits, StoredSyntaxSettings,
+    StoredSyntaxThemeConfig, StoredSyntaxThemeTable, SyntaxLimits, SyntaxMode, SyntaxSettings,
+    SyntaxThemeConfig, SyntaxThemeSource, cache_dir, config_path, load_settings,
+};
 use hz_core::{HzError, HzResult};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 use tree_sitter_language_pack::LanguageRegistry;
 
 pub(crate) fn config_home() -> HzResult<PathBuf> {
