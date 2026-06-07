@@ -1,7 +1,8 @@
-use std::{collections::HashMap, hash::Hash, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-use crate::{DiffLayoutMode, DiffSide};
 use hz_diff::{Changeset, DiffLine, DiffLineKind};
+
+use crate::{controls::DiffLayoutMode, syntax::DiffSide};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UiRow {

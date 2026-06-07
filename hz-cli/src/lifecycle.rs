@@ -1,7 +1,8 @@
 use std::io::{self, IsTerminal};
 
-use crate::{LifecycleArgs, render_lifecycle_run};
 use hz_core::HzResult;
+
+use crate::{args::LifecycleArgs, worktree_output::render_lifecycle_run};
 
 pub(crate) fn run_lifecycle(args: LifecycleArgs, kind: hz_command::LifecycleKind) -> HzResult<()> {
     let run = hz_command::run_lifecycle(hz_command::RunLifecycle {

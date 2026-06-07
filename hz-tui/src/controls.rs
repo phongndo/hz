@@ -1,8 +1,12 @@
 use std::{collections::HashSet, env, io, path::Path, process::Command};
 
-use crate::{MIN_SPLIT_WIDTH, UiModel, UiRow};
 use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffSource, DiffStats};
 use ratatui::{Terminal, backend::CrosstermBackend};
+
+use crate::{
+    model::{UiModel, UiRow},
+    theme::MIN_SPLIT_WIDTH,
+};
 
 pub(crate) type CrosstermTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 

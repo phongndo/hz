@@ -7,8 +7,9 @@ use std::{
     process::{Command as ProcessCommand, Stdio},
 };
 
-use crate::{INSTALL_SCRIPT, RELEASE_REPO, UpdateArgs};
 use hz_core::HzResult;
+
+use crate::args::{INSTALL_SCRIPT, RELEASE_REPO, UpdateArgs};
 
 pub(crate) fn update(args: UpdateArgs) -> HzResult<()> {
     let argv0 = env::args_os().next().ok_or_else(|| {

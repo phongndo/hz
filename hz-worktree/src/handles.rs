@@ -94,7 +94,7 @@ pub(crate) fn generate_handle_from_seed(seed: u128, attempt: u128) -> String {
 
 pub(crate) fn handle_seed() -> u128 {
     let mut bytes = [0_u8; 16];
-    if getrandom::fill(&mut bytes).is_ok() {
+    if getrandom::getrandom(&mut bytes).is_ok() {
         return u128::from_le_bytes(bytes);
     }
 
@@ -125,7 +125,7 @@ pub(crate) fn unix_now() -> HzResult<u64> {
 
 pub(crate) fn new_uuid_v4() -> HzResult<String> {
     let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes).map_err(|error| {
+    getrandom::getrandom(&mut bytes).map_err(|error| {
         HzError::Io(std::io::Error::other(format!(
             "failed to read random bytes: {error}"
         )))

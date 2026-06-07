@@ -5,9 +5,11 @@ use std::{
 };
 
 use crate::{
-    DiffArgs, ListGlyphs, StyleColor, TreeSitterAvailableArgs, TreeSitterCommand,
-    ascii_output_requested, display_width, list_glyphs, list_row_width, styled_cell,
-    styled_centered_cell, terminal_width, truncate_middle,
+    args::{DiffArgs, TreeSitterAvailableArgs, TreeSitterCommand},
+    worktree_output::{
+        ListGlyphs, StyleColor, ascii_output_requested, display_width, list_glyphs, list_row_width,
+        styled_cell, styled_centered_cell, terminal_width, truncate_middle,
+    },
 };
 use hz_core::HzResult;
 
@@ -173,10 +175,10 @@ pub(crate) fn pr_diff_options(args: DiffArgs, target: &str) -> HzResult<hz_comma
 
 pub(crate) fn patch_source(path: PathBuf) -> HzResult<hz_command::DiffSource> {
     if path == Path::new("-") {
-        let mut patch = String::new();
-        io::stdin().read_to_string(&mut patch)?;
+        let mut patch = Vec::new();
+        io::stdin().read_to_end(&mut patch)?;
         return Ok(hz_command::DiffSource::Patch(
-            hz_command::PatchSource::Stdin(Arc::from(patch)),
+            hz_command::PatchSource::Stdin(Arc::from(patch.into_boxed_slice())),
         ));
     }
 

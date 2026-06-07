@@ -5,10 +5,14 @@ use std::{
     process::Command as ProcessCommand,
 };
 
-use crate::{ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs, worktree_branch_or_handle};
 use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::{
+    args::{ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs},
+    removal::worktree_branch_or_handle,
+};
 
 pub(crate) fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
     let debug = args.debug;

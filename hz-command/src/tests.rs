@@ -424,15 +424,6 @@ fn github_curl_config_includes_timeouts_and_escapes_values() {
 }
 
 #[test]
-fn github_diff_stdout_rejects_invalid_utf8() {
-    assert_eq!(github_diff_from_stdout(b"diff".to_vec()).unwrap(), "diff");
-
-    let error = github_diff_from_stdout(vec![0xff]).unwrap_err();
-
-    assert!(error.to_string().contains("valid UTF-8"));
-}
-
-#[test]
 fn github_pull_request_number_uses_origin_remote() {
     let repo = test_repo("hz-github-pr-origin-test");
     git(

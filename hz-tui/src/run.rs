@@ -3,11 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{
-    DiffApp, DiffBenchmarkOptions, DiffBenchmarkReport, DiffLayoutMode, SyntaxRuntime,
-    SyntaxStartupMode, default_layout_for_width, max_scroll_for_viewport, render_row, run_loop,
-    sync_live_diff,
-};
 use crossterm::{
     cursor::Show,
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -17,6 +12,14 @@ use crossterm::{
 use hz_core::HzResult;
 use hz_diff::{Changeset, DiffOptions};
 use ratatui::{Terminal, backend::CrosstermBackend};
+
+use crate::{
+    app::{DiffApp, SyntaxStartupMode, max_scroll_for_viewport, run_loop, sync_live_diff},
+    controls::{DiffLayoutMode, default_layout_for_width},
+    render::diff::render_row,
+    syntax::SyntaxRuntime,
+    theme::{DiffBenchmarkOptions, DiffBenchmarkReport},
+};
 
 pub fn run() -> HzResult<()> {
     run_diff(DiffOptions::default())

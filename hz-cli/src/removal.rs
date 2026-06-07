@@ -3,11 +3,14 @@ use std::{
     io::{self, IsTerminal, Write},
 };
 
-use crate::{
-    HandoffWorktreeArgs, RemoveWorktreeArgs, StyleColor, print_warnings, render_handoff,
-    render_removed_worktree, styled,
-};
 use hz_core::HzResult;
+
+use crate::{
+    args::{HandoffWorktreeArgs, RemoveWorktreeArgs},
+    worktree_output::{
+        StyleColor, print_warnings, render_handoff, render_removed_worktree, styled,
+    },
+};
 
 pub(crate) fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
     let debug = args.debug;

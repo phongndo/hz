@@ -5,10 +5,11 @@ use std::{
     thread,
 };
 
-use crate::LIVE_RELOAD_DEBOUNCE;
 use hz_core::{HzError, HzResult};
 use hz_diff::{Changeset, DiffOptions, DiffSource};
 use notify::{RecursiveMode, Watcher};
+
+use crate::theme::LIVE_RELOAD_DEBOUNCE;
 
 pub(crate) struct LiveDiff {
     pub(crate) options: DiffOptions,

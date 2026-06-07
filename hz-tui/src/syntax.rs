@@ -12,13 +12,14 @@ use std::{
     thread,
 };
 
-use crate::{
-    MAX_INLINE_DIFF_LINE_BYTES, MAX_INLINE_DIFF_TOKENS, SYNTAX_THEME_ID, SyntaxBenchmarkReport,
-};
 use hz_core::HzResult;
 use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource};
 use hz_syntax::{
     HighlightedLine, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits, SyntaxSettings,
+};
+
+use crate::theme::{
+    MAX_INLINE_DIFF_LINE_BYTES, MAX_INLINE_DIFF_TOKENS, SYNTAX_THEME_ID, SyntaxBenchmarkReport,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

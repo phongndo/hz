@@ -1,7 +1,11 @@
 use std::io::{self, IsTerminal};
 
-use crate::{InitArgs, ShellArg, ShellArgs, render_repo_init, render_shell_init};
 use hz_core::HzResult;
+
+use crate::{
+    args::{InitArgs, ShellArg, ShellArgs},
+    worktree_output::{render_repo_init, render_shell_init},
+};
 
 pub(crate) fn init_repo_or_shell(args: InitArgs) -> HzResult<()> {
     if let Some(shell) = args.shell {
