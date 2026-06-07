@@ -198,7 +198,15 @@ _hz_complete_option_value() {
         return 0
       fi
       ;;
-    -B|--base)
+    -B)
+      case "$cmd" in
+        new)
+          _hz_git_refs
+          return 0
+          ;;
+      esac
+      ;;
+    -b)
       case "$cmd" in
         new|diff)
           _hz_git_refs
@@ -206,9 +214,17 @@ _hz_complete_option_value() {
           ;;
       esac
       ;;
-    -b|--branch)
+    --base)
       case "$cmd" in
         new|diff)
+          _hz_git_refs
+          return 0
+          ;;
+      esac
+      ;;
+    --branch)
+      case "$cmd" in
+        new)
           _hz_git_refs
           return 0
           ;;
@@ -280,7 +296,7 @@ _hz_complete_command_options() {
       compadd -- -h --help
       ;;
     update)
-      compadd -- --target-version --install-dir -h --help
+      compadd -- --target-version --install-dir --force-self-update -h --help
       ;;
     diff)
       compadd -- -r --repo -b --base --pr --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help

@@ -7,6 +7,7 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+getrandom.workspace = true
 hz-core.workspace = true
 hz-git.workspace = true
 serde.workspace = true

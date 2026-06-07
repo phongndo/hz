@@ -159,7 +159,15 @@ _hz_complete_option_value() {
         return 0
       fi
       ;;
-    -B|--base)
+    -B)
+      case "$cmd" in
+        new)
+          _hz_git_ref_reply "$current"
+          return 0
+          ;;
+      esac
+      ;;
+    -b)
       case "$cmd" in
         new|diff)
           _hz_git_ref_reply "$current"
@@ -167,9 +175,17 @@ _hz_complete_option_value() {
           ;;
       esac
       ;;
-    -b|--branch)
+    --base)
       case "$cmd" in
         new|diff)
+          _hz_git_ref_reply "$current"
+          return 0
+          ;;
+      esac
+      ;;
+    --branch)
+      case "$cmd" in
+        new)
           _hz_git_ref_reply "$current"
           return 0
           ;;
@@ -257,7 +273,7 @@ _hz_complete_command_args() {
       fi
       ;;
     update)
-      [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir --force-self-update -h --help" "$current"
       ;;
     diff)
       if [[ "$current" == -* ]]; then

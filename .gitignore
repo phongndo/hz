@@ -1,2 +1,7 @@
 /target/
 /.hz/
+/dist/
+/homebrew-tap/
+/result
+/result-*
+*.profraw

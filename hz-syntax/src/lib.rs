@@ -1728,6 +1728,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn language_pack_version_matches_workspace_dependency() {
+        let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hz-syntax manifest should be in a workspace member")
+            .join("Cargo.toml");
+        let manifest = fs::read_to_string(workspace_manifest).unwrap();
+        let manifest: toml::Value = toml::from_str(&manifest).unwrap();
+        let dependency = &manifest["workspace"]["dependencies"]["tree-sitter-language-pack"];
+        let version = dependency
+            .as_str()
+            .or_else(|| dependency.get("version").and_then(toml::Value::as_str))
+            .expect("workspace tree-sitter-language-pack version should be declared");
+
+        assert_eq!(LANGUAGE_PACK_VERSION, version);
+    }
+
+    #[test]
     fn maps_extensions_to_language_names() {
         assert_eq!(normalize_language_name("rs".to_owned()), "rust");
         assert_eq!(normalize_language_name(".mlir".to_owned()), "mlir");

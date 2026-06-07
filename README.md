@@ -100,6 +100,12 @@ hz update
 hz update --target-version 0.1.9
 ```
 
+`hz update` refuses to infer common package-manager-managed locations (for
+example Homebrew, mise, Cargo, or Nix paths). Update those installs with their
+package manager instead, pass `--install-dir` for an installer-managed target, or
+use `--force-self-update` if you intentionally want to overwrite the detected
+binary.
+
 With mise, use the GitHub backend until `hz` has a mise registry shorthand:
 
 ```sh

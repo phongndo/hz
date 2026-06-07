@@ -100,7 +100,8 @@ enum Command {
 examples:
   hz update
   hz update --target-version 0.1.5
-  hz update --install-dir ~/.local/bin"
+  hz update --install-dir ~/.local/bin
+  hz update --force-self-update"
     )]
     Update(UpdateArgs),
     #[command(
@@ -288,6 +289,9 @@ struct UpdateArgs {
     /// Directory to update. Defaults to the directory containing the invoked hz.
     #[arg(long, value_name = "DIR")]
     install_dir: Option<PathBuf>,
+    /// Allow hz update to overwrite a package-manager-managed binary.
+    #[arg(long)]
+    force_self_update: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -2131,10 +2135,23 @@ fn update(args: UpdateArgs) -> HzResult<()> {
         hz_core::HzError::Usage("could not determine current executable".to_owned())
     })?;
     let binary = update_binary_name(&argv0)?;
+    let explicit_install_dir = args.install_dir.is_some();
+    let force_self_update = args.force_self_update;
     let install_dir = match args.install_dir {
         Some(path) => absolute_path(path)?,
         None => default_update_install_dir(&argv0)?,
     };
+    if let Some(manager) = check_update_install_dir(
+        &install_dir,
+        &binary,
+        explicit_install_dir,
+        force_self_update,
+    )? {
+        eprintln!(
+            "{}",
+            managed_update_warning(manager, &install_dir, binary.as_os_str())
+        );
+    }
     let version = args.version.unwrap_or_else(|| "latest".to_owned());
     let repo = update_repo(env::var_os("HZ_REPO"));
 
@@ -2181,6 +2198,135 @@ fn update_binary_name(argv0: &OsStr) -> HzResult<OsString> {
         .ok_or_else(|| {
             hz_core::HzError::Usage("could not determine current executable name".to_owned())
         })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedUpdateInstall {
+    Homebrew,
+    Mise,
+    Cargo,
+    Nix,
+    Asdf,
+}
+
+impl ManagedUpdateInstall {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Homebrew => "Homebrew",
+            Self::Mise => "mise",
+            Self::Cargo => "Cargo",
+            Self::Nix => "Nix",
+            Self::Asdf => "asdf",
+        }
+    }
+
+    fn update_hint(self) -> &'static str {
+        match self {
+            Self::Homebrew => "update it with Homebrew",
+            Self::Mise => "update it with mise",
+            Self::Cargo => "reinstall it with Cargo",
+            Self::Nix => "update it with Nix",
+            Self::Asdf => "update it with asdf",
+        }
+    }
+}
+
+fn check_update_install_dir(
+    install_dir: &Path,
+    binary: &OsStr,
+    explicit_install_dir: bool,
+    force_self_update: bool,
+) -> HzResult<Option<ManagedUpdateInstall>> {
+    let Some(manager) = managed_update_install(install_dir, binary) else {
+        return Ok(None);
+    };
+
+    if explicit_install_dir || force_self_update {
+        return Ok(Some(manager));
+    }
+
+    Err(hz_core::HzError::Usage(format!(
+        "refusing to update {} because it looks {}-managed; {}; pass --install-dir DIR to update an installer-managed binary explicitly, or --force-self-update to overwrite the detected target",
+        install_dir.join(binary).display(),
+        manager.name(),
+        manager.update_hint()
+    )))
+}
+
+fn managed_update_warning(
+    manager: ManagedUpdateInstall,
+    install_dir: &Path,
+    binary: &OsStr,
+) -> String {
+    format!(
+        "hz: warning: updating {} even though it looks {}-managed",
+        install_dir.join(binary).display(),
+        manager.name()
+    )
+}
+
+fn managed_update_install(install_dir: &Path, binary: &OsStr) -> Option<ManagedUpdateInstall> {
+    let target = install_dir.join(binary);
+
+    classify_managed_update_path(&target)
+        .or_else(|| {
+            fs::read_link(&target).ok().and_then(|link| {
+                let path = if link.is_absolute() {
+                    link
+                } else {
+                    install_dir.join(link)
+                };
+                classify_managed_update_path(&path)
+            })
+        })
+        .or_else(|| {
+            fs::canonicalize(&target)
+                .ok()
+                .and_then(|path| classify_managed_update_path(&path))
+        })
+        .or_else(|| classify_managed_update_path(install_dir))
+}
+
+fn classify_managed_update_path(path: &Path) -> Option<ManagedUpdateInstall> {
+    let path = path.to_string_lossy().replace('\\', "/");
+
+    if path.starts_with("/opt/homebrew/")
+        || path.starts_with("/home/linuxbrew/.linuxbrew/")
+        || path.contains("/.linuxbrew/")
+        || path.contains("/Cellar/")
+    {
+        return Some(ManagedUpdateInstall::Homebrew);
+    }
+
+    if path_has_dir(&path, "/.cargo/bin") {
+        return Some(ManagedUpdateInstall::Cargo);
+    }
+
+    if path_has_dir(&path, "/.local/share/mise/shims")
+        || path_has_dir(&path, "/.local/share/mise/installs")
+        || path_has_dir(&path, "/.mise/shims")
+        || path_has_dir(&path, "/.mise/installs")
+    {
+        return Some(ManagedUpdateInstall::Mise);
+    }
+
+    if path.starts_with("/nix/store/")
+        || path_has_dir(&path, "/.nix-profile/bin")
+        || path_has_dir(&path, "/.local/state/nix/profile/bin")
+        || path.starts_with("/run/current-system/sw/bin")
+    {
+        return Some(ManagedUpdateInstall::Nix);
+    }
+
+    if path_has_dir(&path, "/.asdf/shims") || path_has_dir(&path, "/.asdf/installs") {
+        return Some(ManagedUpdateInstall::Asdf);
+    }
+
+    None
+}
+
+fn path_has_dir(path: &str, dir: &str) -> bool {
+    path.ends_with(dir) || path.contains(&format!("{dir}/"))
 }
 
 fn default_update_install_dir(argv0: &OsStr) -> HzResult<PathBuf> {
@@ -3424,12 +3570,14 @@ mod tests {
             "0.1.1",
             "--install-dir",
             "/tmp/hz-bin",
+            "--force-self-update",
         ])
         .unwrap();
         match cli.command {
             Some(Command::Update(args)) => {
                 assert_eq!(args.version.as_deref(), Some("0.1.1"));
                 assert_eq!(args.install_dir, Some(PathBuf::from("/tmp/hz-bin")));
+                assert!(args.force_self_update);
             }
             command => panic!("expected update command, got {command:?}"),
         }
@@ -3455,6 +3603,79 @@ mod tests {
         assert_eq!(
             absolute_path(PathBuf::from("bin")).unwrap(),
             cwd.join("bin")
+        );
+    }
+
+    #[test]
+    fn update_detects_package_manager_install_dirs() {
+        assert_eq!(
+            managed_update_install(Path::new("/opt/homebrew/bin"), OsStr::new("hz")),
+            Some(ManagedUpdateInstall::Homebrew)
+        );
+        assert_eq!(
+            managed_update_install(Path::new("/Users/me/.cargo/bin"), OsStr::new("hz")),
+            Some(ManagedUpdateInstall::Cargo)
+        );
+        assert_eq!(
+            managed_update_install(
+                Path::new("/Users/me/.local/share/mise/shims"),
+                OsStr::new("hz")
+            ),
+            Some(ManagedUpdateInstall::Mise)
+        );
+        assert_eq!(
+            managed_update_install(Path::new("/nix/store/abc-hz/bin"), OsStr::new("hz")),
+            Some(ManagedUpdateInstall::Nix)
+        );
+        assert_eq!(
+            classify_managed_update_path(Path::new("/usr/local/bin")),
+            None
+        );
+    }
+
+    #[test]
+    fn update_requires_explicit_override_for_managed_install_dirs() {
+        let error = check_update_install_dir(
+            Path::new("/Users/me/.cargo/bin"),
+            OsStr::new("hz"),
+            false,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("Cargo-managed"));
+        assert!(error.contains("--install-dir DIR"));
+        assert!(error.contains("--force-self-update"));
+
+        assert_eq!(
+            check_update_install_dir(
+                Path::new("/Users/me/.cargo/bin"),
+                OsStr::new("hz"),
+                true,
+                false,
+            )
+            .unwrap(),
+            Some(ManagedUpdateInstall::Cargo)
+        );
+        assert_eq!(
+            check_update_install_dir(
+                Path::new("/Users/me/.cargo/bin"),
+                OsStr::new("hz"),
+                false,
+                true,
+            )
+            .unwrap(),
+            Some(ManagedUpdateInstall::Cargo)
+        );
+        assert_eq!(
+            check_update_install_dir(
+                Path::new("hz-unmanaged-test-bin"),
+                OsStr::new("hz"),
+                false,
+                false,
+            )
+            .unwrap(),
+            None
         );
     }
 
