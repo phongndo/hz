@@ -1,24 +1,7 @@
-#![allow(unused_imports)]
+use crate::{CompleteArgs, CompletionKind, worktree_branch_or_handle};
+use std::path::PathBuf;
 
-use crate::*;
-use std::{
-    collections::HashSet,
-    env,
-    ffi::{OsStr, OsString},
-    fs,
-    io::{self, IsTerminal, Read, Write},
-    path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode, Stdio},
-    sync::Arc,
-};
-
-use clap::{
-    Args, Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Styles},
-};
-use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(crate) fn complete(args: CompleteArgs) -> HzResult<()> {
     let include_local = args.kind == CompletionKind::WorktreeTargets;

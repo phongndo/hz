@@ -1,17 +1,12 @@
-#![allow(unused_imports)]
-
 use crate::*;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    env, fs,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    collections::{BTreeSet, HashMap},
+    path::PathBuf,
 };
 
 use hz_core::{HzError, HzResult};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
+use tree_sitter_highlight::{HighlightConfiguration, Highlighter};
 use tree_sitter_language_pack::LanguageRegistry;
 
 pub(crate) const CONFIG_DIR: &str = "hz";
