@@ -1,0 +1,128 @@
+#![allow(unused_imports)]
+
+use crate::*;
+use std::{
+    collections::HashSet,
+    env, fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use hz_core::{HzError, HzResult, paths::WorktreeTarget};
+use serde::{Deserialize, Serialize};
+
+pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
+    let mut entries = list_targets(input)?;
+    refresh_worktree_state(&mut entries);
+
+    Ok(entries)
+}
+
+pub fn list_targets(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
+    let registry = Registry::load()?;
+    let repo = resolve_repo(input.repo.as_deref(), &registry)?;
+    let mut entries = discover_entries(&registry, &repo)?;
+    sort_worktree_entries(&mut entries);
+
+    Ok(entries)
+}
+
+pub fn local(input: LocalWorktree) -> HzResult<LocalWorktreeInfo> {
+    let registry = Registry::load()?;
+    let repo = resolve_repo(input.repo.as_deref(), &registry)?;
+    let branch = hz_git::current_branch(&repo)?;
+    let state = hz_git::worktree_state(&repo)?;
+    let status = if state.dirty {
+        WorktreeStatus::Dirty
+    } else {
+        WorktreeStatus::Clean
+    };
+    let modified_at_unix = if state.modified_at_unix == 0 {
+        worktree_path_timestamp(&repo)
+    } else {
+        state.modified_at_unix
+    };
+    let handoff_from = local_handoff_from(&registry, &repo, branch.as_deref())?;
+
+    Ok(LocalWorktreeInfo {
+        repo: repo.clone(),
+        path: repo,
+        branch,
+        status,
+        modified_at_unix,
+        handoff_from,
+    })
+}
+
+pub fn current_path(_input: ListWorktrees) -> HzResult<PathBuf> {
+    hz_git::repository_root(None)
+}
+
+pub(crate) fn local_handoff_from(
+    registry: &Registry,
+    repo: &Path,
+    branch: Option<&str>,
+) -> HzResult<Option<String>> {
+    let Some(branch) = branch else {
+        return Ok(None);
+    };
+    let Some(link) = registry.handoff_link(repo, branch) else {
+        return Ok(None);
+    };
+    if linked_worktree_exists(repo, &link.path)? {
+        Ok(Some(link.handle.clone()))
+    } else {
+        Ok(None)
+    }
+}
+
+pub(crate) fn discover_entries(registry: &Registry, repo: &Path) -> HzResult<Vec<WorktreeEntry>> {
+    let mut entries: Vec<_> = registry
+        .entries
+        .iter()
+        .filter(|entry| same_path(&entry.repo, repo))
+        .cloned()
+        .collect();
+
+    add_git_worktrees(&mut entries, repo, hz_git::list_worktrees(repo)?);
+    Ok(entries)
+}
+
+pub(crate) fn sort_worktree_entries(entries: &mut [WorktreeEntry]) {
+    entries.sort_by(|left, right| {
+        right
+            .created_at_unix
+            .cmp(&left.created_at_unix)
+            .then_with(|| left.handle.cmp(&right.handle))
+    });
+}
+
+pub(crate) fn refresh_worktree_state(entries: &mut [WorktreeEntry]) {
+    for entry in entries {
+        match hz_git::worktree_state(&entry.path) {
+            Ok(state) => {
+                entry.status = if state.dirty {
+                    WorktreeStatus::Dirty
+                } else {
+                    WorktreeStatus::Clean
+                };
+                entry.modified_at_unix = if state.modified_at_unix == 0 {
+                    entry.created_at_unix
+                } else {
+                    state.modified_at_unix
+                };
+            }
+            Err(_) => {
+                entry.status = WorktreeStatus::Unknown;
+                entry.modified_at_unix = worktree_path_timestamp(&entry.path);
+            }
+        }
+    }
+}
+
+pub fn find(input: FindWorktree) -> HzResult<WorktreeEntry> {
+    let registry = Registry::load()?;
+    let repo = resolve_repo(input.repo.as_deref(), &registry)?;
+    find_entry(&registry, &repo, &input.target)
+}

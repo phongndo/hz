@@ -1,0 +1,1403 @@
+use std::{
+    collections::HashMap,
+    env,
+    ffi::{OsStr, OsString},
+    path::{Path, PathBuf},
+};
+
+use super::*;
+
+#[test]
+fn list_output_uses_branch_as_display_identifier() {
+    let output = render_worktree_list(&[hz_command::WorktreeEntry {
+        id: "entry-id".to_owned(),
+        handle: "generated-handle".to_owned(),
+        repo: PathBuf::from("/repo"),
+        path: PathBuf::from("/worktrees/entry-id"),
+        branch: Some("feature/ui".to_owned()),
+        base: None,
+        source: hz_command::WorktreeSource::Managed,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: hz_command::WorktreeStatus::Unknown,
+    }]);
+
+    assert!(output.contains("target"));
+    assert!(output.contains("feature/ui"));
+    assert!(!output.contains("generated-handle"));
+}
+
+#[test]
+fn list_output_is_empty_when_there_are_no_worktrees() {
+    assert_eq!(render_worktree_list(&[]), "");
+}
+
+#[test]
+fn tree_sitter_list_output_uses_compact_table() {
+    let output = render_tree_sitter_statuses(
+        &[
+            hz_command::SyntaxLanguageStatus {
+                language: "rust".to_owned(),
+                enabled: true,
+                installed: true,
+                trusted: true,
+                has_highlights: true,
+                version: Some("1.9.0-rc.18".to_owned()),
+                artifact: None,
+                source: Some("bundled".to_owned()),
+            },
+            hz_command::SyntaxLanguageStatus {
+                language: "typescript".to_owned(),
+                enabled: true,
+                installed: true,
+                trusted: true,
+                has_highlights: false,
+                version: Some("1.9.0-rc.18".to_owned()),
+                artifact: None,
+                source: Some("bundled".to_owned()),
+            },
+        ],
+        false,
+        list_glyphs(false),
+        None,
+    );
+
+    assert!(output.contains("language"));
+    assert!(output.contains("status"));
+    assert!(output.contains("version"));
+    let headers = output
+        .lines()
+        .next()
+        .expect("header should render")
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    assert_eq!(headers[1], "status");
+    assert!(output.contains("rust"));
+    assert!(output.contains("ok"));
+    assert!(output.contains("1.9.0-rc.18"));
+    assert!(!output.contains("note"));
+    assert!(!output.contains("no query"));
+    assert!(!output.contains("enabled=yes"));
+}
+
+#[test]
+fn tree_sitter_list_output_centers_unicode_status() {
+    let output = render_tree_sitter_statuses(
+        &[hz_command::SyntaxLanguageStatus {
+            language: "rust".to_owned(),
+            enabled: true,
+            installed: true,
+            trusted: true,
+            has_highlights: true,
+            version: Some("1.9.0-rc.18".to_owned()),
+            artifact: None,
+            source: Some("bundled".to_owned()),
+        }],
+        false,
+        list_glyphs(true),
+        None,
+    );
+
+    let rust_line = output
+        .lines()
+        .find(|line| line.starts_with("rust"))
+        .expect("rust status row should render");
+
+    assert!(rust_line.contains("  ✓   "));
+}
+
+#[test]
+fn list_output_uses_handle_when_branch_is_missing() {
+    let output = render_worktree_list(&[hz_command::WorktreeEntry {
+        id: "entry-id".to_owned(),
+        handle: "generated-handle".to_owned(),
+        repo: PathBuf::from("/repo"),
+        path: PathBuf::from("/worktrees/entry"),
+        branch: None,
+        base: None,
+        source: hz_command::WorktreeSource::Git,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: hz_command::WorktreeStatus::Unknown,
+    }]);
+    let row = output
+        .lines()
+        .nth(1)
+        .expect("worktree row should be rendered");
+    let columns: Vec<_> = row.split_whitespace().collect();
+
+    assert_eq!(
+        columns,
+        vec!["generated-handle", "?", "-", "/worktrees/entry"]
+    );
+}
+
+#[test]
+fn home_relative_paths_use_tilde_only_for_home_children() {
+    let home = PathBuf::from("/Users/dev");
+
+    assert_eq!(
+        home_relative_path(&PathBuf::from("/Users/dev/.hz/worktrees/hz"), &home).as_deref(),
+        Some("~/.hz/worktrees/hz")
+    );
+    assert_eq!(
+        home_relative_path(&PathBuf::from("/Users/dev"), &home).as_deref(),
+        Some("~")
+    );
+    assert_eq!(
+        home_relative_path(&PathBuf::from("/Users/dev-other/project"), &home),
+        None
+    );
+}
+
+#[test]
+fn list_output_widths_count_terminal_columns() {
+    let output = render_worktree_list(&[hz_command::WorktreeEntry {
+        id: "entry-id".to_owned(),
+        handle: "generated-handle".to_owned(),
+        repo: PathBuf::from("/repo"),
+        path: PathBuf::from("/worktrees/entry"),
+        branch: Some("ééééé".to_owned()),
+        base: None,
+        source: hz_command::WorktreeSource::Managed,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: hz_command::WorktreeStatus::Unknown,
+    }]);
+
+    assert!(output.starts_with("  target status modified path"));
+}
+
+#[test]
+fn list_output_omits_source_column() {
+    let output = render_worktree_list(&[
+        hz_command::WorktreeEntry {
+            id: "managed-id".to_owned(),
+            handle: "alpha".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/alpha"),
+            branch: Some("alpha".to_owned()),
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            created_at_unix: 0,
+            modified_at_unix: 0,
+            status: hz_command::WorktreeStatus::Unknown,
+        },
+        hz_command::WorktreeEntry {
+            id: "git-id".to_owned(),
+            handle: "beta".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/beta"),
+            branch: None,
+            base: None,
+            source: hz_command::WorktreeSource::Git,
+            created_at_unix: 0,
+            modified_at_unix: 0,
+            status: hz_command::WorktreeStatus::Unknown,
+        },
+    ]);
+
+    assert!(!output.contains("source"));
+    assert!(!output.lines().any(|line| line.ends_with(" managed")));
+    assert!(!output.lines().any(|line| line.ends_with(" git")));
+}
+
+#[test]
+fn list_output_renders_status_and_modified_columns() {
+    let dirty_at = unix_now();
+    let created_at = dirty_at.saturating_sub(60 * 60);
+    let output = render_worktree_list(&[
+        hz_command::WorktreeEntry {
+            id: "dirty-id".to_owned(),
+            handle: "dirty-worktree".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/dirty"),
+            branch: Some("dirty-worktree".to_owned()),
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            created_at_unix: 0,
+            modified_at_unix: dirty_at,
+            status: hz_command::WorktreeStatus::Dirty,
+        },
+        hz_command::WorktreeEntry {
+            id: "clean-id".to_owned(),
+            handle: "clean-worktree".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/clean"),
+            branch: Some("clean-worktree".to_owned()),
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            created_at_unix: created_at,
+            modified_at_unix: 0,
+            status: hz_command::WorktreeStatus::Clean,
+        },
+    ]);
+
+    let headers = output
+        .lines()
+        .next()
+        .expect("header should render")
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    assert_eq!(headers[0], "target");
+    assert_eq!(headers[1], "status");
+    assert!(output.contains("modified"));
+    assert!(output.contains("!"));
+    assert!(output.contains("ok"));
+    assert!(output.contains(&format_modified_at(dirty_at)));
+    assert!(output.contains(&format_modified_at(created_at)));
+}
+
+#[test]
+fn list_output_centers_unicode_status() {
+    let output = render_worktree_rows_with_options(
+        &[WorktreeListRow {
+            target: "feature/ui".to_owned(),
+            branch: Some("feature/ui".to_owned()),
+            handle: Some("f7a7".to_owned()),
+            base: None,
+            status: hz_command::WorktreeStatus::Clean,
+            modified_at_unix: 0,
+            path: PathBuf::from("/worktrees/entry"),
+            local: false,
+            current: false,
+        }],
+        false,
+        list_glyphs(true),
+        None,
+        WorktreeListOptions {
+            headers: hz_command::ListHeaders::Always,
+            columns: vec![hz_command::ListColumn::Status],
+            ..WorktreeListOptions::default()
+        },
+    );
+
+    let status = output.lines().nth(1).expect("status row should render");
+
+    assert_eq!(status, "  ✓   ");
+}
+
+#[test]
+fn list_output_uses_configured_headers_and_columns() {
+    let output = render_worktree_rows_with_options(
+        &[WorktreeListRow {
+            target: "feature/ui".to_owned(),
+            branch: Some("feature/ui".to_owned()),
+            handle: Some("f7a7".to_owned()),
+            base: Some("dev".to_owned()),
+            status: hz_command::WorktreeStatus::Clean,
+            modified_at_unix: 0,
+            path: PathBuf::from("/worktrees/entry"),
+            local: false,
+            current: false,
+        }],
+        false,
+        list_glyphs(false),
+        None,
+        WorktreeListOptions {
+            headers: hz_command::ListHeaders::Always,
+            columns: vec![
+                hz_command::ListColumn::Branch,
+                hz_command::ListColumn::Base,
+                hz_command::ListColumn::Status,
+            ],
+            ..WorktreeListOptions::default()
+        },
+    );
+
+    assert!(output.starts_with("branch"));
+    assert!(output.contains("base"));
+    assert!(output.contains("feature/ui"));
+    assert!(output.contains("dev"));
+    assert!(!output.contains("path"));
+}
+
+#[test]
+fn list_output_can_render_terminal_color() {
+    let output = render_worktree_list_with_style(
+        &[hz_command::WorktreeEntry {
+            id: "entry-id".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry"),
+            branch: Some("feature/ui".to_owned()),
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            created_at_unix: 0,
+            modified_at_unix: 0,
+            status: hz_command::WorktreeStatus::Unknown,
+        }],
+        true,
+    );
+
+    assert!(output.contains("\x1b["));
+    assert!(output.contains("\x1b[35mfeature/ui"));
+    assert!(output.contains("\x1b[37m/worktrees/entry"));
+    assert!(!output.contains("\x1b[34m"));
+}
+
+#[test]
+fn list_output_can_render_custom_color_scheme() {
+    let mut schemes = HashMap::new();
+    schemes.insert(
+        "blueprint".to_owned(),
+        hz_command::ColorSchemeConfig {
+            target: Some("blue".to_owned()),
+            clean: Some("cyan".to_owned()),
+            ..hz_command::ColorSchemeConfig::default()
+        },
+    );
+    let options = WorktreeListOptions {
+        colors: list_colors(Some(&hz_command::ColorConfig {
+            mode: None,
+            scheme: Some("blueprint".to_owned()),
+            schemes,
+        })),
+        ..WorktreeListOptions::default()
+    };
+    let output = render_worktree_rows_with_options(
+        &[WorktreeListRow {
+            target: "feature/ui".to_owned(),
+            branch: Some("feature/ui".to_owned()),
+            handle: Some("f7a7".to_owned()),
+            base: None,
+            status: hz_command::WorktreeStatus::Clean,
+            modified_at_unix: 0,
+            path: PathBuf::from("/worktrees/entry"),
+            local: false,
+            current: false,
+        }],
+        true,
+        list_glyphs(false),
+        None,
+        options,
+    );
+
+    assert!(output.contains("\x1b[34mfeature/ui"));
+    assert!(output.contains("\x1b[36m  ok"));
+}
+
+#[test]
+fn list_output_marks_current_worktree() {
+    let local = hz_command::LocalWorktreeInfo {
+        repo: PathBuf::from("/repo"),
+        path: PathBuf::from("/repo"),
+        branch: Some("main".to_owned()),
+        status: hz_command::WorktreeStatus::Clean,
+        modified_at_unix: 0,
+        handoff_from: None,
+    };
+    let output = render_worktree_list_with_context(
+        &local,
+        &[hz_command::WorktreeEntry {
+            id: "entry-id".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry"),
+            branch: Some("feature/ui".to_owned()),
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            created_at_unix: 0,
+            modified_at_unix: 0,
+            status: hz_command::WorktreeStatus::Unknown,
+        }],
+        Some(&PathBuf::from("/worktrees/entry")),
+        false,
+        list_glyphs(false),
+        None,
+    );
+
+    let current_row = output
+        .lines()
+        .find(|line| line.contains("feature/ui"))
+        .expect("current worktree row should be rendered");
+
+    assert!(current_row.starts_with("@ feature/ui"));
+    assert!(output.contains("~ local"));
+    assert!(!output.contains("note"));
+}
+
+#[test]
+fn list_output_does_not_mark_local_without_current_worktree() {
+    let local = hz_command::LocalWorktreeInfo {
+        repo: PathBuf::from("/repo"),
+        path: PathBuf::from("/repo"),
+        branch: Some("main".to_owned()),
+        status: hz_command::WorktreeStatus::Clean,
+        modified_at_unix: 0,
+        handoff_from: None,
+    };
+    let output =
+        render_worktree_list_with_context(&local, &[], None, false, list_glyphs(false), None);
+
+    let local_row = output
+        .lines()
+        .find(|line| line.contains("local"))
+        .expect("local worktree row should be rendered");
+
+    assert!(local_row.starts_with("~ local"));
+    assert!(!local_row.starts_with("@ local"));
+}
+
+#[test]
+fn local_list_row_omits_note_column() {
+    let local = hz_command::LocalWorktreeInfo {
+        repo: PathBuf::from("/repo"),
+        path: PathBuf::from("/repo"),
+        branch: Some("feature/ui".to_owned()),
+        status: hz_command::WorktreeStatus::Dirty,
+        modified_at_unix: 0,
+        handoff_from: Some("f7a7".to_owned()),
+    };
+    let output = render_worktree_list_with_context(
+        &local,
+        &[],
+        Some(&PathBuf::from("/repo")),
+        false,
+        list_glyphs(false),
+        None,
+    );
+
+    assert!(output.contains("@ local"));
+    assert!(!output.contains("note"));
+    assert!(!output.contains("branch feature/ui"));
+    assert!(!output.contains("<- f7a7"));
+}
+
+#[test]
+fn list_output_can_render_unicode_glyphs() {
+    let local = hz_command::LocalWorktreeInfo {
+        repo: PathBuf::from("/repo"),
+        path: PathBuf::from("/repo"),
+        branch: Some("feature/ui".to_owned()),
+        status: hz_command::WorktreeStatus::Clean,
+        modified_at_unix: 0,
+        handoff_from: Some("f7a7".to_owned()),
+    };
+    let output = render_worktree_list_with_context(
+        &local,
+        &[],
+        Some(&PathBuf::from("/repo")),
+        true,
+        list_glyphs(true),
+        None,
+    );
+
+    assert!(output.contains("●"));
+    assert!(output.contains("✓"));
+    assert!(!output.contains("note"));
+    assert!(!output.contains("branch feature/ui"));
+    assert!(!output.contains("← f7a7"));
+}
+
+#[test]
+fn list_output_truncates_to_terminal_width() {
+    let local = hz_command::LocalWorktreeInfo {
+        repo: PathBuf::from("/repo"),
+        path: PathBuf::from("/repo"),
+        branch: Some("main".to_owned()),
+        status: hz_command::WorktreeStatus::Clean,
+        modified_at_unix: 0,
+        handoff_from: None,
+    };
+    let output = render_worktree_list_with_context(
+        &local,
+        &[hz_command::WorktreeEntry {
+            id: "entry-id".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from(
+                "/very/long/worktrees/path/that/would/otherwise/wrap/in/a/small/terminal",
+            ),
+            branch: Some(
+                "feat(worktree)/very-long-branch-name-that-would-push-the-table".to_owned(),
+            ),
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            created_at_unix: 0,
+            modified_at_unix: 0,
+            status: hz_command::WorktreeStatus::Clean,
+        }],
+        Some(&PathBuf::from("/worktrees/entry")),
+        false,
+        list_glyphs(true),
+        Some(72),
+    );
+
+    assert!(output.contains("…"));
+    assert!(output.lines().all(|line| display_width(line) <= 72));
+}
+
+#[test]
+fn list_output_uses_compact_rows_for_tiny_terminals() {
+    let output = render_worktree_rows(
+        &[WorktreeListRow {
+            target: "feat(worktree)/very-long-branch-name".to_owned(),
+            branch: Some("feat(worktree)/very-long-branch-name".to_owned()),
+            handle: Some("handle".to_owned()),
+            base: None,
+            status: hz_command::WorktreeStatus::Dirty,
+            modified_at_unix: 0,
+            path: PathBuf::from("/very/long/worktree/path"),
+            local: false,
+            current: false,
+        }],
+        false,
+        list_glyphs(true),
+        Some(32),
+    );
+
+    assert!(!output.contains("target"));
+    assert!(output.lines().all(|line| display_width(line) <= 32));
+}
+
+#[test]
+fn compact_rows_truncate_configured_columns_to_terminal_width() {
+    let output = render_worktree_rows_with_options(
+        &[WorktreeListRow {
+            target: "feat(worktree)/very-long-branch-name".to_owned(),
+            branch: Some("feat(worktree)/very-long-branch-name".to_owned()),
+            handle: Some("handle".to_owned()),
+            base: None,
+            status: hz_command::WorktreeStatus::Dirty,
+            modified_at_unix: 0,
+            path: PathBuf::from("/very/long/worktree/path"),
+            local: false,
+            current: false,
+        }],
+        false,
+        list_glyphs(true),
+        Some(36),
+        WorktreeListOptions {
+            compact_columns: vec![
+                hz_command::ListColumn::Marker,
+                hz_command::ListColumn::Target,
+                hz_command::ListColumn::Path,
+            ],
+            ..WorktreeListOptions::default()
+        },
+    );
+
+    assert!(output.contains("…"));
+    assert!(output.lines().all(|line| display_width(line) <= 36));
+}
+
+#[test]
+fn display_width_uses_terminal_columns() {
+    assert_eq!(display_width("測試"), 4);
+
+    let truncated = truncate_middle("feature/測試/worktree", 12, list_glyphs(true));
+
+    assert!(truncated.contains("…"));
+    assert!(display_width(&truncated) <= 12);
+}
+
+#[test]
+fn created_output_renders_human_summary() {
+    let output = render_created_worktree(
+        &hz_command::CreatedWorktree {
+            id: "entry-id".to_owned(),
+            name: "generated-handle".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry"),
+            branch: Some("feature/ui".to_owned()),
+            base: Some("main".to_owned()),
+            source: hz_command::WorktreeSource::Managed,
+            warnings: Vec::new(),
+        },
+        false,
+    );
+
+    assert!(output.starts_with("+ created  feature/ui"));
+    assert!(output.contains("handle  generated-handle"));
+    assert!(output.contains("path    /worktrees/entry"));
+    assert!(output.contains("base    main"));
+}
+
+#[test]
+fn created_output_renders_detached_worktree_summary() {
+    let output = render_created_worktree(
+        &hz_command::CreatedWorktree {
+            id: "entry-id".to_owned(),
+            name: "generated-handle".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry"),
+            branch: None,
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            warnings: Vec::new(),
+        },
+        false,
+    );
+
+    assert!(output.starts_with("+ created  generated-handle"));
+    assert!(output.contains("branch  detached"));
+    assert!(output.contains("path    /worktrees/entry"));
+}
+
+#[test]
+fn created_output_renders_prune_warnings() {
+    let output = render_created_worktree(
+        &hz_command::CreatedWorktree {
+            id: "entry-id".to_owned(),
+            name: "generated-handle".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry"),
+            branch: None,
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            warnings: vec![
+                "created worktree, but failed to prune detached worktrees: permission denied"
+                    .to_owned(),
+            ],
+        },
+        false,
+    );
+
+    assert!(output.contains(
+        "warning  created worktree, but failed to prune detached worktrees: permission denied"
+    ));
+}
+
+#[test]
+fn removed_output_renders_human_summary() {
+    let output = render_removed_worktree(
+        &hz_command::WorktreeEntry {
+            id: "entry-id".to_owned(),
+            handle: "generated-handle".to_owned(),
+            repo: PathBuf::from("/repo"),
+            path: PathBuf::from("/worktrees/entry"),
+            branch: Some("feature/ui".to_owned()),
+            base: None,
+            source: hz_command::WorktreeSource::Managed,
+            created_at_unix: 0,
+            modified_at_unix: 0,
+            status: hz_command::WorktreeStatus::Unknown,
+        },
+        false,
+    );
+
+    assert!(output.starts_with("- removed  feature/ui"));
+    assert!(output.contains("path    /worktrees/entry"));
+}
+
+#[test]
+fn handoff_output_renders_human_summary() {
+    let output = render_handoff(
+        &hz_command::WorktreeHandoff {
+            repo: PathBuf::from("/repo"),
+            mode: hz_command::HandoffMode::Patch,
+            branch: Some("feature/ui".to_owned()),
+            from: hz_core::paths::WorktreeTarget {
+                name: "local".to_owned(),
+                path: PathBuf::from("/repo"),
+            },
+            to: hz_core::paths::WorktreeTarget {
+                name: "feature/ui".to_owned(),
+                path: PathBuf::from("/worktrees/entry"),
+            },
+            changed: true,
+            warnings: Vec::new(),
+        },
+        false,
+    );
+
+    assert!(output.contains("repo    /repo"));
+    assert!(output.contains("mode    patch"));
+    assert!(output.contains("branch  feature/ui"));
+    assert!(output.contains("< from  local"));
+    assert!(output.contains("> to    feature/ui"));
+}
+
+#[test]
+fn handoff_output_renders_prune_warnings() {
+    let output = render_handoff(
+        &hz_command::WorktreeHandoff {
+            repo: PathBuf::from("/repo"),
+            mode: hz_command::HandoffMode::Patch,
+            branch: Some("feature/ui".to_owned()),
+            from: hz_core::paths::WorktreeTarget {
+                name: "local".to_owned(),
+                path: PathBuf::from("/repo"),
+            },
+            to: hz_core::paths::WorktreeTarget {
+                name: "generated-handle".to_owned(),
+                path: PathBuf::from("/worktrees/entry"),
+            },
+            changed: true,
+            warnings: vec![
+                "created worktree, but failed to prune detached worktrees: permission denied"
+                    .to_owned(),
+            ],
+        },
+        false,
+    );
+
+    assert!(output.contains(
+        "warning  created worktree, but failed to prune detached worktrees: permission denied"
+    ));
+}
+
+#[test]
+fn shell_init_output_renders_status() {
+    let output = render_shell_init(
+        "zsh",
+        &hz_command::ShellInit {
+            path: PathBuf::from("/home/me/.zshrc"),
+            line: "eval \"$(hz shell zsh)\"",
+            changed: true,
+        },
+        false,
+    );
+
+    assert!(output.starts_with("+ installed  zsh"));
+    assert!(output.contains("path    /home/me/.zshrc"));
+}
+
+#[test]
+fn remove_accepts_short_force_flag() {
+    let cli = Cli::try_parse_from([
+        "hz",
+        "rm",
+        "-r",
+        "/repo",
+        "-j",
+        "-d",
+        "-f",
+        "--no-cleanup",
+        "target",
+    ])
+    .unwrap();
+
+    match cli.command {
+        Some(Command::Remove(args)) => {
+            assert_eq!(args.targets, vec!["target".to_owned()]);
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert!(args.json);
+            assert!(args.debug);
+            assert!(args.force);
+            assert!(args.no_cleanup);
+        }
+        command => panic!("expected remove command, got {command:?}"),
+    }
+}
+
+#[test]
+fn remove_accepts_multiple_targets() {
+    let cli = Cli::try_parse_from(["hz", "rm", "cartesian-alpha", "archimedean-beta"]).unwrap();
+
+    match cli.command {
+        Some(Command::Remove(args)) => {
+            assert_eq!(
+                args.targets,
+                vec!["cartesian-alpha".to_owned(), "archimedean-beta".to_owned()]
+            );
+        }
+        command => panic!("expected remove command, got {command:?}"),
+    }
+}
+
+#[test]
+fn handoff_accepts_optional_branch_and_path_only() {
+    let cli = Cli::try_parse_from(["hz", "handoff", "-r", "/repo", "-j", "feature/ui"]).unwrap();
+
+    match cli.command {
+        Some(Command::Handoff(args)) => {
+            assert_eq!(args.target.as_deref(), Some("feature/ui"));
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert!(args.json);
+            assert!(!args.branch);
+            assert!(!args.create);
+        }
+        command => panic!("expected handoff command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "handoff", "708e", "-b", "--path-only"]).unwrap();
+    match cli.command {
+        Some(Command::Handoff(args)) => {
+            assert_eq!(args.target.as_deref(), Some("708e"));
+            assert!(args.branch);
+            assert!(args.path_only);
+        }
+        command => panic!("expected handoff command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from([
+        "hz",
+        "handoff",
+        "--new",
+        "--max-detached",
+        "3",
+        "feature/ui",
+    ])
+    .unwrap();
+    match cli.command {
+        Some(Command::Handoff(args)) => {
+            assert_eq!(args.target.as_deref(), Some("feature/ui"));
+            assert!(args.create);
+            assert_eq!(args.max_detached, Some(3));
+        }
+        command => panic!("expected handoff command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "handoff"]).unwrap();
+    match cli.command {
+        Some(Command::Handoff(args)) => assert_eq!(args.target, None),
+        command => panic!("expected handoff command, got {command:?}"),
+    }
+}
+
+#[test]
+fn creation_and_diff_accept_short_flags() {
+    let cli = Cli::try_parse_from([
+        "hz",
+        "new",
+        "-r",
+        "/repo",
+        "-p",
+        "../wt",
+        "-B",
+        "main",
+        "-b",
+        "feature/ui",
+        "--max-detached",
+        "5",
+        "-j",
+        "-d",
+        "--no-setup",
+        "handle",
+    ])
+    .unwrap();
+
+    match cli.command {
+        Some(Command::New(args)) => {
+            assert_eq!(args.name.as_deref(), Some("handle"));
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert_eq!(args.path, Some(PathBuf::from("../wt")));
+            assert_eq!(args.base.as_deref(), Some("main"));
+            assert_eq!(args.branch.as_deref(), Some("feature/ui"));
+            assert_eq!(args.max_detached, Some(5));
+            assert!(args.json);
+            assert!(args.debug);
+            assert!(args.no_setup);
+        }
+        command => panic!("expected new command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from([
+        "hz",
+        "diff",
+        "-r",
+        "/repo",
+        "--unstaged",
+        "--no-untracked",
+        "--no-watch",
+        "--no-syntax",
+        "-s",
+    ])
+    .unwrap();
+    match cli.command {
+        Some(Command::Diff(args)) => {
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert!(args.unstaged);
+            assert!(args.no_untracked);
+            assert!(args.no_watch);
+            assert!(args.no_syntax);
+            assert!(args.stat);
+        }
+        command => panic!("expected diff command, got {command:?}"),
+    }
+
+    assert!(Cli::try_parse_from(["hz", "ts", "add", "ruby", "--no-syntax"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "--no-syntax", "ts", "add", "ruby"]).is_err());
+
+    let cli = Cli::try_parse_from(["hz", "diff", "-b", "main"]).unwrap();
+    match cli.command {
+        Some(Command::Diff(args)) => assert_eq!(args.base.as_deref(), Some("main")),
+        command => panic!("expected diff command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "diff", "main", "feature"]).unwrap();
+    match cli.command {
+        Some(Command::Diff(args)) => assert_eq!(args.revs, ["main", "feature"]),
+        command => panic!("expected diff command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "diff", "--pr", "123", "--stat"]).unwrap();
+    match cli.command {
+        Some(Command::Diff(args)) => {
+            assert_eq!(args.pr.as_deref(), Some("123"));
+            assert!(args.revs.is_empty());
+            assert!(args.stat);
+        }
+        command => panic!("expected diff command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "diff", "pr", "feature"]).unwrap();
+    match cli.command {
+        Some(Command::Diff(args)) => {
+            assert_eq!(args.revs, ["pr", "feature"]);
+            assert_eq!(args.pr, None);
+        }
+        command => panic!("expected diff command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "diff", "--patch", "changes.diff", "--stat"]).unwrap();
+    match cli.command {
+        Some(Command::Diff(args)) => {
+            assert_eq!(args.patch, Some(PathBuf::from("changes.diff")));
+            assert!(args.stat);
+        }
+        command => panic!("expected diff command, got {command:?}"),
+    }
+}
+
+#[test]
+fn diff_scope_flags_conflict_with_revisions_at_parse_time() {
+    assert!(Cli::try_parse_from(["hz", "diff", "--staged", "main"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "main"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "diff", "--staged", "--base", "main"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "--base", "main"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "diff", "--pr", "123", "main"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "diff", "--pr", "123", "--patch", "x.diff"]).is_err());
+}
+
+#[test]
+fn tree_sitter_commands_accept_language_args() {
+    let cli = Cli::try_parse_from(["hz", "ts", "add", "rust", "ruby", "elixir"]).unwrap();
+    match cli.command {
+        Some(Command::TreeSitter {
+            command: TreeSitterCommand::Add(args),
+        }) => assert_eq!(args.languages, ["rust", "ruby", "elixir"]),
+        command => panic!("expected tree-sitter add command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "ts", "update", "rust", "ruby"]).unwrap();
+    match cli.command {
+        Some(Command::TreeSitter {
+            command: TreeSitterCommand::Update(args),
+        }) => {
+            assert_eq!(args.languages, ["rust", "ruby"]);
+            assert!(!args.all);
+        }
+        command => panic!("expected tree-sitter update command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "ts", "update", "--all"]).unwrap();
+    match cli.command {
+        Some(Command::TreeSitter {
+            command: TreeSitterCommand::Update(args),
+        }) => {
+            assert!(args.languages.is_empty());
+            assert!(args.all);
+        }
+        command => panic!("expected tree-sitter update --all command, got {command:?}"),
+    }
+
+    assert!(Cli::try_parse_from(["hz", "ts", "update", "--all", "rust"]).is_err());
+
+    let cli = Cli::try_parse_from(["hz", "tree-sitter", "rm", "rust"]).unwrap();
+    match cli.command {
+        Some(Command::TreeSitter {
+            command: TreeSitterCommand::Rm(args),
+        }) => assert_eq!(args.languages, ["rust"]),
+        command => panic!("expected tree-sitter rm command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "ts", "ls"]).unwrap();
+    match cli.command {
+        Some(Command::TreeSitter {
+            command: TreeSitterCommand::List,
+        }) => {}
+        command => panic!("expected tree-sitter list command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "ts", "available", "--installed"]).unwrap();
+    match cli.command {
+        Some(Command::TreeSitter {
+            command: TreeSitterCommand::Available(args),
+        }) => {
+            assert!(args.installed);
+            assert!(!args.enabled);
+        }
+        command => panic!("expected tree-sitter available command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "ts", "available", "--enabled"]).unwrap();
+    match cli.command {
+        Some(Command::TreeSitter {
+            command: TreeSitterCommand::Available(args),
+        }) => {
+            assert!(!args.installed);
+            assert!(args.enabled);
+        }
+        command => panic!("expected tree-sitter available command, got {command:?}"),
+    }
+
+    assert!(Cli::try_parse_from(["hz", "ts", "available", "--installed", "--enabled"]).is_err());
+}
+
+#[test]
+fn path_and_list_accept_short_flags() {
+    let cli = Cli::try_parse_from(["hz", "path", "-r", "/repo", "-j", "target"]).unwrap();
+    match cli.command {
+        Some(Command::Path(args)) => {
+            assert_eq!(args.target.as_deref(), Some("target"));
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert!(args.json);
+        }
+        command => panic!("expected path command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "ls", "-r", "/repo", "-j"]).unwrap();
+    match cli.command {
+        Some(Command::List(args)) => {
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert!(args.json);
+        }
+        command => panic!("expected list command, got {command:?}"),
+    }
+}
+
+#[test]
+fn hidden_completion_command_accepts_kind_and_repo() {
+    let cli = Cli::try_parse_from(["hz", "__complete", "worktree-targets", "-r", "/repo"]).unwrap();
+
+    match cli.command {
+        Some(Command::Complete(args)) => {
+            assert_eq!(args.kind, CompletionKind::WorktreeTargets);
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+        }
+        command => panic!("expected complete command, got {command:?}"),
+    }
+}
+
+#[test]
+fn init_install_and_lifecycle_commands_parse() {
+    let cli = Cli::try_parse_from(["hz", "init", "-r", "/repo"]).unwrap();
+    match cli.command {
+        Some(Command::Init(args)) => {
+            assert_eq!(args.shell, None);
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+        }
+        command => panic!("expected init command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "init", "zsh"]).unwrap();
+    match cli.command {
+        Some(Command::Init(args)) => assert_eq!(args.shell, Some(ShellArg::Zsh)),
+        command => panic!("expected init command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "install", "fish"]).unwrap();
+    match cli.command {
+        Some(Command::Install(args)) => assert_eq!(args.shell, ShellArg::Fish),
+        command => panic!("expected install command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "setup", "-r", "/repo", "target"]).unwrap();
+    match cli.command {
+        Some(Command::Setup(args)) => {
+            assert_eq!(args.target.as_deref(), Some("target"));
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+        }
+        command => panic!("expected setup command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "cleanup"]).unwrap();
+    match cli.command {
+        Some(Command::Cleanup(args)) => assert_eq!(args.target, None),
+        command => panic!("expected cleanup command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from([
+        "hz",
+        "update",
+        "--target-version",
+        "0.1.1",
+        "--install-dir",
+        "/tmp/hz-bin",
+        "--force-self-update",
+    ])
+    .unwrap();
+    match cli.command {
+        Some(Command::Update(args)) => {
+            assert_eq!(args.version.as_deref(), Some("0.1.1"));
+            assert_eq!(args.install_dir, Some(PathBuf::from("/tmp/hz-bin")));
+            assert!(args.force_self_update);
+        }
+        command => panic!("expected update command, got {command:?}"),
+    }
+}
+
+#[test]
+fn update_target_uses_invoked_binary_name_and_directory() {
+    let cwd = env::current_dir().unwrap();
+
+    assert_eq!(
+        update_binary_name(OsStr::new("./target/debug/hz-dev")).unwrap(),
+        OsString::from("hz-dev")
+    );
+    assert!(
+        default_update_install_dir(OsStr::new("./target/debug/hz-dev"))
+            .unwrap()
+            .ends_with(Path::new("target/debug"))
+    );
+    assert_eq!(
+        default_update_install_dir(OsStr::new("/usr/local/bin/hz-beta")).unwrap(),
+        PathBuf::from("/usr/local/bin")
+    );
+    assert_eq!(
+        absolute_path(PathBuf::from("bin")).unwrap(),
+        cwd.join("bin")
+    );
+}
+
+#[test]
+fn update_detects_package_manager_install_dirs() {
+    assert_eq!(
+        managed_update_install(Path::new("/opt/homebrew/bin"), OsStr::new("hz")),
+        Some(ManagedUpdateInstall::Homebrew)
+    );
+    assert_eq!(
+        managed_update_install(Path::new("/Users/me/.cargo/bin"), OsStr::new("hz")),
+        Some(ManagedUpdateInstall::Cargo)
+    );
+    assert_eq!(
+        managed_update_install(
+            Path::new("/Users/me/.local/share/mise/shims"),
+            OsStr::new("hz")
+        ),
+        Some(ManagedUpdateInstall::Mise)
+    );
+    assert_eq!(
+        managed_update_install(Path::new("/nix/store/abc-hz/bin"), OsStr::new("hz")),
+        Some(ManagedUpdateInstall::Nix)
+    );
+    assert_eq!(
+        classify_managed_update_path(Path::new("/usr/local/bin")),
+        None
+    );
+}
+
+#[test]
+fn update_requires_explicit_override_for_managed_install_dirs() {
+    let error = check_update_install_dir(
+        Path::new("/Users/me/.cargo/bin"),
+        OsStr::new("hz"),
+        false,
+        false,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("Cargo-managed"));
+    assert!(error.contains("--install-dir DIR"));
+    assert!(error.contains("--force-self-update"));
+
+    assert_eq!(
+        check_update_install_dir(
+            Path::new("/Users/me/.cargo/bin"),
+            OsStr::new("hz"),
+            true,
+            false,
+        )
+        .unwrap(),
+        Some(ManagedUpdateInstall::Cargo)
+    );
+    assert_eq!(
+        check_update_install_dir(
+            Path::new("/Users/me/.cargo/bin"),
+            OsStr::new("hz"),
+            false,
+            true,
+        )
+        .unwrap(),
+        Some(ManagedUpdateInstall::Cargo)
+    );
+    assert_eq!(
+        check_update_install_dir(
+            Path::new("hz-unmanaged-test-bin"),
+            OsStr::new("hz"),
+            false,
+            false,
+        )
+        .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn update_repo_respects_env_override() {
+    assert_eq!(update_repo(None), OsString::from(RELEASE_REPO));
+    assert_eq!(
+        update_repo(Some(OsString::from("example/hz-fork"))),
+        OsString::from("example/hz-fork")
+    );
+    assert_eq!(
+        update_repo(Some(OsString::new())),
+        OsString::from(RELEASE_REPO)
+    );
+}
+
+#[test]
+fn completion_candidates_are_deduplicated() {
+    let mut candidates = vec!["local".to_owned()];
+
+    push_completion_candidate(&mut candidates, Some("feature/ui".to_owned()));
+    push_completion_candidate(&mut candidates, Some("feature/ui".to_owned()));
+    push_completion_candidate(&mut candidates, Some(String::new()));
+    push_completion_candidate(&mut candidates, None);
+
+    assert_eq!(candidates, vec!["local", "feature/ui"]);
+}
+
+#[test]
+fn worktree_completion_candidates_use_display_targets() {
+    let mut branched = test_entry(hz_command::WorktreeSource::Managed);
+    branched.id = "45aa44e4-9dd5-4e74-b7ae-82db4b365e78".to_owned();
+    branched.handle = "45aa44e4-9dd5-4e74-b7ae-82db4b365e78".to_owned();
+    branched.branch = Some("feat(tui)/diff".to_owned());
+
+    let mut detached = test_entry(hz_command::WorktreeSource::Managed);
+    detached.id = "de625fc0-3962-4680-be9c-37fca7a57aaf".to_owned();
+    detached.handle = "tw61".to_owned();
+    detached.branch = None;
+
+    let mut candidates = Vec::new();
+    push_worktree_completion_candidate(&mut candidates, &branched);
+    push_worktree_completion_candidate(&mut candidates, &detached);
+
+    assert_eq!(candidates, vec!["feat(tui)/diff", "tw61"]);
+}
+
+#[test]
+fn removed_worktree_display_identifier_prefers_branch() {
+    let worktree = hz_command::WorktreeEntry {
+        id: "entry-id".to_owned(),
+        handle: "generated-handle".to_owned(),
+        repo: PathBuf::from("/repo"),
+        path: PathBuf::from("/worktrees/entry-id"),
+        branch: Some("feature/ui".to_owned()),
+        base: None,
+        source: hz_command::WorktreeSource::Managed,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: hz_command::WorktreeStatus::Unknown,
+    };
+
+    assert_eq!(worktree_branch_or_handle(&worktree), "feature/ui");
+}
+
+#[test]
+fn unmanaged_json_removal_requires_force() {
+    let args = remove_args(true, false);
+    let worktree = test_entry(hz_command::WorktreeSource::Git);
+
+    let error = should_confirm_unmanaged_removal(&args, &worktree).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "refusing to remove unmanaged worktree in --json mode without --force"
+    );
+}
+
+#[test]
+fn force_skips_unmanaged_removal_confirmation() {
+    let args = remove_args(false, true);
+    let worktree = test_entry(hz_command::WorktreeSource::Git);
+
+    assert!(!should_confirm_unmanaged_removal(&args, &worktree).unwrap());
+}
+
+#[test]
+fn managed_removal_skips_confirmation() {
+    let args = remove_args(false, false);
+    let worktree = test_entry(hz_command::WorktreeSource::Managed);
+
+    assert!(!should_confirm_unmanaged_removal(&args, &worktree).unwrap());
+}
+
+#[test]
+fn cleanup_runs_for_managed_removals_only() {
+    assert!(should_run_cleanup_for_removal(&test_entry(
+        hz_command::WorktreeSource::Managed
+    )));
+    assert!(!should_run_cleanup_for_removal(&test_entry(
+        hz_command::WorktreeSource::Git
+    )));
+}
+
+#[test]
+fn unmanaged_non_interactive_removal_requires_force() {
+    let args = remove_args(false, false);
+    let worktree = test_entry(hz_command::WorktreeSource::Git);
+
+    let error = should_confirm_unmanaged_removal_with_stdin(&args, &worktree, false).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "refusing to prompt for unmanaged worktree removal without a terminal; use --force"
+    );
+}
+
+#[test]
+fn unmanaged_interactive_removal_confirms() {
+    let args = remove_args(false, false);
+    let worktree = test_entry(hz_command::WorktreeSource::Git);
+
+    assert!(should_confirm_unmanaged_removal_with_stdin(&args, &worktree, true).unwrap());
+}
+
+#[test]
+fn single_target_json_keeps_object_shape() {
+    let removed = vec![test_entry(hz_command::WorktreeSource::Managed)];
+
+    let output = removed_worktrees_json(1, &removed).unwrap();
+
+    assert!(output.trim_start().starts_with('{'));
+}
+
+#[test]
+fn multi_target_json_keeps_array_shape_when_one_is_removed() {
+    let removed = vec![test_entry(hz_command::WorktreeSource::Managed)];
+
+    let output = removed_worktrees_json(2, &removed).unwrap();
+
+    assert!(output.trim_start().starts_with('['));
+}
+
+#[test]
+fn single_target_json_uses_array_when_nothing_was_removed() {
+    let output = removed_worktrees_json(1, &[]).unwrap();
+
+    assert_eq!(output, "[]");
+}
+
+fn remove_args(json: bool, force: bool) -> RemoveWorktreeArgs {
+    RemoveWorktreeArgs {
+        targets: vec!["target".to_owned()],
+        repo: None,
+        json,
+        force,
+        debug: false,
+        no_cleanup: false,
+    }
+}
+
+fn test_entry(source: hz_command::WorktreeSource) -> hz_command::WorktreeEntry {
+    hz_command::WorktreeEntry {
+        id: "entry-id".to_owned(),
+        handle: "generated-handle".to_owned(),
+        repo: PathBuf::from("/repo"),
+        path: PathBuf::from("/worktrees/entry-id"),
+        branch: Some("feature/ui".to_owned()),
+        base: None,
+        source,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: hz_command::WorktreeStatus::Unknown,
+    }
+}
