@@ -274,6 +274,38 @@ fn list_output_renders_status_and_modified_columns() {
 }
 
 #[test]
+fn modified_datetime_uses_date_like_shape() {
+    let datetime = time::OffsetDateTime::from_unix_timestamp(1_704_067_200).unwrap();
+
+    assert_eq!(format_modified_datetime(datetime), "Jan  1 00:00");
+}
+
+#[test]
+fn unix_timestamp_uses_date_like_shape() {
+    let formatted = format_unix_timestamp(1_704_067_200).expect("timestamp should format");
+
+    let month = formatted
+        .get(0..3)
+        .expect("formatted timestamp should start with an ASCII month");
+    assert!(matches!(
+        month,
+        "Jan"
+            | "Feb"
+            | "Mar"
+            | "Apr"
+            | "May"
+            | "Jun"
+            | "Jul"
+            | "Aug"
+            | "Sep"
+            | "Oct"
+            | "Nov"
+            | "Dec"
+    ));
+    assert_eq!(formatted.len(), "Jan  1 00:00".len());
+}
+
+#[test]
 fn list_output_centers_unicode_status() {
     let output = render_worktree_rows_with_options(
         &[WorktreeListRow {
