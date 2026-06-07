@@ -62,11 +62,21 @@ function hzlocal
 end
 
 function __hz_complete_worktree_targets
-    command hz __complete worktree-targets 2>/dev/null
+    set -l repo (__hz_current_repo_arg)
+    if test -n "$repo"
+        command hz __complete worktree-targets -r "$repo" 2>/dev/null
+    else
+        command hz __complete worktree-targets 2>/dev/null
+    end
 end
 
 function __hz_complete_removable_worktrees
-    command hz __complete removable-worktrees 2>/dev/null
+    set -l repo (__hz_current_repo_arg)
+    if test -n "$repo"
+        command hz __complete removable-worktrees -r "$repo" 2>/dev/null
+    else
+        command hz __complete removable-worktrees 2>/dev/null
+    end
 end
 
 function __hz_needs_worktree_subcommand

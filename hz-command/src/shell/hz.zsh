@@ -73,14 +73,28 @@ _hzlocal() {
 }
 
 _hz_worktree_targets() {
+  local repo
+  local -a complete_args
+  repo="$(_hz_current_repo_arg)"
+  if [[ -n "$repo" ]]; then
+    complete_args=(-r "$repo")
+  fi
+
   local -a targets
-  targets=("${(@f)$(command hz __complete worktree-targets 2>/dev/null)}")
+  targets=("${(@f)$(command hz __complete worktree-targets "${complete_args[@]}" 2>/dev/null)}")
   compadd -a targets
 }
 
 _hz_removable_worktrees() {
+  local repo
+  local -a complete_args
+  repo="$(_hz_current_repo_arg)"
+  if [[ -n "$repo" ]]; then
+    complete_args=(-r "$repo")
+  fi
+
   local -a targets
-  targets=("${(@f)$(command hz __complete removable-worktrees 2>/dev/null)}")
+  targets=("${(@f)$(command hz __complete removable-worktrees "${complete_args[@]}" 2>/dev/null)}")
   compadd -a targets
 }
 
