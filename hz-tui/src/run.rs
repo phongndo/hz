@@ -1,51 +1,25 @@
-#![allow(unused_imports)]
-
-use crate::*;
 use std::{
-    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
-    env,
-    ffi::OsStr,
-    fs,
-    hash::{Hash, Hasher},
-    io,
-    panic::{self, AssertUnwindSafe},
-    path::{Component, Path, PathBuf},
-    process::Command,
-    sync::{
-        Arc, Condvar, Mutex,
-        mpsc::{self, Receiver, RecvTimeoutError, Sender},
-    },
-    thread,
+    io, thread,
     time::{Duration, Instant},
 };
 
 use crossterm::{
     cursor::Show,
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseButton, MouseEvent, MouseEventKind,
-    },
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use hz_core::{HzError, HzResult};
-use hz_diff::{
-    Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, DiffStats, FileStatus,
+use hz_core::HzResult;
+use hz_diff::{Changeset, DiffOptions};
+use ratatui::{Terminal, backend::CrosstermBackend};
+
+use crate::{
+    app::{DiffApp, SyntaxStartupMode, max_scroll_for_viewport, run_loop, sync_live_diff},
+    controls::{DiffLayoutMode, default_layout_for_width},
+    render::diff::render_row,
+    syntax::SyntaxRuntime,
+    theme::{DiffBenchmarkOptions, DiffBenchmarkReport},
 };
-use hz_syntax::{
-    ColorOverrides, DiffBackground, DiffGutterBackground, DiffSettings, DiffSignStyle,
-    HighlightedLine, SyntaxClass, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits,
-    SyntaxSettings, SyntaxThemeConfig, SyntaxThemeSource,
-};
-use notify::{RecursiveMode, Watcher};
-use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
-    layout::Rect,
-    prelude::{Color, Line, Modifier, Span, Style, Text},
-    widgets::{Block, BorderType, Clear, Padding, Paragraph},
-};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn run() -> HzResult<()> {
     run_diff(DiffOptions::default())

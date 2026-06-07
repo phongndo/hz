@@ -1,24 +1,9 @@
-#![allow(unused_imports)]
-
-use crate::*;
-use std::{
-    collections::HashSet,
-    env,
-    ffi::{OsStr, OsString},
-    fs,
-    io::{self, IsTerminal, Read, Write},
-    path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode, Stdio},
-    sync::Arc,
-};
+use std::path::PathBuf;
 
 use clap::{
     Args, Parser, Subcommand, ValueEnum,
     builder::styling::{AnsiColor, Styles},
 };
-use crossterm::terminal as crossterm_terminal;
-use hz_core::HzResult;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(crate) const HELP_TEMPLATE: &str = "\
 {before-help}{name} {version}

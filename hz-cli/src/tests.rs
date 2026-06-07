@@ -6,6 +6,7 @@ use std::{
 };
 
 use super::*;
+use crate::{args::*, complete::*, removal::*, tree_sitter::*, update::*, worktree_output::*};
 
 #[test]
 fn list_output_uses_branch_as_display_identifier() {

@@ -1,24 +1,8 @@
-#![allow(unused_imports)]
+use std::io::{self, IsTerminal};
 
-use crate::*;
-use std::{
-    collections::HashSet,
-    env,
-    ffi::{OsStr, OsString},
-    fs,
-    io::{self, IsTerminal, Read, Write},
-    path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode, Stdio},
-    sync::Arc,
-};
-
-use clap::{
-    Args, Parser, Subcommand, ValueEnum,
-    builder::styling::{AnsiColor, Styles},
-};
-use crossterm::terminal as crossterm_terminal;
 use hz_core::HzResult;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::{args::LifecycleArgs, worktree_output::render_lifecycle_run};
 
 pub(crate) fn run_lifecycle(args: LifecycleArgs, kind: hz_command::LifecycleKind) -> HzResult<()> {
     let run = hz_command::run_lifecycle(hz_command::RunLifecycle {
