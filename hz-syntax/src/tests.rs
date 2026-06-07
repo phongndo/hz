@@ -23,6 +23,21 @@ fn language_pack_version_matches_workspace_dependency() {
 }
 
 #[test]
+fn trusted_parser_manifest_matches_pinned_language_pack_version() {
+    let manifest: serde_json::Value = serde_json::from_str(TRUSTED_PARSER_MANIFEST).unwrap();
+
+    assert_eq!(manifest["version"], LANGUAGE_PACK_VERSION);
+    assert_eq!(
+        sha256_file(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tree_sitter_parsers_lock.json")
+        )
+        .unwrap(),
+        TRUSTED_PARSER_MANIFEST_SHA256
+    );
+    assert!(ARTIFACT_SOURCE.contains(TRUSTED_PARSER_MANIFEST_SHA256));
+}
+
+#[test]
 fn maps_extensions_to_language_names() {
     assert_eq!(normalize_language_name("rs".to_owned()), "rust");
     assert_eq!(normalize_language_name(".mlir".to_owned()), "mlir");
