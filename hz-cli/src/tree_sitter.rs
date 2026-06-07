@@ -24,60 +24,66 @@ pub(crate) fn tree_sitter(command: TreeSitterCommand) -> HzResult<()> {
     match command {
         TreeSitterCommand::Add(args) => {
             let result = hz_command::syntax_add(&args.languages)?;
-            print_tree_sitter_add_result(&result);
+            print_tree_sitter_add_result(&result)?;
         }
         TreeSitterCommand::Update(args) => {
             let result = hz_command::syntax_update(&args.languages, args.all)?;
-            print_tree_sitter_update_result(&result);
+            print_tree_sitter_update_result(&result)?;
         }
         TreeSitterCommand::Rm(args) => {
             let result = hz_command::syntax_remove(&args.languages)?;
-            print_tree_sitter_remove_result(&result);
+            print_tree_sitter_remove_result(&result)?;
         }
         TreeSitterCommand::List => {
-            print_tree_sitter_statuses(&hz_command::syntax_statuses()?, false);
+            print_tree_sitter_statuses(&hz_command::syntax_statuses()?, false)?;
         }
         TreeSitterCommand::Available(args) => {
             for language in
                 hz_command::syntax_available_languages(tree_sitter_available_filter(&args))?
             {
-                println!("{language}");
+                write_stdout(format_args!("{language}\n"))?;
             }
         }
         TreeSitterCommand::Clean => {
             let result = hz_command::syntax_clean_cache()?;
-            println!(
-                "removed {} parser artifacts and {} checksum records",
+            write_stdout(format_args!(
+                "removed {} parser artifacts and {} checksum records\n",
                 result.parser_artifacts_removed, result.artifact_records_removed
-            );
-            println!(
-                "kept {} enabled-language config entries",
+            ))?;
+            write_stdout(format_args!(
+                "kept {} enabled-language config entries\n",
                 result.enabled_languages_kept
-            );
+            ))?;
         }
         TreeSitterCommand::Path => {
-            println!("cache       {}", hz_command::syntax_cache_dir()?);
-            println!(
-                "registry    {}",
+            write_stdout(format_args!(
+                "cache       {}\n",
+                hz_command::syntax_cache_dir()?
+            ))?;
+            write_stdout(format_args!(
+                "registry    {}\n",
                 hz_command::syntax_config_path()?.display()
-            );
-            println!(
-                "config      {}",
+            ))?;
+            write_stdout(format_args!(
+                "config      {}\n",
                 hz_command::syntax_settings_path()?.display()
-            );
-            println!(
-                "colorscheme {}",
+            ))?;
+            write_stdout(format_args!(
+                "colorscheme {}\n",
                 hz_command::syntax_colorscheme_dir()?.display()
-            );
+            ))?;
         }
         TreeSitterCommand::Doctor => {
             let report = hz_command::syntax_doctor()?;
-            print_tree_sitter_statuses(&report.statuses, true);
+            print_tree_sitter_statuses(&report.statuses, true)?;
             if report.issues.is_empty() {
-                println!("ok");
+                write_stdout(format_args!("ok\n"))?;
             } else {
                 for issue in report.issues {
-                    println!("warning {}: {}", issue.language, issue.message);
+                    write_stdout(format_args!(
+                        "warning {}: {}\n",
+                        issue.language, issue.message
+                    ))?;
                 }
             }
         }
@@ -194,70 +200,81 @@ pub(crate) fn patch_source(path: PathBuf) -> HzResult<hz_command::DiffSource> {
     ))
 }
 
-pub(crate) fn print_tree_sitter_add_result(result: &hz_command::SyntaxAddResult) {
+pub(crate) fn print_tree_sitter_add_result(result: &hz_command::SyntaxAddResult) -> HzResult<()> {
     for language in &result.added {
-        println!("+ enabled {language}");
+        write_stdout(format_args!("+ enabled {language}\n"))?;
     }
     for language in &result.already_enabled {
-        println!("= enabled {language}");
+        write_stdout(format_args!("= enabled {language}\n"))?;
     }
     for language in &result.without_highlights {
-        println!("warning {language}: no bundled highlights query; diff will render plain text");
+        write_stdout(format_args!(
+            "warning {language}: no bundled highlights query; diff will render plain text\n"
+        ))?;
     }
+    Ok(())
 }
 
-pub(crate) fn print_tree_sitter_update_result(result: &hz_command::SyntaxUpdateResult) {
+pub(crate) fn print_tree_sitter_update_result(
+    result: &hz_command::SyntaxUpdateResult,
+) -> HzResult<()> {
     if result.updated.is_empty()
         && result.bundled.is_empty()
         && result.not_installed.is_empty()
         && result.unavailable.is_empty()
     {
-        println!("no parser caches to update");
+        write_stdout(format_args!("no parser caches to update\n"))?;
     }
     for language in &result.updated {
-        println!("~ updated parser cache {language}");
+        write_stdout(format_args!("~ updated parser cache {language}\n"))?;
     }
     for language in &result.bundled {
-        println!("= bundled parser {language}");
+        write_stdout(format_args!("= bundled parser {language}\n"))?;
     }
     for language in &result.not_installed {
-        println!("= not installed {language}");
+        write_stdout(format_args!("= not installed {language}\n"))?;
     }
     for language in &result.unavailable {
-        println!("warning {language}: language is not known");
+        write_stdout(format_args!("warning {language}: language is not known\n"))?;
     }
     for language in &result.without_highlights {
-        println!("warning {language}: no bundled highlights query; diff will render plain text");
+        write_stdout(format_args!(
+            "warning {language}: no bundled highlights query; diff will render plain text\n"
+        ))?;
     }
+    Ok(())
 }
 
-pub(crate) fn print_tree_sitter_remove_result(result: &hz_command::SyntaxRemoveResult) {
+pub(crate) fn print_tree_sitter_remove_result(
+    result: &hz_command::SyntaxRemoveResult,
+) -> HzResult<()> {
     for language in &result.removed {
-        println!("- disabled {language} in config");
+        write_stdout(format_args!("- disabled {language} in config\n"))?;
     }
     for language in &result.missing {
-        println!("= not enabled in config {language}");
+        write_stdout(format_args!("= not enabled in config {language}\n"))?;
     }
     for language in &result.cache_deleted {
-        println!("- deleted parser cache {language}");
+        write_stdout(format_args!("- deleted parser cache {language}\n"))?;
     }
     for language in &result.cache_missing {
-        println!("= no parser cache {language}");
+        write_stdout(format_args!("= no parser cache {language}\n"))?;
     }
+    Ok(())
 }
 
 pub(crate) fn print_tree_sitter_statuses(
     statuses: &[hz_command::SyntaxLanguageStatus],
     detail: bool,
-) {
+) -> HzResult<()> {
     if statuses.is_empty() {
-        println!("no tree-sitter languages enabled");
-        return;
+        write_stdout(format_args!("no tree-sitter languages enabled\n"))?;
+        return Ok(());
     }
 
     let terminal = io::stdout().is_terminal();
     let glyphs = list_glyphs(terminal && !ascii_output_requested());
-    print!(
+    write_stdout(format_args!(
         "{}",
         render_tree_sitter_statuses(
             statuses,
@@ -265,24 +282,25 @@ pub(crate) fn print_tree_sitter_statuses(
             glyphs,
             terminal.then(terminal_width).flatten(),
         )
-    );
+    ))?;
 
     if !detail {
-        return;
+        return Ok(());
     }
 
     for status in statuses {
         if let Some(artifact) = &status.artifact {
-            println!(
-                "  {} parser={} sha256={} source={} installed_at={}",
+            write_stdout(format_args!(
+                "  {} parser={} sha256={} source={} installed_at={}\n",
                 status.language,
                 artifact.path.display(),
                 short_sha(&artifact.sha256),
                 artifact.source,
                 artifact.installed_at_unix
-            );
+            ))?;
         }
     }
+    Ok(())
 }
 
 pub(crate) fn render_tree_sitter_statuses(

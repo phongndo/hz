@@ -31,7 +31,10 @@ pub(crate) fn init_repo_or_shell(args: InitArgs) -> HzResult<()> {
     }
 
     let init = hz_command::init_repo(hz_command::InitRepo { repo: args.repo })?;
-    print!("{}", render_repo_init(&init, io::stdout().is_terminal()));
+    write_stdout(format_args!(
+        "{}",
+        render_repo_init(&init, io::stdout().is_terminal())
+    ))?;
 
     Ok(())
 }
@@ -40,10 +43,10 @@ pub(crate) fn install_shell(args: ShellArgs) -> HzResult<()> {
     let shell = shell_to_command(args.shell);
 
     let init = hz_command::install_shell_integration(shell)?;
-    print!(
+    write_stdout(format_args!(
         "{}",
         render_shell_init(shell_name(args.shell), &init, io::stdout().is_terminal())
-    );
+    ))?;
 
     Ok(())
 }
@@ -51,7 +54,7 @@ pub(crate) fn install_shell(args: ShellArgs) -> HzResult<()> {
 pub(crate) fn shell_script(args: ShellArgs) -> HzResult<()> {
     let shell = shell_to_command(args.shell);
 
-    print!("{}", hz_command::shell_integration(shell));
+    write_stdout(format_args!("{}", hz_command::shell_integration(shell)))?;
     Ok(())
 }
 

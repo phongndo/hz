@@ -8,6 +8,13 @@ use std::{
 use super::*;
 
 #[test]
+fn broken_pipe_errors_exit_cleanly() {
+    let error = hz_core::HzError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+
+    assert!(is_broken_pipe(&error));
+}
+
+#[test]
 fn list_output_uses_branch_as_display_identifier() {
     let output = render_worktree_list(&[hz_command::WorktreeEntry {
         id: "entry-id".to_owned(),

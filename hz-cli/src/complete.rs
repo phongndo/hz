@@ -1,4 +1,4 @@
-use crate::{CompleteArgs, CompletionKind, worktree_branch_or_handle};
+use crate::{CompleteArgs, CompletionKind, worktree_branch_or_handle, write_stdout};
 use std::path::PathBuf;
 
 use hz_core::HzResult;
@@ -10,7 +10,7 @@ pub(crate) fn complete(args: CompleteArgs) -> HzResult<()> {
     };
 
     for candidate in candidates {
-        println!("{candidate}");
+        write_stdout(format_args!("{candidate}\n"))?;
     }
 
     Ok(())

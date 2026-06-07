@@ -36,17 +36,20 @@ pub(crate) fn create_worktree(args: NewWorktreeArgs) -> HzResult<()> {
     )?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&created)?);
+        write_stdout(format_args!(
+            "{}\n",
+            serde_json::to_string_pretty(&created)?
+        ))?;
     } else if args.path_only {
-        println!("{}", created.path.display());
-        print_warnings(&created.warnings, io::stderr().is_terminal());
+        write_stdout(format_args!("{}\n", created.path.display()))?;
+        print_warnings(&created.warnings, io::stderr().is_terminal())?;
     } else if debug {
-        print!(
+        write_stdout(format_args!(
             "{}",
             render_created_worktree(&created, io::stdout().is_terminal())
-        );
+        ))?;
     } else {
-        print_warnings(&created.warnings, io::stderr().is_terminal());
+        print_warnings(&created.warnings, io::stderr().is_terminal())?;
     }
 
     Ok(())
@@ -60,9 +63,9 @@ pub(crate) fn path_worktree(args: PathWorktreeArgs) -> HzResult<()> {
     })?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&target)?);
+        write_stdout(format_args!("{}\n", serde_json::to_string_pretty(&target)?))?;
     } else {
-        println!("{}", target.path.display());
+        write_stdout(format_args!("{}\n", target.path.display()))?;
     }
 
     Ok(())
@@ -74,7 +77,10 @@ pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
     })?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&worktrees)?);
+        write_stdout(format_args!(
+            "{}\n",
+            serde_json::to_string_pretty(&worktrees)?
+        ))?;
     } else {
         let config = hz_command::load_repo_config(hz_command::LoadRepoConfig {
             repo: args.repo.clone(),
@@ -86,7 +92,7 @@ pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
             hz_command::current_worktree_path(hz_command::ListWorktrees { repo: None }).ok();
         let terminal = io::stdout().is_terminal();
         let color = color_output_enabled(config.color.as_ref(), terminal);
-        print!(
+        write_stdout(format_args!(
             "{}",
             render_worktree_list_with_options(
                 &local,
@@ -97,7 +103,7 @@ pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> HzResult<()> {
                 terminal.then(terminal_width).flatten(),
                 list_options(config.list.as_ref(), config.color.as_ref()),
             )
-        );
+        ))?;
     }
 
     Ok(())
@@ -806,13 +812,14 @@ pub(crate) fn render_created_worktree(
     output
 }
 
-pub(crate) fn print_warnings(warnings: &[String], color: bool) {
+pub(crate) fn print_warnings(warnings: &[String], color: bool) -> HzResult<()> {
     for warning in warnings {
-        eprintln!(
-            "{} {warning}",
+        write_stderr(format_args!(
+            "{} {warning}\n",
             styled("warning:", StyleColor::Yellow, color)
-        );
+        ))?;
     }
+    Ok(())
 }
 
 pub(crate) fn render_removed_worktree(worktree: &hz_command::WorktreeEntry, color: bool) -> String {

@@ -37,10 +37,10 @@ pub(crate) fn update(args: UpdateArgs) -> HzResult<()> {
         explicit_install_dir,
         force_self_update,
     )? {
-        eprintln!(
-            "{}",
+        write_stderr(format_args!(
+            "{}\n",
             managed_update_warning(manager, &install_dir, binary.as_os_str())
-        );
+        ))?;
     }
     let version = args.version.unwrap_or_else(|| "latest".to_owned());
     let repo = update_repo(env::var_os("HZ_REPO"));

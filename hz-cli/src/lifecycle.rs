@@ -26,6 +26,9 @@ pub(crate) fn run_lifecycle(args: LifecycleArgs, kind: hz_command::LifecycleKind
         repo: args.repo,
         kind,
     })?;
-    print!("{}", render_lifecycle_run(&run, io::stdout().is_terminal()));
+    write_stdout(format_args!(
+        "{}",
+        render_lifecycle_run(&run, io::stdout().is_terminal())
+    ))?;
     Ok(())
 }

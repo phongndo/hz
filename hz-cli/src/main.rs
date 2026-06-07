@@ -10,7 +10,8 @@ mod update;
 mod worktree_output;
 
 use std::{
-    io::{self, IsTerminal},
+    fmt,
+    io::{self, IsTerminal, Write},
     process::ExitCode,
 };
 
@@ -29,14 +30,29 @@ pub(crate) use worktree_output::*;
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
+        Err(error) if is_broken_pipe(&error) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!(
-                "{} {error}",
+            let _ = write_stderr(format_args!(
+                "{} {error}\n",
                 styled("hz:", StyleColor::Red, io::stderr().is_terminal())
-            );
+            ));
             ExitCode::from(1)
         }
     }
+}
+
+pub(crate) fn write_stdout(args: fmt::Arguments<'_>) -> HzResult<()> {
+    io::stdout().lock().write_fmt(args)?;
+    Ok(())
+}
+
+pub(crate) fn write_stderr(args: fmt::Arguments<'_>) -> HzResult<()> {
+    io::stderr().lock().write_fmt(args)?;
+    Ok(())
+}
+
+fn is_broken_pipe(error: &hz_core::HzError) -> bool {
+    matches!(error, hz_core::HzError::Io(error) if error.kind() == io::ErrorKind::BrokenPipe)
 }
 
 fn run() -> HzResult<()> {
@@ -45,7 +61,7 @@ fn run() -> HzResult<()> {
     match cli.command {
         None => {
             <Cli as clap::CommandFactory>::command().print_help()?;
-            println!();
+            write_stdout(format_args!("\n"))?;
             Ok(())
         }
         Some(Command::Worktree { command }) => match command {
@@ -75,7 +91,7 @@ fn run() -> HzResult<()> {
                 hz_tui::run_diff_with_live_updates_and_syntax(options, live_updates, syntax_enabled)
             } else {
                 let output = hz_command::diff(options)?;
-                print!("{output}");
+                write_stdout(format_args!("{output}"))?;
                 Ok(())
             }
         }

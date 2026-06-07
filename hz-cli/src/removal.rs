@@ -30,7 +30,7 @@ pub(crate) fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
 
     for candidate in candidates {
         if candidate.confirm_unmanaged && !confirm_unmanaged_removal(&candidate.worktree)? {
-            eprintln!("not removed");
+            write_stderr(format_args!("not removed\n"))?;
             continue;
         }
 
@@ -55,16 +55,16 @@ pub(crate) fn remove_worktree(args: RemoveWorktreeArgs) -> HzResult<()> {
     }
 
     if args.json {
-        println!(
-            "{}",
+        write_stdout(format_args!(
+            "{}\n",
             removed_worktrees_json(requested_target_count, &removed)?
-        );
+        ))?;
     } else if debug {
         for entry in &removed {
-            print!(
+            write_stdout(format_args!(
                 "{}",
                 render_removed_worktree(entry, io::stdout().is_terminal())
-            );
+            ))?;
         }
     }
 
@@ -159,7 +159,7 @@ pub(crate) fn should_confirm_unmanaged_removal_with_stdin(
 
 pub(crate) fn confirm_unmanaged_removal(worktree: &hz_command::WorktreeEntry) -> HzResult<bool> {
     let color = io::stderr().is_terminal();
-    eprint!(
+    write_stderr(format_args!(
         "{} {} at {} is not managed by hz. Delete it with git worktree remove? [y/N] ",
         styled("!", StyleColor::Yellow, color),
         styled(
@@ -172,7 +172,7 @@ pub(crate) fn confirm_unmanaged_removal(worktree: &hz_command::WorktreeEntry) ->
             StyleColor::White,
             color
         )
-    );
+    ))?;
     io::stderr().flush()?;
 
     let mut answer = String::new();
@@ -202,12 +202,18 @@ pub(crate) fn handoff_worktree(args: HandoffWorktreeArgs) -> HzResult<()> {
     })?;
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&handoff)?);
+        write_stdout(format_args!(
+            "{}\n",
+            serde_json::to_string_pretty(&handoff)?
+        ))?;
     } else if args.path_only {
-        println!("{}", handoff.to.path.display());
-        print_warnings(&handoff.warnings, io::stderr().is_terminal());
+        write_stdout(format_args!("{}\n", handoff.to.path.display()))?;
+        print_warnings(&handoff.warnings, io::stderr().is_terminal())?;
     } else {
-        print!("{}", render_handoff(&handoff, io::stdout().is_terminal()));
+        write_stdout(format_args!(
+            "{}",
+            render_handoff(&handoff, io::stdout().is_terminal())
+        ))?;
     }
 
     Ok(())
