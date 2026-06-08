@@ -1578,13 +1578,27 @@ fn managed_removal_skips_confirmation() {
 }
 
 #[test]
-fn cleanup_runs_for_managed_removals_only() {
+fn cleanup_skips_git_removals_outside_hz_namespace() {
     assert!(should_run_cleanup_for_removal(&test_entry(
         hz_command::WorktreeSource::Managed
     )));
     assert!(!should_run_cleanup_for_removal(&test_entry(
         hz_command::WorktreeSource::Git
     )));
+}
+
+#[test]
+fn hz_namespace_git_removal_skips_confirmation_and_runs_cleanup() {
+    let Some(home) = env::var_os("HOME").filter(|home| !home.is_empty()) else {
+        return;
+    };
+    let args = remove_args(false, false);
+    let mut worktree = test_entry(hz_command::WorktreeSource::Git);
+    worktree.repo = PathBuf::from(&home).join("code/hz");
+    worktree.path = PathBuf::from(home).join(".hz/worktrees/hz/entry-id");
+
+    assert!(!should_confirm_unmanaged_removal_with_stdin(&args, &worktree, false).unwrap());
+    assert!(should_run_cleanup_for_removal(&worktree));
 }
 
 #[test]

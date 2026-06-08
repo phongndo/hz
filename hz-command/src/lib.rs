@@ -40,8 +40,9 @@ pub use syntax::{
 };
 pub use worktree::{
     create_worktree, create_worktree_with_lifecycle, current_worktree_path, find_worktree,
-    handoff_worktree, list_worktree_targets, list_worktrees, local_worktree, path_worktree,
-    remove_found_worktree, remove_found_worktree_with_force, remove_worktree,
+    handoff_worktree, is_user_managed_worktree_path, list_worktree_targets, list_worktrees,
+    local_worktree, path_worktree, remove_found_worktree, remove_found_worktree_with_force,
+    remove_worktree,
 };
 
 const HZ_DIR: &str = ".hz";

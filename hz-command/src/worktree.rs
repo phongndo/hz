@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use crate::{
-    CreateWorktree, CreatedWorktree, FindWorktree, HandoffWorktree, LifecycleKind, ListWorktrees,
-    LocalWorktree, LocalWorktreeInfo, PathWorktree, RemoveWorktree, WorktreeEntry, WorktreeHandoff,
-    create_worktree_with_config_defaults, created_worktree_target, run_lifecycle_for_path,
-    with_configured_handoff_detached_limit,
+    CreateWorktree, CreatedWorktree, FindWorktree, HandoffWorktree, HzConfig, LifecycleKind,
+    ListWorktrees, LocalWorktree, LocalWorktreeInfo, PathWorktree, RemoveWorktree, WorktreeEntry,
+    WorktreeHandoff, create_worktree_with_config_defaults, created_worktree_target, path_is_inside,
+    run_lifecycle_for_path, with_configured_handoff_detached_limit,
 };
 use hz_core::HzResult;
 
@@ -50,6 +50,18 @@ pub fn current_worktree_path(input: ListWorktrees) -> HzResult<PathBuf> {
 
 pub fn find_worktree(input: FindWorktree) -> HzResult<WorktreeEntry> {
     hz_worktree::find(input)
+}
+
+pub fn is_user_managed_worktree_path(entry: &WorktreeEntry) -> HzResult<bool> {
+    if hz_worktree::is_hz_worktree_path(&entry.repo, &entry.path).unwrap_or(false) {
+        return Ok(true);
+    }
+
+    let config = HzConfig::load(&entry.repo)?;
+    Ok(config
+        .user_managed_worktree_roots(&entry.repo)?
+        .iter()
+        .any(|root| path_is_inside(&entry.path, root)))
 }
 
 pub fn remove_worktree(input: RemoveWorktree) -> HzResult<WorktreeEntry> {

@@ -29,6 +29,7 @@ CLI flag > .hz/hz.toml > built-in default
 [worktree]
 max_detached = 15
 default_base = "dev"
+user_managed_roots = ["~/.codex/worktrees", "../agent-worktrees"]
 ```
 
 `max_detached` caps managed detached scratch worktrees for the repo. Creating
@@ -45,6 +46,16 @@ hz new feature/ui --base dev
 ```
 
 Passing `--base` always overrides `default_base`.
+
+`user_managed_roots` adds directories whose Git worktrees at or under them
+should be treated as user-managed by `hz`, even when they are not in the
+registry. This keeps `hz rm` from prompting for those paths and runs the cleanup
+lifecycle for them. The default `~/.hz/worktrees/<repo>/` root is always
+included.
+
+Relative roots are resolved from the repository root. `~/` expands to `$HOME`.
+Configured roots are not auto-pruned; auto-pruning still only removes clean
+registry-managed detached worktrees.
 
 ## List
 

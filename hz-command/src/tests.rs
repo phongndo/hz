@@ -218,6 +218,59 @@ fn repo_config_ignores_root_hz_toml() {
 }
 
 #[test]
+fn repo_config_resolves_user_managed_worktree_roots() {
+    let repo = PathBuf::from("/repo/hz");
+    let home = PathBuf::from("/home/user");
+
+    assert_eq!(
+        resolve_user_managed_root_from_home(&repo, "../agent-worktrees", Some(&home)).unwrap(),
+        PathBuf::from("/repo/hz/../agent-worktrees")
+    );
+    assert_eq!(
+        resolve_user_managed_root_from_home(&repo, "~/agent-worktrees", Some(&home)).unwrap(),
+        PathBuf::from("/home/user/agent-worktrees")
+    );
+    assert_eq!(
+        resolve_user_managed_root_from_home(&repo, "/tmp/agent-worktrees", Some(&home)).unwrap(),
+        PathBuf::from("/tmp/agent-worktrees")
+    );
+    assert!(resolve_user_managed_root_from_home(&repo, "~/agent-worktrees", None).is_err());
+}
+
+#[test]
+fn repo_config_marks_git_worktree_paths_under_user_managed_roots() {
+    let test_dir = test_repo("hz-user-managed-roots-test");
+    let managed_root = test_dir.join("agent-worktrees");
+    let managed_path = managed_root.join("entry");
+    fs::create_dir_all(&managed_path).unwrap();
+    fs::create_dir_all(test_dir.join(".hz")).unwrap();
+    fs::write(
+        test_dir.join(".hz").join("hz.toml"),
+        "[worktree]\nuser_managed_roots = [\"agent-worktrees\"]\n",
+    )
+    .unwrap();
+
+    let mut entry = WorktreeEntry {
+        id: "entry-id".to_owned(),
+        handle: "entry".to_owned(),
+        repo: test_dir.clone(),
+        path: managed_path,
+        branch: None,
+        base: None,
+        source: WorktreeSource::Git,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
+    };
+
+    assert!(is_user_managed_worktree_path(&entry).unwrap());
+    entry.path = test_dir.join("other").join("entry");
+    assert!(!is_user_managed_worktree_path(&entry).unwrap());
+
+    fs::remove_dir_all(test_dir).unwrap();
+}
+
+#[test]
 fn create_worktree_defaults_base_from_repo_config() {
     let test_dir = test_repo("hz-create-default-base-test");
     fs::create_dir_all(test_dir.join(".hz")).unwrap();

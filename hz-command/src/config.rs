@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -62,6 +62,7 @@ pub struct LifecycleConfig {
 pub struct WorktreeConfig {
     pub default_base: Option<String>,
     pub max_detached: Option<usize>,
+    pub user_managed_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -158,6 +159,20 @@ impl HzConfig {
             .and_then(|worktree| worktree.max_detached)
             .unwrap_or(hz_worktree::DEFAULT_MAX_DETACHED_WORKTREES)
     }
+
+    pub(crate) fn user_managed_worktree_roots(&self, repo: &Path) -> HzResult<Vec<PathBuf>> {
+        let Some(worktree) = &self.worktree else {
+            return Ok(Vec::new());
+        };
+        worktree
+            .user_managed_roots
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|root| !root.is_empty())
+            .map(|root| resolve_user_managed_root(repo, root))
+            .collect()
+    }
 }
 
 pub(crate) fn with_configured_handoff_detached_limit(
@@ -184,4 +199,45 @@ pub(crate) fn configured_detached_limit(repo: Option<&Path>) -> HzResult<usize> 
 
 pub(crate) fn config_path(repo: &Path) -> PathBuf {
     repo.join(HZ_DIR).join(CONFIG_FILE)
+}
+
+pub(crate) fn resolve_user_managed_root(repo: &Path, root: &str) -> HzResult<PathBuf> {
+    let home = env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from);
+    resolve_user_managed_root_from_home(repo, root, home.as_deref())
+}
+
+pub(crate) fn resolve_user_managed_root_from_home(
+    repo: &Path,
+    root: &str,
+    home: Option<&Path>,
+) -> HzResult<PathBuf> {
+    let path = match root {
+        "~" => require_config_home(home)?,
+        root if root.starts_with("~/") => require_config_home(home)?.join(&root[2..]),
+        root => PathBuf::from(root),
+    };
+
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(repo.join(path))
+    }
+}
+
+pub(crate) fn path_is_inside(path: &Path, root: &Path) -> bool {
+    if path.starts_with(root) {
+        return true;
+    }
+
+    fs::canonicalize(path)
+        .ok()
+        .zip(fs::canonicalize(root).ok())
+        .is_some_and(|(path, root)| path.starts_with(root))
+}
+
+pub(crate) fn require_config_home(home: Option<&Path>) -> HzResult<PathBuf> {
+    home.map(Path::to_path_buf)
+        .ok_or_else(|| HzError::Usage("HOME is not set or empty".to_owned()))
 }
