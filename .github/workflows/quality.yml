@@ -15,6 +15,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  TSLP_VERSION: 1.9.0-rc.18
 
 jobs:
   actionlint:
@@ -63,6 +64,17 @@ jobs:
       - name: Install Rust 1.85
         uses: dtolnay/rust-toolchain@1.85
 
+      - name: Fetch tree-sitter parser source bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .cache/tree-sitter-language-pack
+          gh release download "v${TSLP_VERSION}" \
+            --repo kreuzberg-dev/tree-sitter-language-pack \
+            --pattern "parser-sources-${TSLP_VERSION}.tar.zst*" \
+            --dir .cache/tree-sitter-language-pack
+          echo "TSLP_SOURCE_BUNDLE_URL=file://${PWD}/.cache/tree-sitter-language-pack/parser-sources-${TSLP_VERSION}.tar.zst" >> "$GITHUB_ENV"
+
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -85,6 +97,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Fetch tree-sitter parser source bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .cache/tree-sitter-language-pack
+          gh release download "v${TSLP_VERSION}" \
+            --repo kreuzberg-dev/tree-sitter-language-pack \
+            --pattern "parser-sources-${TSLP_VERSION}.tar.zst*" \
+            --dir .cache/tree-sitter-language-pack
+          echo "TSLP_SOURCE_BUNDLE_URL=file://${PWD}/.cache/tree-sitter-language-pack/parser-sources-${TSLP_VERSION}.tar.zst" >> "$GITHUB_ENV"
 
       - name: Check
         run: cargo check --workspace --all-targets --all-features --locked
