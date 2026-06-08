@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{self, Command, Stdio},
     sync::Arc,
+    thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -842,14 +843,14 @@ fn git_diff_to_writer_with_index(
     }
 
     let mut child = command.spawn()?;
+    let stderr = drain_child_stderr(child.stderr.take());
     if let Some(mut stdout) = child.stdout.take() {
-        copy_to_writer(&mut stdout, &mut writer)?;
+        if let Err(error) = copy_to_writer(&mut stdout, &mut writer) {
+            abort_git_child(child, stderr);
+            return Err(error.into());
+        }
     }
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Err(git_error("failed to render git diff", &output));
-    }
-    Ok(())
+    wait_for_git_child(child, stderr, "failed to render git diff")
 }
 
 fn git_diff_to_writer_with_untracked(
@@ -888,16 +889,56 @@ fn git_numstat_stats_with_index(
     }
 
     let mut child = command.spawn()?;
-    let stats = if let Some(stdout) = child.stdout.take() {
-        parse_numstat(stdout)?
+    let stderr = drain_child_stderr(child.stderr.take());
+    let stats = match if let Some(stdout) = child.stdout.take() {
+        parse_numstat(stdout)
     } else {
-        PatchStats::default()
+        Ok(PatchStats::default())
+    } {
+        Ok(stats) => stats,
+        Err(error) => {
+            abort_git_child(child, stderr);
+            return Err(error.into());
+        }
     };
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        return Err(git_error("failed to render git diff", &output));
-    }
+    wait_for_git_child(child, stderr, "failed to render git diff")?;
     Ok(stats)
+}
+
+fn drain_child_stderr(stderr: Option<process::ChildStderr>) -> JoinHandle<io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        if let Some(mut stderr) = stderr {
+            stderr.read_to_end(&mut output)?;
+        }
+        Ok(output)
+    })
+}
+
+fn wait_for_git_child(
+    mut child: process::Child,
+    stderr: JoinHandle<io::Result<Vec<u8>>>,
+    message: &str,
+) -> HzResult<()> {
+    let status = child.wait()?;
+    let stderr = stderr
+        .join()
+        .map_err(|_| io::Error::other("git stderr reader panicked"))??;
+    let output = process::Output {
+        status,
+        stdout: Vec::new(),
+        stderr,
+    };
+    if !output.status.success() {
+        return Err(git_error(message, &output));
+    }
+    Ok(())
+}
+
+fn abort_git_child(mut child: process::Child, stderr: JoinHandle<io::Result<Vec<u8>>>) {
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = stderr.join();
 }
 
 fn git_numstat_stats_with_untracked(repo: &Path, args: &[String]) -> HzResult<PatchStats> {
@@ -1591,6 +1632,34 @@ mod tests {
         let full = render_stat(&load_review_ref(&options).unwrap());
 
         assert_eq!(streamed, full);
+    }
+
+    #[test]
+    fn render_bytes_stat_matches_full_changeset_stat_for_repo_source() {
+        let test_dir = temp_test_dir("repo-stat-equivalence");
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        init_repo(&repo);
+        fs::write(repo.join("rename.txt"), "same\n").expect("renamed file should be written");
+        fs::write(repo.join("binary.bin"), b"\0base\n").expect("binary file should be written");
+        git(["add", "rename.txt", "binary.bin"], &repo);
+        git(["commit", "-q", "-m", "fixtures"], &repo);
+
+        fs::write(repo.join("base.txt"), "base\nnext\n").expect("tracked file should change");
+        fs::write(repo.join("binary.bin"), b"\0changed\n").expect("binary file should change");
+        fs::write(repo.join("untracked.txt"), "new\n").expect("untracked file should be written");
+        git(["mv", "rename.txt", "renamed.txt"], &repo);
+        let options = DiffOptions {
+            repo: Some(repo.clone()),
+            stat: true,
+            ..DiffOptions::default()
+        };
+
+        let streamed = String::from_utf8(render_bytes(options.clone()).unwrap()).unwrap();
+        let full = render_stat(&load_review_ref(&options).unwrap());
+
+        assert_eq!(streamed, full);
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
     }
 
     #[test]

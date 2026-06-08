@@ -311,10 +311,6 @@ where
     }
 
     pub(crate) fn get(&mut self, key: &K) -> Option<&V> {
-        if !self.entries.contains_key(key) {
-            return None;
-        }
-
         let last_used = self.next_tick();
         let entry = self.entries.get_mut(key)?;
         entry.last_used = last_used;
@@ -322,10 +318,6 @@ where
     }
 
     pub(crate) fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        if !self.entries.contains_key(key) {
-            return None;
-        }
-
         let last_used = self.next_tick();
         let entry = self.entries.get_mut(key)?;
         entry.last_used = last_used;
