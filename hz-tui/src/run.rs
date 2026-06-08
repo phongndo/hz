@@ -269,12 +269,26 @@ fn drain_pending_exit_events() -> io::Result<()> {
 
 #[cfg(unix)]
 fn flush_terminal_input_queue() -> io::Result<()> {
+    use std::fs::OpenOptions;
+
     use rustix::{
         io::Errno,
-        termios::{QueueSelector, tcflush},
+        termios::{QueueSelector, isatty, tcflush},
     };
 
-    match tcflush(io::stdin(), QueueSelector::IFlush) {
+    // Crossterm enables raw mode on stdin only when fd 0 is a tty; with
+    // redirected stdin it reads events from the controlling terminal instead.
+    // Flush the same terminal input queue so queued mouse bytes do not leak to
+    // the shell after cleanup.
+    let stdin = io::stdin();
+    let flush_result = if isatty(&stdin) {
+        tcflush(stdin, QueueSelector::IFlush)
+    } else {
+        let tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+        tcflush(tty, QueueSelector::IFlush)
+    };
+
+    match flush_result {
         Ok(()) | Err(Errno::NOTTY) => Ok(()),
         Err(error) => Err(error.into()),
     }
