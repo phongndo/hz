@@ -22,7 +22,6 @@ use crate::{
 };
 
 const EXIT_EVENT_DRAIN_LIMIT: usize = 1024;
-const EXIT_EVENT_DRAIN_TIMEOUT: Duration = Duration::from_millis(20);
 
 pub fn run() -> HzResult<()> {
     run_diff(DiffOptions::default())
@@ -247,17 +246,13 @@ impl TerminalCleanup {
 
 fn drain_pending_exit_events() -> io::Result<()> {
     // Mouse capture can leave already-emitted SGR mouse sequences queued after the
-    // quit key. Drain them while raw mode is still active so the shell does not
-    // receive and print those escape codes after we return to the prompt.
-    let deadline = Instant::now() + EXIT_EVENT_DRAIN_TIMEOUT;
+    // quit key. Drain only immediately-available events while raw mode is still
+    // active so the shell does not receive and print those escape codes after we
+    // return to the prompt, without delaying clean exits that have no queued
+    // input.
 
     for _ in 0..EXIT_EVENT_DRAIN_LIMIT {
-        let now = Instant::now();
-        if now >= deadline {
-            break;
-        }
-
-        if !event::poll(deadline.saturating_duration_since(now))? {
+        if !event::poll(Duration::ZERO)? {
             break;
         }
 
