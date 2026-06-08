@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{HandoffLink, PatchHandoffLink, WorktreeEntry, new_uuid_v4, unix_now};
-use hz_core::{HzError, HzResult, paths::WorktreeTarget};
+use hz_core::{HzError, HzResult, path_utils::path_is_inside, paths::WorktreeTarget};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -371,17 +371,6 @@ pub(crate) fn is_hz_worktree_path_from_home(
         .ok_or_else(|| HzError::Usage(format!("repo path has no name: {}", repo.display())))?;
     let root = default_worktree_root_from_home(home, repo_name);
     Ok(path_is_inside(path, &root))
-}
-
-pub(crate) fn path_is_inside(path: &Path, root: &Path) -> bool {
-    if path.starts_with(root) {
-        return true;
-    }
-
-    fs::canonicalize(path)
-        .ok()
-        .zip(fs::canonicalize(root).ok())
-        .is_some_and(|(path, root)| path.starts_with(root))
 }
 
 pub(crate) fn registry_path() -> HzResult<PathBuf> {

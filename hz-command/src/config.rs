@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{CONFIG_FILE, CreateWorktree, HZ_DIR, HandoffMode, HandoffWorktree, LifecycleKind};
-use hz_core::{HzError, HzResult};
+use hz_core::{HzError, HzResult, path_utils::normalize_lexically};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,22 +243,13 @@ pub(crate) fn resolve_user_managed_root_from_home(
         root => PathBuf::from(root),
     };
 
-    if path.is_absolute() {
-        Ok(path)
+    let resolved = if path.is_absolute() {
+        path
     } else {
-        Ok(repo.join(path))
-    }
-}
+        repo.join(path)
+    };
 
-pub(crate) fn path_is_inside(path: &Path, root: &Path) -> bool {
-    if path.starts_with(root) {
-        return true;
-    }
-
-    fs::canonicalize(path)
-        .ok()
-        .zip(fs::canonicalize(root).ok())
-        .is_some_and(|(path, root)| path.starts_with(root))
+    Ok(normalize_lexically(&resolved))
 }
 
 pub(crate) fn require_config_home(home: Option<&Path>) -> HzResult<PathBuf> {

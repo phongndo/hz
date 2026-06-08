@@ -224,7 +224,7 @@ fn repo_config_resolves_user_managed_worktree_roots() {
 
     assert_eq!(
         resolve_user_managed_root_from_home(&repo, "../agent-worktrees", Some(&home)).unwrap(),
-        PathBuf::from("/repo/hz/../agent-worktrees")
+        PathBuf::from("/repo/agent-worktrees")
     );
     assert_eq!(
         resolve_user_managed_root_from_home(&repo, "~/agent-worktrees", Some(&home)).unwrap(),
@@ -266,6 +266,39 @@ fn repo_config_marks_git_worktree_paths_under_user_managed_roots() {
     assert!(is_user_managed_worktree_path(&entry).unwrap());
     entry.path = test_dir.join("other").join("entry");
     assert!(!is_user_managed_worktree_path(&entry).unwrap());
+
+    fs::remove_dir_all(test_dir).unwrap();
+}
+
+#[test]
+fn repo_config_marks_missing_paths_under_parent_relative_user_managed_roots() {
+    let test_dir = test_repo("hz-parent-user-managed-roots-test");
+    let managed_path = test_dir
+        .parent()
+        .unwrap()
+        .join("agent-worktrees")
+        .join("entry");
+    fs::create_dir_all(test_dir.join(".hz")).unwrap();
+    fs::write(
+        test_dir.join(".hz").join("hz.toml"),
+        "[worktree]\nuser_managed_roots = [\"../agent-worktrees\"]\n",
+    )
+    .unwrap();
+
+    let entry = WorktreeEntry {
+        id: "entry-id".to_owned(),
+        handle: "entry".to_owned(),
+        repo: test_dir.clone(),
+        path: managed_path,
+        branch: None,
+        base: None,
+        source: WorktreeSource::Git,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
+    };
+
+    assert!(is_user_managed_worktree_path(&entry).unwrap());
 
     fs::remove_dir_all(test_dir).unwrap();
 }

@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use crate::{
     CreateWorktree, CreatedWorktree, FindWorktree, HandoffWorktree, HzConfig, LifecycleKind,
     ListWorktrees, LocalWorktree, LocalWorktreeInfo, PathWorktree, RemoveWorktree, WorktreeEntry,
-    WorktreeHandoff, create_worktree_with_config_defaults, created_worktree_target, path_is_inside,
+    WorktreeHandoff, create_worktree_with_config_defaults, created_worktree_target,
     run_lifecycle_for_path, with_configured_handoff_limits,
 };
-use hz_core::HzResult;
+use hz_core::{HzResult, path_utils::path_is_inside};
 
 pub fn create_worktree(input: CreateWorktree) -> HzResult<CreatedWorktree> {
     hz_worktree::create(create_worktree_with_config_defaults(input)?)
