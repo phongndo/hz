@@ -156,7 +156,7 @@ hz rm fix-login
 
 `hz new` without a name generates a four-character lowercase alphanumeric handle
 and leaves the worktree on a detached `HEAD`. Managed worktrees are registered
-in `~/.config/hz/registry.json` or `$XDG_CONFIG_HOME/hz/registry.json`.
+in `~/.hz/registry.json`.
 `hz ls`, `hz cd`, and `hz rm` also detect unmanaged Git worktrees created by
 other tools. Removing an unmanaged worktree asks for confirmation because the
 path is not managed by `hz`.

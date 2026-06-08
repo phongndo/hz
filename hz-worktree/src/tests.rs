@@ -1037,28 +1037,17 @@ fn registry_lock_for_git_side_effect_reuses_current_lock() {
 }
 
 #[test]
-fn registry_path_ignores_empty_xdg_config_home() {
+fn registry_path_uses_home_hz_directory() {
     assert_eq!(
-        registry_path_from_env(Some(PathBuf::from("/home/user")), Some(PathBuf::new())).unwrap(),
-        PathBuf::from("/home/user/.config/hz/registry.json")
-    );
-    assert_eq!(
-        registry_path_from_env(
-            Some(PathBuf::from("/home/user")),
-            Some(PathBuf::from("/tmp/config")),
-        )
-        .unwrap(),
-        PathBuf::from("/tmp/config/hz/registry.json")
+        registry_path_from_env(Some(PathBuf::from("/home/user"))).unwrap(),
+        PathBuf::from("/home/user/.hz/registry.json")
     );
 }
 
 #[test]
-fn registry_path_does_not_fall_back_to_empty_home() {
-    assert_eq!(
-        registry_path_from_env(Some(PathBuf::new()), Some(PathBuf::from("/tmp/config")),).unwrap(),
-        PathBuf::from("/tmp/config/hz/registry.json")
-    );
-    assert!(registry_path_from_env(Some(PathBuf::new()), Some(PathBuf::new())).is_err());
+fn registry_path_requires_home() {
+    assert!(registry_path_from_env(Some(PathBuf::new())).is_err());
+    assert!(registry_path_from_env(None).is_err());
 }
 
 #[test]
