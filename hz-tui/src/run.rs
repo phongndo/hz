@@ -5,7 +5,7 @@ use std::{
 
 use crossterm::{
     cursor::Show,
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{self, DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -20,6 +20,9 @@ use crate::{
     syntax::SyntaxRuntime,
     theme::{DiffBenchmarkOptions, DiffBenchmarkReport},
 };
+
+const EXIT_EVENT_DRAIN_LIMIT: usize = 1024;
+const EXIT_EVENT_DRAIN_TIMEOUT: Duration = Duration::from_millis(20);
 
 pub fn run() -> HzResult<()> {
     run_diff(DiffOptions::default())
@@ -228,14 +231,58 @@ impl TerminalCleanup {
         }
         self.active = false;
 
-        let raw_mode_result = disable_raw_mode();
         let mut stdout = io::stdout();
         let screen_result = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
+        let drain_result = drain_pending_exit_events();
+        let flush_input_result = flush_terminal_input_queue();
+        let raw_mode_result = disable_raw_mode();
 
-        raw_mode_result?;
         screen_result?;
+        drain_result?;
+        flush_input_result?;
+        raw_mode_result?;
         Ok(())
     }
+}
+
+fn drain_pending_exit_events() -> io::Result<()> {
+    // Mouse capture can leave already-emitted SGR mouse sequences queued after the
+    // quit key. Drain them while raw mode is still active so the shell does not
+    // receive and print those escape codes after we return to the prompt.
+    let deadline = Instant::now() + EXIT_EVENT_DRAIN_TIMEOUT;
+
+    for _ in 0..EXIT_EVENT_DRAIN_LIMIT {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+
+        if !event::poll(deadline.saturating_duration_since(now))? {
+            break;
+        }
+
+        let _ = event::read()?;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn flush_terminal_input_queue() -> io::Result<()> {
+    use rustix::{
+        io::Errno,
+        termios::{QueueSelector, tcflush},
+    };
+
+    match tcflush(io::stdin(), QueueSelector::IFlush) {
+        Ok(()) | Err(Errno::NOTTY) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(not(unix))]
+fn flush_terminal_input_queue() -> io::Result<()> {
+    Ok(())
 }
 
 impl Drop for TerminalCleanup {
