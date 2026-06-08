@@ -28,21 +28,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+
       - name: Install actionlint
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/actionlint"
-          cd "$RUNNER_TEMP/actionlint"
-
-          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          checksums="actionlint_${ACTIONLINT_VERSION}_checksums.txt"
-          base_url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
-
-          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSLO "$base_url/$archive"
-          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSLO "$base_url/$checksums"
-          grep "  $archive$" "$checksums" | sha256sum -c -
-          tar -xzf "$archive" actionlint
-          chmod 0755 actionlint
+          GOBIN="$RUNNER_TEMP/actionlint" \
+            go install "github.com/rhysd/actionlint/cmd/actionlint@v${ACTIONLINT_VERSION}"
           echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
 
       - name: Lint workflows
