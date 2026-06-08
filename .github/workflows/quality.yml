@@ -14,6 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  ACTIONLINT_VERSION: 1.7.12
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -27,10 +28,25 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install actionlint
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          cd "$RUNNER_TEMP/actionlint"
+
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          checksums="actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          base_url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+
+          curl -fsSLO "$base_url/$archive"
+          curl -fsSLO "$base_url/$checksums"
+          grep "  $archive$" "$checksums" | sha256sum -c -
+          tar -xzf "$archive" actionlint
+          chmod 0755 actionlint
+          echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
+
       - name: Lint workflows
-        uses: docker://rhysd/actionlint:1.7.12
-        with:
-          args: -color
+        run: actionlint -color
 
   rust-analyzer:
     name: Rust analyzer diagnostics
