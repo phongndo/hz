@@ -187,10 +187,10 @@ pub(crate) fn should_run_cleanup_for_removal(worktree: &hz_command::WorktreeEntr
         Ok(user_managed) => user_managed,
         Err(error) => {
             let _ = write_stderr(format_args!(
-                "warning: failed to check user-managed worktree status for {}: {error}\n",
+                "warning: failed to check user-managed worktree status for {}; running cleanup: {error}\n",
                 worktree.path.display()
             ));
-            false
+            true
         }
     }
 }

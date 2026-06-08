@@ -2,8 +2,10 @@ use std::{
     collections::{BTreeSet, HashMap},
     env,
     ffi::{OsStr, OsString},
+    fs,
     io::{self, Write},
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use super::*;
@@ -1594,6 +1596,21 @@ fn cleanup_skips_git_removals_outside_hz_namespace() {
 }
 
 #[test]
+fn cleanup_runs_when_user_managed_status_check_fails() {
+    let repo = test_dir("hz-cleanup-status-error-test");
+    fs::create_dir_all(repo.join(".hz")).unwrap();
+    fs::write(repo.join(".hz").join("hz.toml"), "[worktree\n").unwrap();
+
+    let mut worktree = test_entry(hz_command::WorktreeSource::Git);
+    worktree.repo = repo.clone();
+    worktree.path = repo.join("../agent-worktrees/entry");
+
+    assert!(should_run_cleanup_for_removal(&worktree));
+
+    fs::remove_dir_all(repo).unwrap();
+}
+
+#[test]
 fn hz_namespace_git_removal_skips_confirmation_and_runs_cleanup() {
     let Some(home) = env::var_os("HOME").filter(|home| !home.is_empty()) else {
         return;
@@ -2037,4 +2054,16 @@ fn test_entry(source: hz_command::WorktreeSource) -> hz_command::WorktreeEntry {
         modified_at_unix: 0,
         status: hz_command::WorktreeStatus::Unknown,
     }
+}
+
+fn test_dir(prefix: &str) -> PathBuf {
+    let test_dir = env::temp_dir().join(format!(
+        "{prefix}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&test_dir).expect("test directory should be created");
+    test_dir
 }
