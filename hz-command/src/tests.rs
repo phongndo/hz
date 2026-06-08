@@ -303,6 +303,27 @@ fn repo_config_marks_missing_paths_under_parent_relative_user_managed_roots() {
     fs::remove_dir_all(test_dir).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn user_managed_path_check_propagates_hz_namespace_errors() {
+    let entry = WorktreeEntry {
+        id: "entry-id".to_owned(),
+        handle: "entry".to_owned(),
+        repo: PathBuf::from("/"),
+        path: PathBuf::from("/worktrees/entry"),
+        branch: None,
+        base: None,
+        source: WorktreeSource::Git,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
+    };
+
+    let error = is_user_managed_worktree_path(&entry).unwrap_err();
+
+    assert_eq!(error.to_string(), "repo path has no name: /");
+}
+
 #[test]
 fn create_worktree_defaults_base_from_repo_config() {
     let test_dir = test_repo("hz-create-default-base-test");

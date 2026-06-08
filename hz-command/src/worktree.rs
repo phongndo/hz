@@ -53,7 +53,7 @@ pub fn find_worktree(input: FindWorktree) -> HzResult<WorktreeEntry> {
 }
 
 pub fn is_user_managed_worktree_path(entry: &WorktreeEntry) -> HzResult<bool> {
-    if hz_worktree::is_hz_worktree_path(&entry.repo, &entry.path).unwrap_or(false) {
+    if hz_worktree::is_hz_worktree_path(&entry.repo, &entry.path)? {
         return Ok(true);
     }
 
