@@ -187,6 +187,8 @@ pub(crate) struct NewWorktreeArgs {
     pub(crate) branch: Option<String>,
     #[arg(long)]
     pub(crate) max_detached: Option<usize>,
+    #[arg(long)]
+    pub(crate) max_branch_worktrees: Option<usize>,
     #[arg(short = 'j', long)]
     pub(crate) json: bool,
     #[arg(short = 'd', long)]
@@ -241,6 +243,8 @@ pub(crate) struct HandoffWorktreeArgs {
     pub(crate) create: bool,
     #[arg(long)]
     pub(crate) max_detached: Option<usize>,
+    #[arg(long)]
+    pub(crate) max_branch_worktrees: Option<usize>,
     #[arg(short = 'r', long)]
     pub(crate) repo: Option<PathBuf>,
     #[arg(short = 'j', long)]

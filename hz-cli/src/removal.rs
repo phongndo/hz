@@ -194,6 +194,7 @@ pub(crate) fn handoff_worktree(args: HandoffWorktreeArgs) -> CliResult<()> {
         repo: args.repo,
         create: args.create,
         max_detached_worktrees: args.max_detached,
+        max_branch_worktrees: args.max_branch_worktrees,
     })?;
 
     if args.json {
