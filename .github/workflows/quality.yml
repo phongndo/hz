@@ -38,8 +38,8 @@ jobs:
           checksums="actionlint_${ACTIONLINT_VERSION}_checksums.txt"
           base_url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
 
-          curl -fsSLO "$base_url/$archive"
-          curl -fsSLO "$base_url/$checksums"
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSLO "$base_url/$archive"
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSLO "$base_url/$checksums"
           grep "  $archive$" "$checksums" | sha256sum -c -
           tar -xzf "$archive" actionlint
           chmod 0755 actionlint
