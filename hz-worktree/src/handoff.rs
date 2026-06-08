@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    CreateWorktree, CreatedWorktree, HandoffMode, HandoffWorktree, Registry, WorktreeEntry,
-    WorktreeHandoff, WorktreeSource, WorktreeStatus, create_with_registry, discover_entries,
-    matches_target, remove_registered_entry_with_force_from_registry, resolve_registered_repo,
-    same_path, unix_now, validate_worktree_name,
+    CreateWorktree, CreatedWorktree, HandoffMode, HandoffWorktree, PendingWorktreePrune, Registry,
+    WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
+    create_with_registry_and_deferred_prune, discover_entries, matches_target,
+    remove_registered_entry_with_force_from_registry, resolve_registered_repo, same_path, unix_now,
+    validate_worktree_name,
 };
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
 
@@ -137,14 +138,15 @@ pub(crate) fn handoff_patch_from_local(
     max_branch_worktrees: Option<usize>,
 ) -> HzResult<WorktreeHandoff> {
     let branch = hz_git::current_branch(&current)?;
-    let (destination, warnings) = if create {
-        create_handoff_destination(
+    let (destination, pending_prune) = if create {
+        let (destination, pending_prune) = create_handoff_destination(
             registry,
             &repo,
             target,
             max_detached_worktrees,
             max_branch_worktrees,
-        )?
+        )?;
+        (destination, Some(pending_prune))
     } else {
         let destination = match target {
             Some(target) => find_target_worktree(registry, &repo, &target)?
@@ -162,7 +164,7 @@ pub(crate) fn handoff_patch_from_local(
                 }
             },
         };
-        (destination, Vec::new())
+        (destination, None)
     };
     let from = WorktreeTarget {
         name: "local".to_owned(),
@@ -192,6 +194,7 @@ pub(crate) fn handoff_patch_from_local(
         return Err(error);
     }
     *registry = next_registry;
+    let warnings = pending_prune.map_or_else(Vec::new, |prune| prune.prune(registry));
 
     Ok(WorktreeHandoff {
         repo,
@@ -210,8 +213,8 @@ pub(crate) fn create_handoff_destination(
     target: Option<String>,
     max_detached_worktrees: Option<usize>,
     max_branch_worktrees: Option<usize>,
-) -> HzResult<(WorktreeEntry, Vec<String>)> {
-    let created = create_with_registry(
+) -> HzResult<(WorktreeEntry, PendingWorktreePrune)> {
+    let (created, pending_prune) = create_with_registry_and_deferred_prune(
         registry,
         CreateWorktree {
             name: target,
@@ -224,7 +227,9 @@ pub(crate) fn create_handoff_destination(
         },
     )?;
 
-    Ok(created_worktree_entry(created, unix_now()?))
+    let (entry, warnings) = created_worktree_entry(created, unix_now()?);
+    debug_assert!(warnings.is_empty());
+    Ok((entry, pending_prune))
 }
 
 pub(crate) fn created_worktree_entry(

@@ -296,6 +296,32 @@ fn create_worktree_defaults_branch_limit_from_repo_config() {
 }
 
 #[test]
+fn handoff_new_defaults_branch_limit_from_repo_config() {
+    let test_dir = test_repo("hz-handoff-branch-limit-test");
+    fs::create_dir_all(test_dir.join(".hz")).unwrap();
+    fs::write(
+        test_dir.join(".hz").join("hz.toml"),
+        "[worktree]\nmax_branch_worktrees = 7\n",
+    )
+    .unwrap();
+
+    let input = with_configured_handoff_limits(HandoffWorktree {
+        target: Some("feature/ui".to_owned()),
+        mode: HandoffMode::Patch,
+        repo: Some(test_dir.clone()),
+        create: true,
+        max_detached_worktrees: None,
+        max_branch_worktrees: None,
+    })
+    .unwrap();
+
+    assert_eq!(input.max_branch_worktrees, Some(7));
+    assert_eq!(input.max_detached_worktrees, None);
+
+    fs::remove_dir_all(test_dir).unwrap();
+}
+
+#[test]
 fn lifecycle_is_noop_without_configured_command() {
     let test_dir = test_repo("hz-lifecycle-noop-test");
 

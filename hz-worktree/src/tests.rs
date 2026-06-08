@@ -342,6 +342,85 @@ fn create_rolls_back_git_state_when_registry_save_fails() {
 }
 
 #[test]
+fn deferred_create_prune_does_not_remove_candidates_until_run() {
+    let test_dir = test_dir("hz-worktree-deferred-prune-test");
+    let repo = test_dir.join("repo");
+    let old_destination = test_dir.join("old-destination");
+    let new_destination = test_dir.join("new-destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    git(["branch", "old"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            old_destination.to_str().unwrap(),
+            "old",
+        ],
+        &repo,
+    );
+    let old_destination = fs::canonicalize(old_destination).unwrap();
+    let old_entry = WorktreeEntry {
+        id: "old".to_owned(),
+        handle: "old".to_owned(),
+        repo: repo.clone(),
+        path: old_destination.clone(),
+        branch: Some("old".to_owned()),
+        base: None,
+        source: WorktreeSource::Managed,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
+    };
+    let mut registry = Registry {
+        entries: vec![old_entry.clone()],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    registry.save().expect("registry should be saved");
+
+    let (created, pending_prune) = create_with_registry_and_deferred_prune(
+        &mut registry,
+        CreateWorktree {
+            name: Some("new".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(new_destination),
+            base: None,
+            branch: None,
+            max_detached_worktrees: None,
+            max_branch_worktrees: Some(1),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        registry
+            .entries
+            .iter()
+            .any(|entry| entry.id == old_entry.id)
+    );
+    assert!(git_worktree_listed(&repo, &old_destination));
+    assert!(git_worktree_listed(&repo, &created.path));
+
+    let warnings = pending_prune.prune(&mut registry);
+
+    assert!(warnings.is_empty());
+    assert!(
+        !registry
+            .entries
+            .iter()
+            .any(|entry| entry.id == old_entry.id)
+    );
+    assert!(!git_worktree_listed(&repo, &old_destination));
+    assert!(git_worktree_listed(&repo, &created.path));
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
 fn create_rollback_keeps_branch_when_worktree_removal_fails() {
     let test_dir = test_dir("hz-worktree-create-rollback-remove-failure-test");
     let repo = test_dir.join("repo");

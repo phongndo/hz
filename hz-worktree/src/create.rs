@@ -18,6 +18,15 @@ pub(crate) fn create_with_registry(
     registry: &mut Registry,
     input: CreateWorktree,
 ) -> HzResult<CreatedWorktree> {
+    let (mut created, pending_prune) = create_with_registry_and_deferred_prune(registry, input)?;
+    created.warnings = pending_prune.prune(registry);
+    Ok(created)
+}
+
+pub(crate) fn create_with_registry_and_deferred_prune(
+    registry: &mut Registry,
+    input: CreateWorktree,
+) -> HzResult<(CreatedWorktree, PendingWorktreePrune)> {
     let repo = resolve_repo(input.repo.as_deref(), registry)?;
     let name = input.name;
     let handle = match name.clone() {
@@ -100,23 +109,39 @@ pub(crate) fn create_with_registry(
         ));
     }
     *registry = next_registry;
-    let warnings = match prune_worktrees(registry, prune_candidates) {
-        Ok(()) => Vec::new(),
-        Err(error) if branch_backed => vec![branch_prune_warning(error)],
-        Err(error) => vec![detached_prune_warning(error)],
-    };
 
-    Ok(CreatedWorktree {
-        id,
-        name: handle.clone(),
-        handle,
-        repo,
-        path,
-        branch,
-        base: input.base,
-        source: WorktreeSource::Managed,
-        warnings,
-    })
+    Ok((
+        CreatedWorktree {
+            id,
+            name: handle.clone(),
+            handle,
+            repo,
+            path,
+            branch,
+            base: input.base,
+            source: WorktreeSource::Managed,
+            warnings: Vec::new(),
+        },
+        PendingWorktreePrune {
+            candidates: prune_candidates,
+            branch_backed,
+        },
+    ))
+}
+
+pub(crate) struct PendingWorktreePrune {
+    candidates: Vec<WorktreeEntry>,
+    branch_backed: bool,
+}
+
+impl PendingWorktreePrune {
+    pub(crate) fn prune(self, registry: &mut Registry) -> Vec<String> {
+        match prune_worktrees(registry, self.candidates) {
+            Ok(()) => Vec::new(),
+            Err(error) if self.branch_backed => vec![branch_prune_warning(error)],
+            Err(error) => vec![detached_prune_warning(error)],
+        }
+    }
 }
 
 pub(crate) fn derive_worktree_branch(name: Option<&str>, branch: Option<&str>) -> Option<String> {
