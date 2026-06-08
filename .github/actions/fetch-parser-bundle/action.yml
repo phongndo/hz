@@ -1,0 +1,70 @@
+name: Fetch tree-sitter parser bundle
+description: Download and verify the tree-sitter parser source bundle.
+
+inputs:
+  tslp-version:
+    description: tree-sitter-language-pack version without the leading v.
+    required: true
+  github-token:
+    description: GitHub token used by gh release download.
+    required: true
+  target-dir:
+    description: Directory to download the parser bundle into.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Download and verify parser source bundle
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        TSLP_VERSION: ${{ inputs.tslp-version }}
+        TARGET_DIR: ${{ inputs.target-dir }}
+      run: |
+        set -euo pipefail
+
+        mkdir -p "$TARGET_DIR"
+        target_dir="$(cd "$TARGET_DIR" && pwd)"
+        archive="${target_dir}/parser-sources-${TSLP_VERSION}.tar.zst"
+        checksum="${archive}.sha256"
+        checksum_sum="${archive}.sha256sum"
+
+        rm -f "$archive" "$checksum" "$checksum_sum"
+        gh release download "v${TSLP_VERSION}" \
+          --repo kreuzberg-dev/tree-sitter-language-pack \
+          --pattern "parser-sources-${TSLP_VERSION}.tar.zst*" \
+          --dir "$target_dir"
+
+        test -f "$archive"
+        checksum_file=""
+        if [ -f "$checksum" ]; then
+          checksum_file="$checksum"
+        elif [ -f "$checksum_sum" ]; then
+          checksum_file="$checksum_sum"
+        else
+          echo "missing checksum for $archive" >&2
+          exit 1
+        fi
+
+        expected="$(awk 'NF { print $1; exit }' "$checksum_file")"
+        if ! [[ "$expected" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+          echo "invalid checksum in $checksum_file" >&2
+          exit 1
+        fi
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual="$(sha256sum "$archive" | awk '{ print $1 }')"
+        else
+          actual="$(shasum -a 256 "$archive" | awk '{ print $1 }')"
+        fi
+        expected_lower="$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')"
+        actual_lower="$(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]')"
+        if [ "$actual_lower" != "$expected_lower" ]; then
+          echo "checksum mismatch for $archive" >&2
+          echo "expected: $expected" >&2
+          echo "actual:   $actual" >&2
+          exit 1
+        fi
+        echo "$(basename "$archive"): OK"
+
+        echo "TSLP_SOURCE_BUNDLE_URL=file://${archive}" >> "$GITHUB_ENV"

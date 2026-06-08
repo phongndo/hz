@@ -249,9 +249,15 @@ impl HighlightedSide {
 
 #[derive(Debug)]
 pub(crate) struct LruCache<K, V> {
-    entries: HashMap<K, V>,
-    order: VecDeque<K>,
+    entries: HashMap<K, LruEntry<V>>,
     capacity: usize,
+    tick: u64,
+}
+
+#[derive(Debug)]
+struct LruEntry<V> {
+    value: V,
+    last_used: u64,
 }
 
 impl<K, V> LruCache<K, V>
@@ -261,14 +267,13 @@ where
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
             entries: HashMap::new(),
-            order: VecDeque::new(),
             capacity,
+            tick: 0,
         }
     }
 
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
-        self.order.clear();
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -276,7 +281,7 @@ where
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &V> {
-        self.entries.values()
+        self.entries.values().map(|entry| &entry.value)
     }
 
     pub(crate) fn contains_key(&self, key: &K) -> bool {
@@ -288,48 +293,47 @@ where
             return;
         }
 
+        let last_used = self.next_tick();
+
         if let Some(entry) = self.entries.get_mut(&key) {
-            *entry = value;
-            self.touch(&key);
+            entry.value = value;
+            entry.last_used = last_used;
             return;
         }
 
-        while self.entries.len() >= self.capacity {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
+        if self.entries.len() >= self.capacity
+            && let Some(oldest) = self.oldest_key()
+        {
             self.entries.remove(&oldest);
         }
 
-        self.entries.insert(key, value);
-        self.order.push_back(key);
+        self.entries.insert(key, LruEntry { value, last_used });
     }
 
     pub(crate) fn get(&mut self, key: &K) -> Option<&V> {
-        if !self.entries.contains_key(key) {
-            return None;
-        }
-
-        self.touch(key);
-        self.entries.get(key)
+        let last_used = self.next_tick();
+        let entry = self.entries.get_mut(key)?;
+        entry.last_used = last_used;
+        Some(&entry.value)
     }
 
     pub(crate) fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        if !self.entries.contains_key(key) {
-            return None;
-        }
-
-        self.touch(key);
-        self.entries.get_mut(key)
+        let last_used = self.next_tick();
+        let entry = self.entries.get_mut(key)?;
+        entry.last_used = last_used;
+        Some(&mut entry.value)
     }
 
-    pub(crate) fn touch(&mut self, key: &K) {
-        // O(n) is intentional here: the syntax cache is capped at a small fixed
-        // size, so avoiding another dependency/index keeps this simple.
-        if let Some(index) = self.order.iter().position(|candidate| candidate == key) {
-            self.order.remove(index);
-        }
-        self.order.push_back(*key);
+    fn next_tick(&mut self) -> u64 {
+        self.tick = self.tick.wrapping_add(1);
+        self.tick
+    }
+
+    fn oldest_key(&self) -> Option<K> {
+        self.entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, _)| *key)
     }
 }
 

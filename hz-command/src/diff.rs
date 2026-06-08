@@ -17,6 +17,10 @@ pub fn diff_bytes(input: DiffOptions) -> HzResult<Vec<u8>> {
     hz_diff::render_bytes(input)
 }
 
+pub fn diff_to_writer(input: DiffOptions, writer: impl Write) -> HzResult<()> {
+    hz_diff::render_to_writer(input, writer)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GitHubPullRequest {
     pub(crate) owner: String,

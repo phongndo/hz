@@ -1,14 +1,17 @@
 use std::{
     borrow::Cow,
     fs,
-    io::{ErrorKind, Write},
+    io::{self, BufRead, BufReader, ErrorKind, Read, Write},
     path::{Path, PathBuf},
-    process::{self, Command},
+    process::{self, Command, Stdio},
     sync::Arc,
+    thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use hz_core::{HzError, HzResult};
+
+const STREAM_BUFFER_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DiffScope {
@@ -332,11 +335,67 @@ pub fn render(options: DiffOptions) -> HzResult<String> {
 
 pub fn render_bytes(options: DiffOptions) -> HzResult<Vec<u8>> {
     if options.stat {
-        let changeset = load_review_ref(&options)?;
-        return Ok(render_stat(&changeset).into_bytes());
+        return render_stat_bytes(&options);
     }
     let (_, patch) = diff_patch_bytes(&options)?;
     Ok(patch.into_owned())
+}
+
+pub fn render_to_writer(options: DiffOptions, writer: impl Write) -> HzResult<()> {
+    render_to_writer_ref(&options, writer)
+}
+
+pub fn render_to_writer_ref(options: &DiffOptions, mut writer: impl Write) -> HzResult<()> {
+    if options.stat {
+        writer.write_all(&render_stat_bytes(options)?)?;
+        return Ok(());
+    }
+
+    if let DiffSource::Patch(source) = &options.source {
+        validate_options(options)?;
+        write_patch_source(source, writer)?;
+        return Ok(());
+    }
+
+    let repo = hz_git::repository_root(options.repo.as_deref())?;
+    validate_options(options)?;
+    let args = git_diff_args(options);
+    if should_include_untracked(options) {
+        git_diff_to_writer_with_untracked(&repo, &args, writer)
+    } else {
+        git_diff_to_writer(&repo, &args, writer)
+    }
+}
+
+fn render_stat_bytes(options: &DiffOptions) -> HzResult<Vec<u8>> {
+    let stats = patch_stats(options)?;
+    Ok(render_patch_stats(&stats).into_bytes())
+}
+
+fn write_patch_source(source: &PatchSource, mut writer: impl Write) -> HzResult<()> {
+    match source {
+        PatchSource::File(path) => {
+            let mut file = fs::File::open(path)?;
+            copy_to_writer(&mut file, &mut writer)?;
+        }
+        PatchSource::Stdin(patch) => writer.write_all(patch.as_ref())?,
+        PatchSource::Text { patch, .. } => writer.write_all(patch.as_ref())?,
+    }
+    Ok(())
+}
+
+fn copy_to_writer(mut reader: impl Read, mut writer: impl Write) -> io::Result<u64> {
+    let mut total = 0u64;
+    let mut buffer = vec![0; STREAM_BUFFER_BYTES];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..read])?;
+        total = total.saturating_add(read as u64);
+    }
+    Ok(total)
 }
 
 fn patch_source_bytes(source: &PatchSource) -> HzResult<Cow<'_, [u8]>> {
@@ -369,6 +428,251 @@ pub fn render_stat(changeset: &Changeset) -> String {
     output
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PatchStats {
+    files: Vec<PatchFileStat>,
+    totals: DiffStats,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PatchFileStat {
+    old_path: Option<String>,
+    new_path: Option<String>,
+    additions: usize,
+    deletions: usize,
+    is_binary: bool,
+}
+
+impl PatchFileStat {
+    fn display_path(&self) -> &str {
+        self.new_path
+            .as_deref()
+            .or(self.old_path.as_deref())
+            .unwrap_or("/dev/null")
+    }
+}
+
+fn render_patch_stats(stats: &PatchStats) -> String {
+    let mut output = String::new();
+    for file in &stats.files {
+        output.push_str(&format!(
+            "{:>6} {:>6} {}\n",
+            file.additions,
+            file.deletions,
+            file.display_path()
+        ));
+    }
+    output.push_str(&format!(
+        "\n{} files changed, {} insertions(+), {} deletions(-)",
+        stats.totals.files, stats.totals.additions, stats.totals.deletions
+    ));
+    if stats.totals.binary_files > 0 {
+        output.push_str(&format!(", {} binary", stats.totals.binary_files));
+    }
+    output.push('\n');
+    output
+}
+
+fn patch_stats(options: &DiffOptions) -> HzResult<PatchStats> {
+    if let DiffSource::Patch(source) = &options.source {
+        validate_options(options)?;
+        return patch_source_stats(source);
+    }
+
+    let repo = hz_git::repository_root(options.repo.as_deref())?;
+    validate_options(options)?;
+    let args = git_diff_numstat_args(options);
+    if should_include_untracked(options) {
+        git_numstat_stats_with_untracked(&repo, &args)
+    } else {
+        git_numstat_stats(&repo, &args)
+    }
+}
+
+fn patch_source_stats(source: &PatchSource) -> HzResult<PatchStats> {
+    match source {
+        PatchSource::File(path) => {
+            let file = fs::File::open(path)?;
+            parse_patch_stats(BufReader::new(file)).map_err(HzError::Io)
+        }
+        PatchSource::Stdin(patch) => {
+            parse_patch_stats(BufReader::new(patch.as_ref())).map_err(HzError::Io)
+        }
+        PatchSource::Text { patch, .. } => {
+            parse_patch_stats(BufReader::new(patch.as_ref())).map_err(HzError::Io)
+        }
+    }
+}
+
+fn parse_patch_stats(reader: impl BufRead) -> io::Result<PatchStats> {
+    let mut stats = PatchStats::default();
+    let mut current: Option<PatchFileStatBuilder> = None;
+    let mut current_hunk: Option<PatchHunkStat> = None;
+
+    for line in reader.lines() {
+        let line = line?;
+        let line = line.trim_end_matches('\r');
+
+        if let Some(hunk) = current_hunk.as_mut() {
+            hunk.push_line(line, current.as_mut());
+            if hunk.is_complete() {
+                current_hunk = None;
+            }
+            continue;
+        }
+
+        if line.starts_with("diff --git ") {
+            finish_patch_stat_file(&mut stats, &mut current);
+            current = Some(PatchFileStatBuilder::from_diff_git(line));
+            continue;
+        }
+
+        if line.starts_with("--- ") {
+            if current
+                .as_ref()
+                .is_some_and(PatchFileStatBuilder::has_seen_hunk)
+            {
+                finish_patch_stat_file(&mut stats, &mut current);
+            }
+            let file = current.get_or_insert_with(PatchFileStatBuilder::default);
+            file.apply_header(line);
+            continue;
+        }
+
+        if let Some(file) = current.as_mut() {
+            if line.starts_with("@@ ") {
+                file.seen_hunk = true;
+                current_hunk = Some(PatchHunkStat::from_header(line));
+                continue;
+            }
+
+            file.apply_header(line);
+        }
+    }
+
+    finish_patch_stat_file(&mut stats, &mut current);
+    Ok(stats)
+}
+
+fn finish_patch_stat_file(stats: &mut PatchStats, file: &mut Option<PatchFileStatBuilder>) {
+    let Some(file) = file.take() else {
+        return;
+    };
+    let file = file.finish();
+    stats.totals.files += 1;
+    stats.totals.additions += file.additions;
+    stats.totals.deletions += file.deletions;
+    if file.is_binary {
+        stats.totals.binary_files += 1;
+    }
+    stats.files.push(file);
+}
+
+#[derive(Debug, Default)]
+struct PatchFileStatBuilder {
+    old_path: Option<String>,
+    new_path: Option<String>,
+    additions: usize,
+    deletions: usize,
+    is_binary: bool,
+    seen_hunk: bool,
+}
+
+impl PatchFileStatBuilder {
+    fn from_diff_git(line: &str) -> Self {
+        let (old_path, new_path) = diff_git_paths(line);
+        Self {
+            old_path,
+            new_path,
+            ..Self::default()
+        }
+    }
+
+    fn has_seen_hunk(&self) -> bool {
+        self.seen_hunk
+    }
+
+    fn apply_header(&mut self, line: &str) {
+        if line.starts_with("Binary files ") || line == "GIT binary patch" {
+            self.is_binary = true;
+        } else if let Some(path) = line.strip_prefix("--- ") {
+            let path = unified_header_path(path);
+            if path.as_ref() != "/dev/null" {
+                self.old_path = strip_prefix_path(path.as_ref(), "a/");
+            } else {
+                self.old_path = None;
+            }
+        } else if let Some(path) = line.strip_prefix("+++ ") {
+            let path = unified_header_path(path);
+            if path.as_ref() != "/dev/null" {
+                self.new_path = strip_prefix_path(path.as_ref(), "b/");
+            } else {
+                self.new_path = None;
+            }
+        } else if let Some(path) = line.strip_prefix("rename from ") {
+            self.old_path = Some(path.to_owned());
+        } else if let Some(path) = line.strip_prefix("rename to ") {
+            self.new_path = Some(path.to_owned());
+        } else if let Some(path) = line.strip_prefix("copy from ") {
+            self.old_path = Some(path.to_owned());
+        } else if let Some(path) = line.strip_prefix("copy to ") {
+            self.new_path = Some(path.to_owned());
+        }
+    }
+
+    fn finish(self) -> PatchFileStat {
+        PatchFileStat {
+            old_path: self.old_path,
+            new_path: self.new_path,
+            additions: self.additions,
+            deletions: self.deletions,
+            is_binary: self.is_binary,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PatchHunkStat {
+    old_remaining: usize,
+    new_remaining: usize,
+}
+
+impl PatchHunkStat {
+    fn from_header(header: &str) -> Self {
+        let (_, old_count, _, new_count) = parse_hunk_header(header);
+        Self {
+            old_remaining: old_count,
+            new_remaining: new_count,
+        }
+    }
+
+    fn push_line(&mut self, raw: &str, file: Option<&mut PatchFileStatBuilder>) {
+        match raw.as_bytes().first().copied() {
+            Some(b'+') => {
+                self.new_remaining = self.new_remaining.saturating_sub(1);
+                if let Some(file) = file {
+                    file.additions += 1;
+                }
+            }
+            Some(b'-') => {
+                self.old_remaining = self.old_remaining.saturating_sub(1);
+                if let Some(file) = file {
+                    file.deletions += 1;
+                }
+            }
+            Some(b'\\') => {}
+            _ => {
+                self.old_remaining = self.old_remaining.saturating_sub(1);
+                self.new_remaining = self.new_remaining.saturating_sub(1);
+            }
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.old_remaining == 0 && self.new_remaining == 0
+    }
+}
+
 fn validate_options(options: &DiffOptions) -> HzResult<()> {
     if matches!(options.source, DiffSource::Patch(_)) {
         if options.scope != DiffScope::All {
@@ -391,6 +695,44 @@ fn git_diff_args(options: &DiffOptions) -> Vec<String> {
     let mut args = vec![
         "diff".to_owned(),
         "--binary".to_owned(),
+        "--no-ext-diff".to_owned(),
+        "--no-color".to_owned(),
+        "--find-renames".to_owned(),
+    ];
+
+    match &options.source {
+        DiffSource::Worktree => match options.scope {
+            DiffScope::All => {
+                args.push("--end-of-options".to_owned());
+                args.push("HEAD".to_owned());
+            }
+            DiffScope::Staged => args.push("--cached".to_owned()),
+            DiffScope::Unstaged => {}
+        },
+        DiffSource::Base(base) => {
+            args.push("--end-of-options".to_owned());
+            args.push(format!("{base}...HEAD"));
+        }
+        DiffSource::Branch { base, head } => {
+            args.push("--end-of-options".to_owned());
+            args.push(format!("{base}...{head}"));
+        }
+        DiffSource::Range { left, right } => {
+            args.push("--end-of-options".to_owned());
+            args.push(left.clone());
+            args.push(right.clone());
+        }
+        DiffSource::Patch(_) => {}
+    }
+
+    args
+}
+
+fn git_diff_numstat_args(options: &DiffOptions) -> Vec<String> {
+    let mut args = vec![
+        "diff".to_owned(),
+        "--numstat".to_owned(),
+        "-z".to_owned(),
         "--no-ext-diff".to_owned(),
         "--no-color".to_owned(),
         "--find-renames".to_owned(),
@@ -477,6 +819,187 @@ fn git_diff_bytes_with_untracked(repo: &Path, args: &[String]) -> HzResult<Vec<u
     let temp_index = create_temp_index(repo)?;
     add_intent_to_add(repo, temp_index.path(), &untracked)?;
     git_diff_bytes_with_index(repo, args, Some(temp_index.path()))
+}
+
+fn git_diff_to_writer(repo: &Path, args: &[String], writer: impl Write) -> HzResult<()> {
+    git_diff_to_writer_with_index(repo, args, None, writer)
+}
+
+fn git_diff_to_writer_with_index(
+    repo: &Path,
+    args: &[String],
+    index: Option<&Path>,
+    mut writer: impl Write,
+) -> HzResult<()> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+
+    let mut child = command.spawn()?;
+    let stderr = drain_child_stderr(child.stderr.take());
+    if let Some(mut stdout) = child.stdout.take() {
+        if let Err(error) = copy_to_writer(&mut stdout, &mut writer) {
+            abort_git_child(child, stderr);
+            return Err(error.into());
+        }
+    }
+    wait_for_git_child(child, stderr, "failed to render git diff")
+}
+
+fn git_diff_to_writer_with_untracked(
+    repo: &Path,
+    args: &[String],
+    writer: impl Write,
+) -> HzResult<()> {
+    let untracked = untracked_paths(repo)?;
+    if untracked.is_empty() {
+        return git_diff_to_writer(repo, args, writer);
+    }
+
+    let temp_index = create_temp_index(repo)?;
+    add_intent_to_add(repo, temp_index.path(), &untracked)?;
+    git_diff_to_writer_with_index(repo, args, Some(temp_index.path()), writer)
+}
+
+fn git_numstat_stats(repo: &Path, args: &[String]) -> HzResult<PatchStats> {
+    git_numstat_stats_with_index(repo, args, None)
+}
+
+fn git_numstat_stats_with_index(
+    repo: &Path,
+    args: &[String],
+    index: Option<&Path>,
+) -> HzResult<PatchStats> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+
+    let mut child = command.spawn()?;
+    let stderr = drain_child_stderr(child.stderr.take());
+    let stats = match if let Some(stdout) = child.stdout.take() {
+        parse_numstat(stdout)
+    } else {
+        Ok(PatchStats::default())
+    } {
+        Ok(stats) => stats,
+        Err(error) => {
+            abort_git_child(child, stderr);
+            return Err(error.into());
+        }
+    };
+    wait_for_git_child(child, stderr, "failed to render git diff")?;
+    Ok(stats)
+}
+
+fn drain_child_stderr(stderr: Option<process::ChildStderr>) -> JoinHandle<io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        if let Some(mut stderr) = stderr {
+            stderr.read_to_end(&mut output)?;
+        }
+        Ok(output)
+    })
+}
+
+fn wait_for_git_child(
+    mut child: process::Child,
+    stderr: JoinHandle<io::Result<Vec<u8>>>,
+    message: &str,
+) -> HzResult<()> {
+    let status = child.wait()?;
+    let stderr = stderr
+        .join()
+        .map_err(|_| io::Error::other("git stderr reader panicked"))??;
+    let output = process::Output {
+        status,
+        stdout: Vec::new(),
+        stderr,
+    };
+    if !output.status.success() {
+        return Err(git_error(message, &output));
+    }
+    Ok(())
+}
+
+fn abort_git_child(mut child: process::Child, stderr: JoinHandle<io::Result<Vec<u8>>>) {
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = stderr.join();
+}
+
+fn git_numstat_stats_with_untracked(repo: &Path, args: &[String]) -> HzResult<PatchStats> {
+    let untracked = untracked_paths(repo)?;
+    if untracked.is_empty() {
+        return git_numstat_stats(repo, args);
+    }
+
+    let temp_index = create_temp_index(repo)?;
+    add_intent_to_add(repo, temp_index.path(), &untracked)?;
+    git_numstat_stats_with_index(repo, args, Some(temp_index.path()))
+}
+
+fn parse_numstat(mut reader: impl Read) -> io::Result<PatchStats> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+
+    let records = bytes
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .collect::<Vec<_>>();
+    let mut stats = PatchStats::default();
+    let mut index = 0usize;
+
+    while let Some(record) = records.get(index).copied() {
+        let mut fields = record.splitn(3, |byte| *byte == b'\t');
+        let additions = fields.next().unwrap_or_default();
+        let deletions = fields.next().unwrap_or_default();
+        let path = fields.next().unwrap_or_default();
+        let (display_path, next_index) = if path.is_empty() && index + 2 < records.len() {
+            (records[index + 2], index + 3)
+        } else {
+            (path, index + 1)
+        };
+
+        let is_binary = additions == b"-" || deletions == b"-";
+        let additions = parse_numstat_count(additions).unwrap_or_default();
+        let deletions = parse_numstat_count(deletions).unwrap_or_default();
+        let file = PatchFileStat {
+            old_path: None,
+            new_path: Some(String::from_utf8_lossy(display_path).into_owned()),
+            additions,
+            deletions,
+            is_binary,
+        };
+
+        stats.totals.files += 1;
+        stats.totals.additions += additions;
+        stats.totals.deletions += deletions;
+        if is_binary {
+            stats.totals.binary_files += 1;
+        }
+        stats.files.push(file);
+        index = next_index;
+    }
+
+    Ok(stats)
+}
+
+fn parse_numstat_count(bytes: &[u8]) -> Option<usize> {
+    std::str::from_utf8(bytes).ok()?.parse().ok()
 }
 
 fn add_intent_to_add(repo: &Path, index: &Path, paths: &[PathBuf]) -> HzResult<()> {
@@ -1072,6 +1595,89 @@ mod tests {
         assert_eq!(files[0].hunks[0].lines[1].new_line, None);
         assert_eq!(files[0].hunks[0].lines[2].old_line, None);
         assert_eq!(files[0].hunks[0].lines[2].new_line, Some(2));
+    }
+
+    #[test]
+    fn parse_patch_stats_counts_without_storing_hunk_lines() {
+        let patch = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,3 @@\n one\n-two\n+two changed\n+three\ndiff --git a/blob.bin b/blob.bin\nBinary files a/blob.bin and b/blob.bin differ\n";
+
+        let stats = parse_patch_stats(BufReader::new(patch.as_bytes())).unwrap();
+
+        assert_eq!(stats.files.len(), 2);
+        assert_eq!(stats.files[0].display_path(), "a.txt");
+        assert_eq!(stats.files[0].additions, 2);
+        assert_eq!(stats.files[0].deletions, 1);
+        assert_eq!(stats.files[1].display_path(), "blob.bin");
+        assert!(stats.files[1].is_binary);
+        assert_eq!(stats.totals.files, 2);
+        assert_eq!(stats.totals.additions, 2);
+        assert_eq!(stats.totals.deletions, 1);
+        assert_eq!(stats.totals.binary_files, 1);
+    }
+
+    #[test]
+    fn render_bytes_stat_matches_full_changeset_stat_for_patch() {
+        let patch = Arc::<[u8]>::from(
+            b"--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\n-old\n+new\n+next\n--- a/b.txt\n+++ b/b.txt\n@@ -2 +2 @@\n-left\n+right\n"
+                .as_slice(),
+        );
+        let options = DiffOptions {
+            source: DiffSource::Patch(PatchSource::Stdin(patch)),
+            stat: true,
+            include_untracked: false,
+            ..DiffOptions::default()
+        };
+
+        let streamed = String::from_utf8(render_bytes(options.clone()).unwrap()).unwrap();
+        let full = render_stat(&load_review_ref(&options).unwrap());
+
+        assert_eq!(streamed, full);
+    }
+
+    #[test]
+    fn render_bytes_stat_matches_full_changeset_stat_for_repo_source() {
+        let test_dir = temp_test_dir("repo-stat-equivalence");
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        init_repo(&repo);
+        fs::write(repo.join("rename.txt"), "same\n").expect("renamed file should be written");
+        fs::write(repo.join("binary.bin"), b"\0base\n").expect("binary file should be written");
+        git(["add", "rename.txt", "binary.bin"], &repo);
+        git(["commit", "-q", "-m", "fixtures"], &repo);
+
+        fs::write(repo.join("base.txt"), "base\nnext\n").expect("tracked file should change");
+        fs::write(repo.join("binary.bin"), b"\0changed\n").expect("binary file should change");
+        fs::write(repo.join("untracked.txt"), "new\n").expect("untracked file should be written");
+        git(["mv", "rename.txt", "renamed.txt"], &repo);
+        let options = DiffOptions {
+            repo: Some(repo.clone()),
+            stat: true,
+            ..DiffOptions::default()
+        };
+
+        let streamed = String::from_utf8(render_bytes(options.clone()).unwrap()).unwrap();
+        let full = render_stat(&load_review_ref(&options).unwrap());
+
+        assert_eq!(streamed, full);
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn parse_numstat_reads_regular_renamed_and_binary_files() {
+        let numstat =
+            b"2\t1\tsrc/lib.rs\x00-\t-\timage.bin\x000\t0\t\x00old/name.rs\x00new/name.rs\x00";
+
+        let stats = parse_numstat(numstat.as_slice()).unwrap();
+
+        assert_eq!(stats.files.len(), 3);
+        assert_eq!(stats.files[0].display_path(), "src/lib.rs");
+        assert_eq!(stats.files[1].display_path(), "image.bin");
+        assert!(stats.files[1].is_binary);
+        assert_eq!(stats.files[2].display_path(), "new/name.rs");
+        assert_eq!(stats.totals.files, 3);
+        assert_eq!(stats.totals.additions, 2);
+        assert_eq!(stats.totals.deletions, 1);
+        assert_eq!(stats.totals.binary_files, 1);
     }
 
     #[test]

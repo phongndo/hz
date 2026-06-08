@@ -16,6 +16,7 @@ concurrency:
 env:
   ACTIONLINT_VERSION: 1.7.12
   CARGO_TERM_COLOR: always
+  TSLP_VERSION: 1.9.0-rc.18
 
 jobs:
   actionlint:
@@ -76,6 +77,13 @@ jobs:
       - name: Install Rust 1.85
         uses: dtolnay/rust-toolchain@1.85
 
+      - name: Fetch tree-sitter parser source bundle
+        uses: ./.github/actions/fetch-parser-bundle
+        with:
+          tslp-version: ${{ env.TSLP_VERSION }}
+          github-token: ${{ github.token }}
+          target-dir: .cache/tree-sitter-language-pack
+
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -98,6 +106,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Fetch tree-sitter parser source bundle
+        uses: ./.github/actions/fetch-parser-bundle
+        with:
+          tslp-version: ${{ env.TSLP_VERSION }}
+          github-token: ${{ github.token }}
+          target-dir: .cache/tree-sitter-language-pack
 
       - name: Check
         run: cargo check --workspace --all-targets --all-features --locked
