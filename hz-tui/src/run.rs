@@ -5,7 +5,7 @@ use std::{
 
 use crossterm::{
     cursor::Show,
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{self, DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -20,6 +20,8 @@ use crate::{
     syntax::SyntaxRuntime,
     theme::{DiffBenchmarkOptions, DiffBenchmarkReport},
 };
+
+const EXIT_EVENT_DRAIN_LIMIT: usize = 1024;
 
 pub fn run() -> HzResult<()> {
     run_diff(DiffOptions::default())
@@ -228,14 +230,68 @@ impl TerminalCleanup {
         }
         self.active = false;
 
-        let raw_mode_result = disable_raw_mode();
         let mut stdout = io::stdout();
         let screen_result = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
+        let drain_result = drain_pending_exit_events();
+        let flush_input_result = flush_terminal_input_queue();
+        let raw_mode_result = disable_raw_mode();
 
-        raw_mode_result?;
         screen_result?;
+        drain_result?;
+        flush_input_result?;
+        raw_mode_result?;
         Ok(())
     }
+}
+
+fn drain_pending_exit_events() -> io::Result<()> {
+    // Mouse capture can leave already-emitted SGR mouse sequences queued after the
+    // quit key. Drain only immediately-available events while raw mode is still
+    // active so the shell does not receive and print those escape codes after we
+    // return to the prompt, without delaying clean exits that have no queued
+    // input.
+
+    for _ in 0..EXIT_EVENT_DRAIN_LIMIT {
+        if !event::poll(Duration::ZERO)? {
+            break;
+        }
+
+        let _ = event::read()?;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn flush_terminal_input_queue() -> io::Result<()> {
+    use std::fs::OpenOptions;
+
+    use rustix::{
+        io::Errno,
+        termios::{QueueSelector, isatty, tcflush},
+    };
+
+    // Crossterm enables raw mode on stdin only when fd 0 is a tty; with
+    // redirected stdin it reads events from the controlling terminal instead.
+    // Flush the same terminal input queue so queued mouse bytes do not leak to
+    // the shell after cleanup.
+    let stdin = io::stdin();
+    let flush_result = if isatty(&stdin) {
+        tcflush(stdin, QueueSelector::IFlush)
+    } else {
+        let tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+        tcflush(tty, QueueSelector::IFlush)
+    };
+
+    match flush_result {
+        Ok(()) | Err(Errno::NOTTY) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(not(unix))]
+fn flush_terminal_input_queue() -> io::Result<()> {
+    Ok(())
 }
 
 impl Drop for TerminalCleanup {

@@ -638,6 +638,7 @@ dependencies = [
  "hz-syntax",
  "notify",
  "ratatui",
+ "rustix 0.38.44",
  "unicode-width 0.2.0",
 ]
 
