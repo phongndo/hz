@@ -11,6 +11,7 @@ pub struct CreateWorktree {
     pub base: Option<String>,
     pub branch: Option<String>,
     pub max_detached_worktrees: Option<usize>,
+    pub max_branch_worktrees: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,7 @@ pub struct HandoffWorktree {
     pub repo: Option<PathBuf>,
     pub create: bool,
     pub max_detached_worktrees: Option<usize>,
+    pub max_branch_worktrees: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +129,7 @@ pub struct WorktreeEntry {
 }
 
 pub const DEFAULT_MAX_DETACHED_WORKTREES: usize = 15;
+pub const DEFAULT_MAX_BRANCH_WORKTREES: usize = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct HandoffLink {

@@ -1,11 +1,11 @@
 use std::{fs, path::Path};
 
 use crate::{
-    CreateWorktree, CreatedWorktree, DEFAULT_MAX_DETACHED_WORKTREES, PathWorktree, Registry,
-    WorktreeEntry, WorktreeSource, WorktreeStatus, default_worktree_path, detached_prune_warning,
-    detached_worktree_prune_candidates, generate_unique_handle, new_uuid_v4,
-    prune_detached_worktrees, resolve_repo, resolve_target, resolve_worktree_path, unix_now,
-    validate_worktree_name,
+    CreateWorktree, CreatedWorktree, DEFAULT_MAX_BRANCH_WORKTREES, DEFAULT_MAX_DETACHED_WORKTREES,
+    PathWorktree, Registry, WorktreeEntry, WorktreeSource, WorktreeStatus, branch_prune_warning,
+    branch_worktree_prune_candidates, default_worktree_path, detached_prune_warning,
+    detached_worktree_prune_candidates, generate_unique_handle, new_uuid_v4, prune_worktrees,
+    resolve_repo, resolve_target, resolve_worktree_path, unix_now, validate_worktree_name,
 };
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
 
@@ -53,7 +53,17 @@ pub(crate) fn create_with_registry(
         fs::create_dir_all(parent)?;
     }
 
-    let prune_candidates = if branch.is_none() {
+    let branch_backed = branch.is_some();
+    let prune_candidates = if branch_backed {
+        branch_worktree_prune_candidates(
+            registry,
+            &repo,
+            input.repo.as_deref(),
+            input
+                .max_branch_worktrees
+                .unwrap_or(DEFAULT_MAX_BRANCH_WORKTREES),
+        )?
+    } else {
         detached_worktree_prune_candidates(
             registry,
             &repo,
@@ -62,8 +72,6 @@ pub(crate) fn create_with_registry(
                 .max_detached_worktrees
                 .unwrap_or(DEFAULT_MAX_DETACHED_WORKTREES),
         )?
-    } else {
-        Vec::new()
     };
 
     hz_git::add_worktree(&repo, &path, branch.as_deref(), input.base.as_deref())?;
@@ -92,8 +100,9 @@ pub(crate) fn create_with_registry(
         ));
     }
     *registry = next_registry;
-    let warnings = match prune_detached_worktrees(registry, prune_candidates) {
+    let warnings = match prune_worktrees(registry, prune_candidates) {
         Ok(()) => Vec::new(),
+        Err(error) if branch_backed => vec![branch_prune_warning(error)],
         Err(error) => vec![detached_prune_warning(error)],
     };
 

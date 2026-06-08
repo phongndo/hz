@@ -22,6 +22,7 @@ pub fn handoff(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {
             input.target,
             input.create,
             input.max_detached_worktrees,
+            input.max_branch_worktrees,
         );
     }
 
@@ -48,6 +49,7 @@ pub(crate) fn handoff_patch(
     target: Option<String>,
     create: bool,
     max_detached_worktrees: Option<usize>,
+    max_branch_worktrees: Option<usize>,
 ) -> HzResult<WorktreeHandoff> {
     if same_path(&current, &repo) {
         handoff_patch_from_local(
@@ -57,6 +59,7 @@ pub(crate) fn handoff_patch(
             target,
             create,
             max_detached_worktrees,
+            max_branch_worktrees,
         )
     } else {
         if create {
@@ -131,10 +134,17 @@ pub(crate) fn handoff_patch_from_local(
     target: Option<String>,
     create: bool,
     max_detached_worktrees: Option<usize>,
+    max_branch_worktrees: Option<usize>,
 ) -> HzResult<WorktreeHandoff> {
     let branch = hz_git::current_branch(&current)?;
     let (destination, warnings) = if create {
-        create_handoff_destination(registry, &repo, target, max_detached_worktrees)?
+        create_handoff_destination(
+            registry,
+            &repo,
+            target,
+            max_detached_worktrees,
+            max_branch_worktrees,
+        )?
     } else {
         let destination = match target {
             Some(target) => find_target_worktree(registry, &repo, &target)?
@@ -199,6 +209,7 @@ pub(crate) fn create_handoff_destination(
     repo: &Path,
     target: Option<String>,
     max_detached_worktrees: Option<usize>,
+    max_branch_worktrees: Option<usize>,
 ) -> HzResult<(WorktreeEntry, Vec<String>)> {
     let created = create_with_registry(
         registry,
@@ -209,6 +220,7 @@ pub(crate) fn create_handoff_destination(
             base: None,
             branch: None,
             max_detached_worktrees,
+            max_branch_worktrees,
         },
     )?;
 

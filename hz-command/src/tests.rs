@@ -234,6 +234,7 @@ fn create_worktree_defaults_base_from_repo_config() {
         base: None,
         branch: None,
         max_detached_worktrees: None,
+        max_branch_worktrees: None,
     })
     .unwrap();
 
@@ -259,10 +260,37 @@ fn create_worktree_keeps_explicit_base_over_repo_config() {
         base: Some("main".to_owned()),
         branch: None,
         max_detached_worktrees: None,
+        max_branch_worktrees: None,
     })
     .unwrap();
 
     assert_eq!(input.base.as_deref(), Some("main"));
+
+    fs::remove_dir_all(test_dir).unwrap();
+}
+
+#[test]
+fn create_worktree_defaults_branch_limit_from_repo_config() {
+    let test_dir = test_repo("hz-create-branch-limit-test");
+    fs::create_dir_all(test_dir.join(".hz")).unwrap();
+    fs::write(
+        test_dir.join(".hz").join("hz.toml"),
+        "[worktree]\nmax_branch_worktrees = 7\n",
+    )
+    .unwrap();
+
+    let input = create_worktree_with_config_defaults(CreateWorktree {
+        name: Some("feature/ui".to_owned()),
+        repo: Some(test_dir.clone()),
+        path: None,
+        base: None,
+        branch: None,
+        max_detached_worktrees: None,
+        max_branch_worktrees: None,
+    })
+    .unwrap();
+
+    assert_eq!(input.max_branch_worktrees, Some(7));
 
     fs::remove_dir_all(test_dir).unwrap();
 }

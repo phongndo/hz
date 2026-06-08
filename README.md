@@ -169,12 +169,22 @@ worktrees are not auto-removed. If there are not enough removable worktrees,
 `[worktree].max_detached` in `.hz/hz.toml`, or pass `--max-detached <count>` to
 `hz new` or `hz handoff --new`; `0` disables auto-pruning.
 
+Branch-backed worktrees are also capped at 15 by default. Creating another
+branch-backed worktree auto-removes the oldest clean managed branch-backed
+worktrees until the cap is satisfied. Removing a branch-backed worktree removes
+only the checkout; the Git branch remains in the repo and can be checked out
+again later. Detached, unmanaged, dirty, unknown, and current worktrees are not
+auto-removed. Set `[worktree].max_branch_worktrees` in `.hz/hz.toml`, or pass
+`--max-branch-worktrees <count>` to `hz new` or branch-backed
+`hz handoff --new`; `0` disables auto-pruning.
+
 Repo config can set the default base branch for new worktrees:
 
 ```toml
 # .hz/hz.toml
 [worktree]
 max_detached = 15
+max_branch_worktrees = 15
 default_base = "dev"
 ```
 
@@ -318,6 +328,7 @@ registry, user config, and colorscheme paths.
 ```toml
 [worktree]
 max_detached = 15
+max_branch_worktrees = 15
 
 [lifecycle]
 setup = [".hz/environment/setup"]

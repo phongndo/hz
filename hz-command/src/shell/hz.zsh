@@ -245,7 +245,7 @@ _hz_complete_option_value() {
           ;;
       esac
       ;;
-    --max-detached)
+    --max-detached|--max-branch-worktrees)
       case "$cmd" in
         new|handoff)
           _message 'count'
@@ -287,7 +287,7 @@ _hz_complete_command_options() {
 
   case "$cmd" in
     new)
-      compadd -- -r --repo -p --path -B --base -b --branch --max-detached -j --json -d --debug --no-setup -h --help
+      compadd -- -r --repo -p --path -B --base -b --branch --max-detached --max-branch-worktrees -j --json -d --debug --no-setup -h --help
       ;;
     path|cd)
       compadd -- -r --repo -j --json -h --help
@@ -299,7 +299,7 @@ _hz_complete_command_options() {
       compadd -- -r --repo -j --json -f --force --yes -d --debug --no-cleanup -h --help
       ;;
     handoff)
-      compadd -- -b --branch -n --new --max-detached -r --repo -j --json -h --help
+      compadd -- -b --branch -n --new --max-detached --max-branch-worktrees -r --repo -j --json -h --help
       ;;
     setup|cleanup)
       compadd -- -r --repo -h --help
