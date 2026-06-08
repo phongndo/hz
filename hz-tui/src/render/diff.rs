@@ -107,12 +107,13 @@ pub(crate) fn render_row(
             hunk_header_line(hunk, width, theme)
         }
         UiRow::UnifiedLine { file, hunk, line } => {
-            let diff_line = app.changeset.files[file].hunks[hunk].lines[line].clone();
-            let syntax = unified_syntax_side(diff_line.kind)
-                .and_then(|side| app.syntax_line(file, hunk, line, side));
+            let kind = app.changeset.files[file].hunks[hunk].lines[line].kind;
+            let syntax =
+                unified_syntax_side(kind).and_then(|side| app.syntax_line(file, hunk, line, side));
             let inline = app.inline_ranges(file, hunk, line);
+            let diff_line = &app.changeset.files[file].hunks[hunk].lines[line];
             render_unified_line_at_scroll(
-                &diff_line,
+                diff_line,
                 syntax.as_ref(),
                 &inline,
                 row_index,
@@ -122,9 +123,9 @@ pub(crate) fn render_row(
             )
         }
         UiRow::MetaLine { file, hunk, line } => {
-            let diff_line = app.changeset.files[file].hunks[hunk].lines[line].clone();
+            let diff_line = &app.changeset.files[file].hunks[hunk].lines[line];
             render_unified_line_at_scroll(
-                &diff_line,
+                diff_line,
                 None,
                 &[],
                 row_index,
@@ -643,13 +644,6 @@ pub(crate) fn render_split_line(
     let theme = app.theme;
     let horizontal_scroll = app.horizontal_scroll;
 
-    let (left_line, right_line) = {
-        let lines = &app.changeset.files[file].hunks[hunk].lines;
-        (
-            left.and_then(|index| lines.get(index)).cloned(),
-            right.and_then(|index| lines.get(index)).cloned(),
-        )
-    };
     let left_syntax = left.and_then(|index| app.syntax_line(file, hunk, index, DiffSide::Old));
     let right_syntax = right.and_then(|index| app.syntax_line(file, hunk, index, DiffSide::New));
     let left_inline = left
@@ -661,8 +655,11 @@ pub(crate) fn render_split_line(
 
     let left_width = width / 2;
     let right_width = width.saturating_sub(left_width);
+    let lines = &app.changeset.files[file].hunks[hunk].lines;
+    let left_line = left.and_then(|index| lines.get(index));
+    let right_line = right.and_then(|index| lines.get(index));
     let mut spans = split_cell_spans_at_scroll(
-        left_line.as_ref(),
+        left_line,
         left_syntax.as_ref(),
         &left_inline,
         SplitCellRender {
@@ -674,7 +671,7 @@ pub(crate) fn render_split_line(
         horizontal_scroll,
     );
     spans.extend(split_cell_spans_at_scroll(
-        right_line.as_ref(),
+        right_line,
         right_syntax.as_ref(),
         &right_inline,
         SplitCellRender {
