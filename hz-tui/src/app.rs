@@ -1598,7 +1598,7 @@ impl DiffApp {
     }
 
     pub(crate) fn prepare_syntax_for_viewport(&mut self, visible_rows: usize) {
-        if visible_rows == 0 {
+        if visible_rows == 0 || self.syntax.is_none() {
             return;
         }
         let mut requested = HashSet::new();

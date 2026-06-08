@@ -90,7 +90,7 @@ pub(crate) fn make_executable(_path: &Path) -> HzResult<()> {
 }
 
 pub(crate) fn default_config() -> &'static str {
-    "[worktree]\nmax_detached = 15\n# default_base = \"dev\"\n# user_managed_roots = [\"~/.codex/worktrees\"]\n\n[list]\nheaders = \"auto\"\ncolumns = [\"marker\", \"target\", \"status\", \"modified\", \"path\"]\n\n[color]\nmode = \"auto\"\nscheme = \"terminal\"\n\n[lifecycle]\nsetup = [\".hz/environment/setup\"]\ncleanup = [\".hz/environment/cleanup\"]\n"
+    "[worktree]\nmax_detached = 15\nmax_branch_worktrees = 15\n# default_base = \"dev\"\n# user_managed_roots = [\"~/.codex/worktrees\"]\n\n[list]\nheaders = \"auto\"\ncolumns = [\"marker\", \"target\", \"status\", \"modified\", \"path\"]\n\n[color]\nmode = \"auto\"\nscheme = \"terminal\"\n\n[lifecycle]\nsetup = [\".hz/environment/setup\"]\ncleanup = [\".hz/environment/cleanup\"]\n"
 }
 
 pub(crate) fn default_setup_script() -> &'static str {

@@ -203,6 +203,7 @@ complete -c hz -n "__hz_command_is new" -s p -l path -r -F
 complete -c hz -n "__hz_command_is new" -s B -l base -r -a "(__hz_complete_git_refs)"
 complete -c hz -n "__hz_command_is new" -s b -l branch -r -a "(__hz_complete_git_refs)"
 complete -c hz -n "__hz_command_is new handoff" -l max-detached -r
+complete -c hz -n "__hz_command_is new handoff" -l max-branch-worktrees -r
 complete -c hz -n "__hz_command_is new" -l no-setup
 complete -c hz -n "__hz_command_is new path cd list ls remove rm handoff" -s j -l json
 complete -c hz -n "__hz_command_is new remove rm" -s d -l debug

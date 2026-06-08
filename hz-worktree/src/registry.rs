@@ -390,10 +390,7 @@ pub(crate) fn registry_path() -> HzResult<PathBuf> {
         return Ok(path);
     }
 
-    registry_path_from_env(
-        env_path("HOME"),
-        env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
-    )
+    registry_path_from_env(env_path("HOME"))
 }
 
 #[cfg(test)]
@@ -426,15 +423,10 @@ impl Drop for RegistryPathOverrideGuard {
     }
 }
 
-pub(crate) fn registry_path_from_env(
-    home: Option<PathBuf>,
-    xdg_config_home: Option<PathBuf>,
-) -> HzResult<PathBuf> {
-    let config_home = match non_empty_path(xdg_config_home) {
-        Some(path) => path,
-        None => require_home(non_empty_path(home))?.join(".config"),
-    };
-    Ok(config_home.join("hz").join("registry.json"))
+pub(crate) fn registry_path_from_env(home: Option<PathBuf>) -> HzResult<PathBuf> {
+    Ok(require_home(non_empty_path(home))?
+        .join(".hz")
+        .join("registry.json"))
 }
 
 pub(crate) fn home_dir() -> HzResult<PathBuf> {

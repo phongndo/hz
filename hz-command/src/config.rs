@@ -21,9 +21,11 @@ pub fn load_repo_config(input: LoadRepoConfig) -> HzResult<HzConfig> {
 pub(crate) fn create_worktree_with_config_defaults(
     mut input: CreateWorktree,
 ) -> HzResult<CreateWorktree> {
+    let creates_branch = creates_branch_worktree(&input);
     let needs_detached_limit =
         input.max_detached_worktrees.is_none() && creates_detached_worktree(&input);
-    if input.base.is_none() || needs_detached_limit {
+    let needs_branch_limit = input.max_branch_worktrees.is_none() && creates_branch;
+    if input.base.is_none() || needs_detached_limit || needs_branch_limit {
         let repo = config_repo(input.repo.as_deref())?;
         let config = HzConfig::load(&repo)?;
         if input.base.is_none()
@@ -33,6 +35,9 @@ pub(crate) fn create_worktree_with_config_defaults(
         }
         if needs_detached_limit {
             input.max_detached_worktrees = Some(config.max_detached_worktrees());
+        }
+        if needs_branch_limit {
+            input.max_branch_worktrees = Some(config.max_branch_worktrees());
         }
     }
 
@@ -63,6 +68,7 @@ pub struct WorktreeConfig {
     pub default_base: Option<String>,
     pub max_detached: Option<usize>,
     pub user_managed_roots: Option<Vec<String>>,
+    pub max_branch_worktrees: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -173,17 +179,26 @@ impl HzConfig {
             .map(|root| resolve_user_managed_root(repo, root))
             .collect()
     }
+
+    pub(crate) fn max_branch_worktrees(&self) -> usize {
+        self.worktree
+            .as_ref()
+            .and_then(|worktree| worktree.max_branch_worktrees)
+            .unwrap_or(hz_worktree::DEFAULT_MAX_BRANCH_WORKTREES)
+    }
 }
 
-pub(crate) fn with_configured_handoff_detached_limit(
+pub(crate) fn with_configured_handoff_limits(
     mut input: HandoffWorktree,
 ) -> HzResult<HandoffWorktree> {
-    if input.max_detached_worktrees.is_none()
-        && input.mode == HandoffMode::Patch
-        && input.create
-        && input.target.is_none()
-    {
-        input.max_detached_worktrees = Some(configured_detached_limit(input.repo.as_deref())?);
+    if input.mode == HandoffMode::Patch && input.create {
+        if input.target.is_none() && input.max_detached_worktrees.is_none() {
+            input.max_detached_worktrees = Some(configured_detached_limit(input.repo.as_deref())?);
+        }
+        if input.target.is_some() && input.max_branch_worktrees.is_none() {
+            input.max_branch_worktrees =
+                Some(configured_branch_worktree_limit(input.repo.as_deref())?);
+        }
     }
     Ok(input)
 }
@@ -192,9 +207,18 @@ pub(crate) fn creates_detached_worktree(input: &CreateWorktree) -> bool {
     input.name.is_none() && input.branch.is_none()
 }
 
+pub(crate) fn creates_branch_worktree(input: &CreateWorktree) -> bool {
+    input.name.is_some() || input.branch.is_some()
+}
+
 pub(crate) fn configured_detached_limit(repo: Option<&Path>) -> HzResult<usize> {
     let repo = config_repo(repo)?;
     Ok(HzConfig::load(&repo)?.max_detached_worktrees())
+}
+
+pub(crate) fn configured_branch_worktree_limit(repo: Option<&Path>) -> HzResult<usize> {
+    let repo = config_repo(repo)?;
+    Ok(HzConfig::load(&repo)?.max_branch_worktrees())
 }
 
 pub(crate) fn config_path(repo: &Path) -> PathBuf {

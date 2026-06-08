@@ -4,7 +4,7 @@ use crate::{
     CreateWorktree, CreatedWorktree, FindWorktree, HandoffWorktree, HzConfig, LifecycleKind,
     ListWorktrees, LocalWorktree, LocalWorktreeInfo, PathWorktree, RemoveWorktree, WorktreeEntry,
     WorktreeHandoff, create_worktree_with_config_defaults, created_worktree_target, path_is_inside,
-    run_lifecycle_for_path, with_configured_handoff_detached_limit,
+    run_lifecycle_for_path, with_configured_handoff_limits,
 };
 use hz_core::HzResult;
 
@@ -29,7 +29,7 @@ pub fn path_worktree(input: PathWorktree) -> HzResult<hz_core::paths::WorktreeTa
 }
 
 pub fn handoff_worktree(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {
-    hz_worktree::handoff(with_configured_handoff_detached_limit(input)?)
+    hz_worktree::handoff(with_configured_handoff_limits(input)?)
 }
 
 pub fn list_worktrees(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {

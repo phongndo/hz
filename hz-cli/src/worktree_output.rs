@@ -29,6 +29,7 @@ pub(crate) fn create_worktree(args: NewWorktreeArgs) -> CliResult<()> {
             base: args.base,
             branch: args.branch,
             max_detached_worktrees: args.max_detached,
+            max_branch_worktrees: args.max_branch_worktrees,
         },
         run_setup,
     )?;

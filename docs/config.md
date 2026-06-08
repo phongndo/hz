@@ -28,6 +28,7 @@ CLI flag > .hz/hz.toml > built-in default
 ```toml
 [worktree]
 max_detached = 15
+max_branch_worktrees = 15
 default_base = "dev"
 user_managed_roots = ["~/.codex/worktrees", "../agent-worktrees"]
 ```
@@ -35,6 +36,12 @@ user_managed_roots = ["~/.codex/worktrees", "../agent-worktrees"]
 `max_detached` caps managed detached scratch worktrees for the repo. Creating
 another detached worktree auto-removes the oldest clean managed detached
 worktrees until the cap is satisfied. Set it to `0` to disable auto-pruning.
+
+`max_branch_worktrees` caps managed branch-backed worktrees for the repo.
+Creating another branch-backed worktree auto-removes the oldest clean managed
+branch-backed worktrees until the cap is satisfied. Only the checkout is
+removed; the Git branch remains available to check out later. Set it to `0` to
+disable auto-pruning.
 
 `default_base` is the branch or revision used when `hz new` is called without
 `--base`.
@@ -55,7 +62,7 @@ included.
 
 Relative roots are resolved from the repository root. `~/` expands to `$HOME`.
 Configured roots are not auto-pruned; auto-pruning still only removes clean
-registry-managed detached worktrees.
+registry-managed worktrees covered by the configured limits.
 
 ## List
 

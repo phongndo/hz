@@ -147,8 +147,7 @@ fn run() -> CliResult<()> {
                 )?;
                 Ok(())
             } else {
-                let output = hz_command::diff_bytes(options)?;
-                write_stdout_bytes(&output)
+                stream_diff_to_stdout(options)
             }
         }
         Some(Command::TreeSitter { command }) => tree_sitter(command),
@@ -156,10 +155,15 @@ fn run() -> CliResult<()> {
     }
 }
 
-fn write_stdout_bytes(output: &[u8]) -> CliResult<()> {
-    write_all_ignore_broken_pipe(io::stdout().lock(), output)
+fn stream_diff_to_stdout(options: hz_command::DiffOptions) -> CliResult<()> {
+    match hz_command::diff_to_writer(options, io::stdout().lock()) {
+        Ok(()) => Ok(()),
+        Err(HzError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
+#[cfg(test)]
 fn write_all_ignore_broken_pipe(mut writer: impl Write, bytes: &[u8]) -> CliResult<()> {
     match writer.write_all(bytes) {
         Ok(()) => {}

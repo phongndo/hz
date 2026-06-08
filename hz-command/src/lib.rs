@@ -24,7 +24,7 @@ pub use config::{
     ColorConfig, ColorMode, ColorSchemeConfig, HzConfig, LifecycleConfig, ListColumn, ListConfig,
     ListHeaders, LoadRepoConfig, WorktreeConfig, load_repo_config,
 };
-pub use diff::{diff, diff_bytes, github_pr_diff_options};
+pub use diff::{diff, diff_bytes, diff_to_writer, github_pr_diff_options};
 pub use init::{InitRepo, RepoInit, init_repo};
 pub use lifecycle::{
     LifecycleKind, LifecycleRun, RunLifecycle, run_lifecycle, run_lifecycle_for_entry,

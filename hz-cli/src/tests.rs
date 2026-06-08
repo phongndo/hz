@@ -943,6 +943,8 @@ fn handoff_accepts_optional_branch_and_path_only() {
         "--new",
         "--max-detached",
         "3",
+        "--max-branch-worktrees",
+        "4",
         "feature/ui",
     ])
     .unwrap();
@@ -951,6 +953,7 @@ fn handoff_accepts_optional_branch_and_path_only() {
             assert_eq!(args.target.as_deref(), Some("feature/ui"));
             assert!(args.create);
             assert_eq!(args.max_detached, Some(3));
+            assert_eq!(args.max_branch_worktrees, Some(4));
         }
         command => panic!("expected handoff command, got {command:?}"),
     }
@@ -977,6 +980,8 @@ fn creation_and_diff_accept_short_flags() {
         "feature/ui",
         "--max-detached",
         "5",
+        "--max-branch-worktrees",
+        "6",
         "-j",
         "-d",
         "--no-setup",
@@ -992,6 +997,7 @@ fn creation_and_diff_accept_short_flags() {
             assert_eq!(args.base.as_deref(), Some("main"));
             assert_eq!(args.branch.as_deref(), Some("feature/ui"));
             assert_eq!(args.max_detached, Some(5));
+            assert_eq!(args.max_branch_worktrees, Some(6));
             assert!(args.json);
             assert!(args.debug);
             assert!(args.no_setup);

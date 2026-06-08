@@ -159,12 +159,120 @@ fn detached_prune_candidates_allow_zero_to_disable_auto_pruning() {
 }
 
 #[test]
+fn branch_prune_candidates_select_oldest_clean_managed_branch_worktree() {
+    let repo = PathBuf::from("/repo/hz");
+    let old = branch_test_entry(&repo, "old", "feature/old", 1);
+    let former_detached = detached_test_entry(&repo, "former-detached", 2);
+    let new = branch_test_entry(&repo, "new", "feature/new", 3);
+    let unmanaged = WorktreeEntry {
+        source: WorktreeSource::Git,
+        ..branch_test_entry(&repo, "unmanaged", "feature/unmanaged", 0)
+    };
+    let detached = detached_test_entry(&repo, "detached", 0);
+    let registry = Registry {
+        entries: vec![
+            new.clone(),
+            unmanaged,
+            detached.clone(),
+            former_detached.clone(),
+            old.clone(),
+        ],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+    let git_worktrees = vec![
+        git_branch(&new, "feature/new"),
+        git_branch(&former_detached, "feature/former-detached"),
+        git_branch(&old, "feature/old"),
+        git_detached(&detached),
+    ];
+
+    let candidates =
+        select_branch_worktree_prune_candidates(&registry, &repo, 3, None, &git_worktrees, |_| {
+            true
+        })
+        .unwrap();
+
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|entry| (entry.handle.as_str(), entry.branch.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![("old", Some("feature/old"))]
+    );
+}
+
+#[test]
+fn branch_prune_candidates_error_when_current_or_dirty_entries_block_limit() {
+    let repo = PathBuf::from("/repo/hz");
+    let current = branch_test_entry(&repo, "current", "feature/current", 1);
+    let dirty = branch_test_entry(&repo, "dirty", "feature/dirty", 2);
+    let registry = Registry {
+        entries: vec![current.clone(), dirty.clone()],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+    let git_worktrees = vec![
+        git_branch(&current, "feature/current"),
+        git_branch(&dirty, "feature/dirty"),
+    ];
+
+    let error = select_branch_worktree_prune_candidates(
+        &registry,
+        &repo,
+        2,
+        Some(&current.path),
+        &git_worktrees,
+        |path| !same_path(path, &dirty.path),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "branch worktree limit 2 would be exceeded; not enough clean branch worktrees can be auto-removed"
+    );
+}
+
+#[test]
+fn branch_prune_candidates_allow_zero_to_disable_auto_pruning() {
+    let repo = PathBuf::from("/repo/hz");
+    let entry = branch_test_entry(&repo, "old", "feature/old", 1);
+    let registry = Registry {
+        entries: vec![entry.clone()],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+
+    let candidates = select_branch_worktree_prune_candidates(
+        &registry,
+        &repo,
+        0,
+        None,
+        &[git_branch(&entry, "feature/old")],
+        |_| false,
+    )
+    .unwrap();
+
+    assert!(candidates.is_empty());
+}
+
+#[test]
 fn detached_prune_warning_preserves_created_worktree_context() {
     let warning = detached_prune_warning(HzError::Usage("permission denied".to_owned()));
 
     assert_eq!(
         warning,
         "created worktree, but failed to prune detached worktrees: permission denied"
+    );
+}
+
+#[test]
+fn branch_prune_warning_preserves_created_worktree_context() {
+    let warning = branch_prune_warning(HzError::Usage("permission denied".to_owned()));
+
+    assert_eq!(
+        warning,
+        "created worktree, but failed to prune branch worktrees: permission denied"
     );
 }
 
@@ -219,6 +327,7 @@ fn create_rolls_back_git_state_when_registry_save_fails() {
             base: None,
             branch: None,
             max_detached_worktrees: None,
+            max_branch_worktrees: None,
         },
     )
     .unwrap_err();
@@ -228,6 +337,85 @@ fn create_rolls_back_git_state_when_registry_save_fails() {
     assert!(!destination.exists());
     assert!(!git_worktree_listed(&repo, &destination));
     assert!(!hz_git::branch_exists(&repo, "feature").unwrap());
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn deferred_create_prune_does_not_remove_candidates_until_run() {
+    let test_dir = test_dir("hz-worktree-deferred-prune-test");
+    let repo = test_dir.join("repo");
+    let old_destination = test_dir.join("old-destination");
+    let new_destination = test_dir.join("new-destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    git(["branch", "old"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            old_destination.to_str().unwrap(),
+            "old",
+        ],
+        &repo,
+    );
+    let old_destination = fs::canonicalize(old_destination).unwrap();
+    let old_entry = WorktreeEntry {
+        id: "old".to_owned(),
+        handle: "old".to_owned(),
+        repo: repo.clone(),
+        path: old_destination.clone(),
+        branch: Some("old".to_owned()),
+        base: None,
+        source: WorktreeSource::Managed,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
+    };
+    let mut registry = Registry {
+        entries: vec![old_entry.clone()],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    registry.save().expect("registry should be saved");
+
+    let (created, pending_prune) = create_with_registry_and_deferred_prune(
+        &mut registry,
+        CreateWorktree {
+            name: Some("new".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(new_destination),
+            base: None,
+            branch: None,
+            max_detached_worktrees: None,
+            max_branch_worktrees: Some(1),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        registry
+            .entries
+            .iter()
+            .any(|entry| entry.id == old_entry.id)
+    );
+    assert!(git_worktree_listed(&repo, &old_destination));
+    assert!(git_worktree_listed(&repo, &created.path));
+
+    let warnings = pending_prune.prune(&mut registry);
+
+    assert!(warnings.is_empty());
+    assert!(
+        !registry
+            .entries
+            .iter()
+            .any(|entry| entry.id == old_entry.id)
+    );
+    assert!(!git_worktree_listed(&repo, &old_destination));
+    assert!(git_worktree_listed(&repo, &created.path));
 
     fs::remove_dir_all(test_dir).expect("test directory should be removed");
 }
@@ -413,12 +601,66 @@ fn prune_does_not_remove_git_worktree_when_registry_save_fails() {
     let _registry_path_override =
         RegistryPathOverrideGuard::set(blocked_parent.join("registry.json"));
 
-    let error = prune_detached_worktrees(&mut registry, vec![entry.clone()]).unwrap_err();
+    let error = prune_worktrees(&mut registry, vec![entry.clone()]).unwrap_err();
 
     assert!(matches!(&error, HzError::Io(_)), "{error}");
     assert_eq!(registry.entries, vec![entry]);
     assert!(git_worktree_listed(&repo, &destination));
     assert_eq!(hz_git::current_branch(&destination).unwrap(), None);
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn prune_branch_worktree_keeps_git_branch() {
+    let test_dir = test_dir("hz-worktree-prune-branch-keeps-branch-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    git(["branch", "feature"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            destination.to_str().unwrap(),
+            "feature",
+        ],
+        &repo,
+    );
+    let destination = fs::canonicalize(destination).unwrap();
+    let entry = WorktreeEntry {
+        id: "feature".to_owned(),
+        handle: "feature".to_owned(),
+        repo: repo.clone(),
+        path: destination.clone(),
+        branch: Some("feature".to_owned()),
+        base: None,
+        source: WorktreeSource::Managed,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
+    };
+    let mut registry = Registry {
+        entries: vec![entry.clone()],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    registry.save().expect("registry should be saved");
+
+    prune_worktrees(&mut registry, vec![entry.clone()]).unwrap();
+
+    assert!(registry.entries.is_empty());
+    assert!(!git_worktree_listed(&repo, &destination));
+    assert!(hz_git::branch_exists(&repo, "feature").unwrap());
+    git(["switch", "-q", "feature"], &repo);
+    assert_eq!(
+        hz_git::current_branch(&repo).unwrap().as_deref(),
+        Some("feature")
+    );
 
     fs::remove_dir_all(test_dir).expect("test directory should be removed");
 }
@@ -1037,28 +1279,17 @@ fn registry_lock_for_git_side_effect_reuses_current_lock() {
 }
 
 #[test]
-fn registry_path_ignores_empty_xdg_config_home() {
+fn registry_path_uses_home_hz_directory() {
     assert_eq!(
-        registry_path_from_env(Some(PathBuf::from("/home/user")), Some(PathBuf::new())).unwrap(),
-        PathBuf::from("/home/user/.config/hz/registry.json")
-    );
-    assert_eq!(
-        registry_path_from_env(
-            Some(PathBuf::from("/home/user")),
-            Some(PathBuf::from("/tmp/config")),
-        )
-        .unwrap(),
-        PathBuf::from("/tmp/config/hz/registry.json")
+        registry_path_from_env(Some(PathBuf::from("/home/user"))).unwrap(),
+        PathBuf::from("/home/user/.hz/registry.json")
     );
 }
 
 #[test]
-fn registry_path_does_not_fall_back_to_empty_home() {
-    assert_eq!(
-        registry_path_from_env(Some(PathBuf::new()), Some(PathBuf::from("/tmp/config")),).unwrap(),
-        PathBuf::from("/tmp/config/hz/registry.json")
-    );
-    assert!(registry_path_from_env(Some(PathBuf::new()), Some(PathBuf::new())).is_err());
+fn registry_path_requires_home() {
+    assert!(registry_path_from_env(Some(PathBuf::new())).is_err());
+    assert!(registry_path_from_env(None).is_err());
 }
 
 #[test]
@@ -1233,10 +1464,29 @@ fn detached_test_entry(repo: &Path, handle: &str, created_at_unix: u64) -> Workt
     }
 }
 
+fn branch_test_entry(
+    repo: &Path,
+    handle: &str,
+    branch: &str,
+    created_at_unix: u64,
+) -> WorktreeEntry {
+    WorktreeEntry {
+        branch: Some(branch.to_owned()),
+        ..detached_test_entry(repo, handle, created_at_unix)
+    }
+}
+
 fn git_detached(entry: &WorktreeEntry) -> hz_git::GitWorktree {
     hz_git::GitWorktree {
         path: entry.path.clone(),
         branch: None,
+    }
+}
+
+fn git_branch(entry: &WorktreeEntry, branch: &str) -> hz_git::GitWorktree {
+    hz_git::GitWorktree {
+        path: entry.path.clone(),
+        branch: Some(branch.to_owned()),
     }
 }
 
