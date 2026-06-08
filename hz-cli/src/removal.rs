@@ -132,7 +132,10 @@ pub(crate) fn should_confirm_unmanaged_removal_with_stdin(
     worktree: &hz_command::WorktreeEntry,
     stdin_is_terminal: bool,
 ) -> HzResult<bool> {
-    if worktree.source == hz_command::WorktreeSource::Managed || args.force {
+    if worktree.source == hz_command::WorktreeSource::Managed
+        || args.force
+        || hz_command::is_user_managed_worktree_path(worktree)?
+    {
         return Ok(false);
     }
 
@@ -176,7 +179,20 @@ pub(crate) fn confirm_unmanaged_removal(worktree: &hz_command::WorktreeEntry) ->
 }
 
 pub(crate) fn should_run_cleanup_for_removal(worktree: &hz_command::WorktreeEntry) -> bool {
-    worktree.source == hz_command::WorktreeSource::Managed
+    if worktree.source == hz_command::WorktreeSource::Managed {
+        return true;
+    }
+
+    match hz_command::is_user_managed_worktree_path(worktree) {
+        Ok(user_managed) => user_managed,
+        Err(error) => {
+            let _ = write_stderr(format_args!(
+                "warning: failed to check user-managed worktree status for {}; running cleanup: {error}\n",
+                worktree.path.display()
+            ));
+            true
+        }
+    }
 }
 
 pub(crate) fn worktree_branch_or_handle(worktree: &hz_command::WorktreeEntry) -> &str {

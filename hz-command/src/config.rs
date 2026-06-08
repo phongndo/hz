@@ -1,11 +1,11 @@
 use std::{
     collections::HashMap,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
 use crate::{CONFIG_FILE, CreateWorktree, HZ_DIR, HandoffMode, HandoffWorktree, LifecycleKind};
-use hz_core::{HzError, HzResult};
+use hz_core::{HzError, HzResult, path_utils::normalize_lexically};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +67,7 @@ pub struct LifecycleConfig {
 pub struct WorktreeConfig {
     pub default_base: Option<String>,
     pub max_detached: Option<usize>,
+    pub user_managed_roots: Option<Vec<String>>,
     pub max_branch_worktrees: Option<usize>,
 }
 
@@ -165,6 +166,20 @@ impl HzConfig {
             .unwrap_or(hz_worktree::DEFAULT_MAX_DETACHED_WORKTREES)
     }
 
+    pub(crate) fn user_managed_worktree_roots(&self, repo: &Path) -> HzResult<Vec<PathBuf>> {
+        let Some(worktree) = &self.worktree else {
+            return Ok(Vec::new());
+        };
+        worktree
+            .user_managed_roots
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|root| !root.is_empty())
+            .map(|root| resolve_user_managed_root(repo, root))
+            .collect()
+    }
+
     pub(crate) fn max_branch_worktrees(&self) -> usize {
         self.worktree
             .as_ref()
@@ -208,4 +223,36 @@ pub(crate) fn configured_branch_worktree_limit(repo: Option<&Path>) -> HzResult<
 
 pub(crate) fn config_path(repo: &Path) -> PathBuf {
     repo.join(HZ_DIR).join(CONFIG_FILE)
+}
+
+pub(crate) fn resolve_user_managed_root(repo: &Path, root: &str) -> HzResult<PathBuf> {
+    let home = env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from);
+    resolve_user_managed_root_from_home(repo, root, home.as_deref())
+}
+
+pub(crate) fn resolve_user_managed_root_from_home(
+    repo: &Path,
+    root: &str,
+    home: Option<&Path>,
+) -> HzResult<PathBuf> {
+    let path = match root {
+        "~" => require_config_home(home)?,
+        root if root.starts_with("~/") => require_config_home(home)?.join(&root[2..]),
+        root => PathBuf::from(root),
+    };
+
+    let resolved = if path.is_absolute() {
+        path
+    } else {
+        repo.join(path)
+    };
+
+    Ok(normalize_lexically(&resolved))
+}
+
+pub(crate) fn require_config_home(home: Option<&Path>) -> HzResult<PathBuf> {
+    home.map(Path::to_path_buf)
+        .ok_or_else(|| HzError::Usage("HOME is not set or empty".to_owned()))
 }

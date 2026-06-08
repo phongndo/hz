@@ -158,8 +158,10 @@ hz rm fix-login
 and leaves the worktree on a detached `HEAD`. Managed worktrees are registered
 in `~/.hz/registry.json`.
 `hz ls`, `hz cd`, and `hz rm` also detect unmanaged Git worktrees created by
-other tools. Removing an unmanaged worktree asks for confirmation because the
-path is not managed by `hz`.
+other tools. Removing an unmanaged worktree outside `~/.hz/worktrees/<repo>/`
+asks for confirmation because the path is not in `hz`'s worktree namespace. Add
+`[worktree].user_managed_roots` in `.hz/hz.toml` for other directories that
+should be treated as user-managed by `hz`.
 
 Detached scratch worktrees are capped at 15 by default. Creating another
 detached worktree auto-removes the oldest clean managed detached worktrees until
@@ -178,7 +180,8 @@ auto-removed. Set `[worktree].max_branch_worktrees` in `.hz/hz.toml`, or pass
 `--max-branch-worktrees <count>` to `hz new` or branch-backed
 `hz handoff --new`; `0` disables auto-pruning.
 
-Repo config can set the default base branch for new worktrees:
+Repo config can set the default base branch for new worktrees and additional
+user-managed worktree roots:
 
 ```toml
 # .hz/hz.toml
@@ -186,6 +189,7 @@ Repo config can set the default base branch for new worktrees:
 max_detached = 15
 max_branch_worktrees = 15
 default_base = "dev"
+user_managed_roots = ["~/.codex/worktrees"]
 ```
 
 With that config, `hz new feature/ui` behaves like
@@ -329,6 +333,7 @@ registry, user config, and colorscheme paths.
 [worktree]
 max_detached = 15
 max_branch_worktrees = 15
+# user_managed_roots = ["~/.codex/worktrees"]
 
 [lifecycle]
 setup = [".hz/environment/setup"]

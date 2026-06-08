@@ -1293,6 +1293,33 @@ fn registry_path_requires_home() {
 }
 
 #[test]
+fn hz_worktree_path_matches_default_repo_namespace() {
+    let home = PathBuf::from("/Users/dev");
+    let repo = PathBuf::from("/repo/hz");
+    let hz_root = PathBuf::from("/Users/dev/.hz/worktrees/hz");
+    let hz_child = hz_root.join("entry-id");
+
+    assert!(is_hz_worktree_path_from_home(&home, &repo, &hz_child).unwrap());
+    assert!(is_hz_worktree_path_from_home(&home, &repo, &hz_root).unwrap());
+    assert!(
+        !is_hz_worktree_path_from_home(
+            &home,
+            &repo,
+            &PathBuf::from("/Users/dev/.hz/worktrees/other/entry-id"),
+        )
+        .unwrap()
+    );
+    assert!(
+        !is_hz_worktree_path_from_home(
+            &home,
+            &repo,
+            &PathBuf::from("/Users/dev/.codex/worktrees/bd16/hz"),
+        )
+        .unwrap()
+    );
+}
+
+#[test]
 fn git_worktree_handle_uses_parent_when_path_leaf_is_repo_name() {
     let handle = git_worktree_handle(
         &PathBuf::from("/repo/hz"),

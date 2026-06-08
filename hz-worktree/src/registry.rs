@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{HandoffLink, PatchHandoffLink, WorktreeEntry, new_uuid_v4, unix_now};
-use hz_core::{HzError, HzResult, paths::WorktreeTarget};
+use hz_core::{HzError, HzResult, path_utils::path_is_inside, paths::WorktreeTarget};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -343,14 +343,34 @@ pub(crate) fn unlock_registry_file(file: &fs::File) -> io::Result<()> {
 }
 
 pub(crate) fn default_worktree_path(repo: &Path, id: &str) -> HzResult<PathBuf> {
+    Ok(default_worktree_root(repo)?.join(id))
+}
+
+pub(crate) fn default_worktree_root(repo: &Path) -> HzResult<PathBuf> {
     let repo_name = repo
         .file_name()
         .ok_or_else(|| HzError::Usage(format!("repo path has no name: {}", repo.display())))?;
-    Ok(home_dir()?
-        .join(".hz")
-        .join("worktrees")
-        .join(repo_name)
-        .join(id))
+    Ok(default_worktree_root_from_home(&home_dir()?, repo_name))
+}
+
+pub(crate) fn default_worktree_root_from_home(home: &Path, repo_name: &std::ffi::OsStr) -> PathBuf {
+    home.join(".hz").join("worktrees").join(repo_name)
+}
+
+pub fn is_hz_worktree_path(repo: &Path, path: &Path) -> HzResult<bool> {
+    is_hz_worktree_path_from_home(&home_dir()?, repo, path)
+}
+
+pub(crate) fn is_hz_worktree_path_from_home(
+    home: &Path,
+    repo: &Path,
+    path: &Path,
+) -> HzResult<bool> {
+    let repo_name = repo
+        .file_name()
+        .ok_or_else(|| HzError::Usage(format!("repo path has no name: {}", repo.display())))?;
+    let root = default_worktree_root_from_home(home, repo_name);
+    Ok(path_is_inside(path, &root))
 }
 
 pub(crate) fn registry_path() -> HzResult<PathBuf> {
