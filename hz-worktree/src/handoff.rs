@@ -642,20 +642,21 @@ pub(crate) fn find_target_worktree(
     target: &str,
 ) -> HzResult<Option<WorktreeEntry>> {
     Ok(find_target_entry(
-        discover_entries(registry, repo)?,
+        &discover_entries(registry, repo)?,
         repo,
         target,
     ))
 }
 
 pub(crate) fn find_target_entry(
-    entries: Vec<WorktreeEntry>,
+    entries: &[WorktreeEntry],
     repo: &Path,
     target: &str,
 ) -> Option<WorktreeEntry> {
     entries
-        .into_iter()
+        .iter()
         .find(|entry| !same_path(&entry.path, repo) && matches_target(entry, target))
+        .cloned()
 }
 
 pub(crate) fn validate_handoff_source_branch(

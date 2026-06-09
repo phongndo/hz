@@ -5,6 +5,7 @@ use std::{
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
+    process::Command as ProcessCommand,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -1557,6 +1558,37 @@ fn removed_worktree_display_identifier_prefers_branch() {
 }
 
 #[test]
+fn removal_candidates_report_duplicate_before_later_unknown_target() {
+    let test_dir = test_dir("hz-removal-duplicate-order-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("feature");
+    init_committed_git_repo(&repo);
+    git(["branch", "feature"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            destination.to_str().unwrap(),
+            "feature",
+        ],
+        &repo,
+    );
+    let mut args = remove_args(false, true);
+    args.targets = vec![
+        "feature".to_owned(),
+        "feature".to_owned(),
+        "missing".to_owned(),
+    ];
+    args.repo = Some(repo.clone());
+
+    let error = find_removal_candidates(&args).unwrap_err();
+
+    assert_eq!(error.to_string(), "duplicate worktree target: feature");
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
 fn unmanaged_json_removal_requires_force() {
     let args = remove_args(true, false);
     let worktree = test_entry(hz_command::WorktreeSource::Git);
@@ -2066,4 +2098,27 @@ fn test_dir(prefix: &str) -> PathBuf {
     ));
     fs::create_dir_all(&test_dir).expect("test directory should be created");
     test_dir
+}
+
+fn init_committed_git_repo(repo: &Path) {
+    fs::create_dir_all(repo).expect("repo directory should be created");
+    git(["init", "-q"], repo);
+    git(["config", "user.email", "test@example.com"], repo);
+    git(["config", "user.name", "Test"], repo);
+    fs::write(repo.join("file.txt"), "base\n").expect("tracked file should be written");
+    git(["add", "file.txt"], repo);
+    git(["commit", "-q", "-m", "init"], repo);
+}
+
+fn git<const N: usize>(args: [&str; N], cwd: &Path) {
+    let output = ProcessCommand::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

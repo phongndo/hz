@@ -3,7 +3,7 @@ use std::{
     io::{self, IsTerminal, Write},
 };
 
-use hz_core::HzResult;
+use hz_core::{HzError, HzResult};
 
 use crate::{
     CliResult,
@@ -82,6 +82,26 @@ pub(crate) struct RemovalCandidate {
 pub(crate) fn find_removal_candidates(
     args: &RemoveWorktreeArgs,
 ) -> HzResult<Vec<RemovalCandidate>> {
+    let found = match hz_command::find_worktrees(hz_command::FindWorktrees {
+        targets: args.targets.clone(),
+        repo: args.repo.clone(),
+    }) {
+        Ok(found) => found,
+        Err(error) if is_unknown_worktree_error(&error) => {
+            // Preserve the pre-batch error order for mixed inputs: earlier
+            // duplicate or unmanaged-removal errors should still beat a later
+            // unknown target.
+            return find_removal_candidates_one_by_one(args);
+        }
+        Err(error) => return Err(error),
+    };
+
+    collect_removal_candidates(args, found)
+}
+
+fn find_removal_candidates_one_by_one(
+    args: &RemoveWorktreeArgs,
+) -> HzResult<Vec<RemovalCandidate>> {
     let mut candidates = Vec::with_capacity(args.targets.len());
     let mut seen = HashSet::new();
 
@@ -90,21 +110,50 @@ pub(crate) fn find_removal_candidates(
             target: target.clone(),
             repo: args.repo.clone(),
         })?;
-
-        if !seen.insert((candidate.repo.clone(), candidate.path.clone())) {
-            return Err(hz_core::HzError::Usage(format!(
-                "duplicate worktree target: {target}"
-            )));
-        }
-
-        let confirm_unmanaged = should_confirm_unmanaged_removal(args, &candidate)?;
-        candidates.push(RemovalCandidate {
-            worktree: candidate,
-            confirm_unmanaged,
-        });
+        push_removal_candidate(args, target, candidate, &mut seen, &mut candidates)?;
     }
 
     Ok(candidates)
+}
+
+fn collect_removal_candidates(
+    args: &RemoveWorktreeArgs,
+    found: Vec<hz_command::WorktreeEntry>,
+) -> HzResult<Vec<RemovalCandidate>> {
+    let mut candidates = Vec::with_capacity(found.len());
+    let mut seen = HashSet::new();
+
+    for (target, candidate) in args.targets.iter().zip(found) {
+        push_removal_candidate(args, target, candidate, &mut seen, &mut candidates)?;
+    }
+
+    Ok(candidates)
+}
+
+fn push_removal_candidate(
+    args: &RemoveWorktreeArgs,
+    target: &str,
+    candidate: hz_command::WorktreeEntry,
+    seen: &mut HashSet<(std::path::PathBuf, std::path::PathBuf)>,
+    candidates: &mut Vec<RemovalCandidate>,
+) -> HzResult<()> {
+    if !seen.insert((candidate.repo.clone(), candidate.path.clone())) {
+        return Err(HzError::Usage(format!(
+            "duplicate worktree target: {target}"
+        )));
+    }
+
+    let confirm_unmanaged = should_confirm_unmanaged_removal(args, &candidate)?;
+    candidates.push(RemovalCandidate {
+        worktree: candidate,
+        confirm_unmanaged,
+    });
+
+    Ok(())
+}
+
+fn is_unknown_worktree_error(error: &HzError) -> bool {
+    matches!(error, HzError::Usage(message) if message.starts_with("unknown worktree: "))
 }
 
 pub(crate) fn removed_worktrees_json(

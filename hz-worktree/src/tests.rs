@@ -666,6 +666,52 @@ fn prune_branch_worktree_keeps_git_branch() {
 }
 
 #[test]
+fn find_many_returns_targets_in_requested_order() {
+    let test_dir = test_dir("hz-worktree-find-many-test");
+    let repo = test_dir.join("repo");
+    let branch_destination = test_dir.join("branch-destination");
+    let detached_destination = test_dir.join("detached-destination");
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    init_committed_repo(&repo);
+    git(["branch", "feature"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            branch_destination.to_str().unwrap(),
+            "feature",
+        ],
+        &repo,
+    );
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            detached_destination.to_str().unwrap(),
+            "HEAD",
+        ],
+        &repo,
+    );
+
+    let found = find_many(FindWorktrees {
+        targets: vec!["detached-destination".to_owned(), "feature".to_owned()],
+        repo: Some(repo.clone()),
+    })
+    .unwrap();
+
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].handle, "detached-destination");
+    assert_eq!(found[0].branch, None);
+    assert_eq!(found[1].branch.as_deref(), Some("feature"));
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
 fn generated_unique_handle_searches_past_old_probe_window() {
     let repo = PathBuf::from("/repo");
     let seed = 0;
@@ -1160,7 +1206,7 @@ fn local_handoff_target_can_match_detached_codex_worktree_handle() {
         },
     );
 
-    let destination = find_target_entry(vec![entry], &repo, "708e").unwrap();
+    let destination = find_target_entry(&[entry], &repo, "708e").unwrap();
 
     assert_eq!(destination.handle, "708e");
     assert_eq!(destination.branch, None);
@@ -1401,7 +1447,7 @@ fn git_worktree_merge_refreshes_registered_branch_and_skips_registered_path() {
     assert_eq!(entries[1].handle, "bd16");
     assert_eq!(entries[1].source, WorktreeSource::Git);
 
-    let entry = find_target_entry(entries, &repo, "helloworld").unwrap();
+    let entry = find_target_entry(&entries, &repo, "helloworld").unwrap();
     assert_eq!(entry.handle, "managed");
     assert_eq!(entry.source, WorktreeSource::Managed);
 }

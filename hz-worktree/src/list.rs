@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    FindWorktree, ListWorktrees, LocalWorktree, LocalWorktreeInfo, Registry, WorktreeEntry,
-    WorktreeStatus, add_git_worktrees, find_entry, linked_worktree_exists, resolve_repo, same_path,
-    worktree_path_timestamp,
+    FindWorktree, FindWorktrees, ListWorktrees, LocalWorktree, LocalWorktreeInfo, Registry,
+    WorktreeEntry, WorktreeStatus, add_git_worktrees, find_target_entry, linked_worktree_exists,
+    resolve_repo, resolve_repo_with_git_worktrees, same_path, worktree_path_timestamp,
 };
-use hz_core::HzResult;
+use hz_core::{HzError, HzResult};
 
 pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
     let mut entries = list_targets(input)?;
@@ -16,8 +16,8 @@ pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
 
 pub fn list_targets(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
     let registry = Registry::load()?;
-    let repo = resolve_repo(input.repo.as_deref(), &registry)?;
-    let mut entries = discover_entries(&registry, &repo)?;
+    let (repo, git_worktrees) = resolve_repo_with_git_worktrees(input.repo.as_deref(), &registry)?;
+    let mut entries = discover_entries_with_git_worktrees(&registry, &repo, git_worktrees);
     sort_worktree_entries(&mut entries);
 
     Ok(entries)
@@ -73,6 +73,18 @@ pub(crate) fn local_handoff_from(
 }
 
 pub(crate) fn discover_entries(registry: &Registry, repo: &Path) -> HzResult<Vec<WorktreeEntry>> {
+    Ok(discover_entries_with_git_worktrees(
+        registry,
+        repo,
+        hz_git::list_worktrees(repo)?,
+    ))
+}
+
+pub(crate) fn discover_entries_with_git_worktrees(
+    registry: &Registry,
+    repo: &Path,
+    git_worktrees: Vec<hz_git::GitWorktree>,
+) -> Vec<WorktreeEntry> {
     let mut entries: Vec<_> = registry
         .entries
         .iter()
@@ -80,8 +92,8 @@ pub(crate) fn discover_entries(registry: &Registry, repo: &Path) -> HzResult<Vec
         .cloned()
         .collect();
 
-    add_git_worktrees(&mut entries, repo, hz_git::list_worktrees(repo)?);
-    Ok(entries)
+    add_git_worktrees(&mut entries, repo, git_worktrees);
+    entries
 }
 
 pub(crate) fn sort_worktree_entries(entries: &mut [WorktreeEntry]) {
@@ -117,7 +129,24 @@ pub(crate) fn refresh_worktree_state(entries: &mut [WorktreeEntry]) {
 }
 
 pub fn find(input: FindWorktree) -> HzResult<WorktreeEntry> {
+    let mut entries = find_many(FindWorktrees {
+        targets: vec![input.target],
+        repo: input.repo,
+    })?;
+    Ok(entries.remove(0))
+}
+
+pub fn find_many(input: FindWorktrees) -> HzResult<Vec<WorktreeEntry>> {
     let registry = Registry::load()?;
-    let repo = resolve_repo(input.repo.as_deref(), &registry)?;
-    find_entry(&registry, &repo, &input.target)
+    let (repo, git_worktrees) = resolve_repo_with_git_worktrees(input.repo.as_deref(), &registry)?;
+    let entries = discover_entries_with_git_worktrees(&registry, &repo, git_worktrees);
+
+    input
+        .targets
+        .iter()
+        .map(|target| {
+            find_target_entry(&entries, &repo, target)
+                .ok_or_else(|| HzError::Usage(format!("unknown worktree: {target}")))
+        })
+        .collect()
 }

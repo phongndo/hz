@@ -14,6 +14,25 @@ pub(crate) fn resolve_repo(repo: Option<&Path>, registry: &Registry) -> HzResult
     Ok(resolve_registered_repo(registry, &current, &main).unwrap_or(main))
 }
 
+pub(crate) fn resolve_repo_with_git_worktrees(
+    repo: Option<&Path>,
+    registry: &Registry,
+) -> HzResult<(PathBuf, Vec<hz_git::GitWorktree>)> {
+    let current = hz_git::repository_root(repo)?;
+    let git_worktrees = hz_git::list_worktrees(&current)?;
+    let main = git_worktrees
+        .first()
+        .map(|worktree| worktree.path.clone())
+        .ok_or_else(|| {
+            HzError::Usage(format!(
+                "git worktree list returned no entries for {}; unexpected repository state",
+                current.display()
+            ))
+        })?;
+    let repo = resolve_registered_repo(registry, &current, &main).unwrap_or(main);
+    Ok((repo, git_worktrees))
+}
+
 pub(crate) fn resolve_registered_repo(
     registry: &Registry,
     current: &Path,

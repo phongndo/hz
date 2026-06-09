@@ -90,6 +90,17 @@ pub fn remove_worktree_with_force(repo: &Path, path: &Path, force: bool) -> HzRe
 }
 
 pub fn list_worktrees(repo: &Path) -> HzResult<Vec<GitWorktree>> {
+    let output = worktree_list_output(repo)?;
+
+    Ok(parse_worktree_list(&output.stdout))
+}
+
+pub fn main_worktree(repo: &Path) -> HzResult<PathBuf> {
+    let output = worktree_list_output(repo)?;
+    parse_main_worktree_path(&output.stdout).ok_or_else(|| empty_worktree_list_error(repo))
+}
+
+fn worktree_list_output(repo: &Path) -> HzResult<process::Output> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -100,15 +111,7 @@ pub fn list_worktrees(repo: &Path) -> HzResult<Vec<GitWorktree>> {
         return Err(git_error("failed to list git worktrees", &output));
     }
 
-    Ok(parse_worktree_list(&output.stdout))
-}
-
-pub fn main_worktree(repo: &Path) -> HzResult<PathBuf> {
-    list_worktrees(repo)?
-        .into_iter()
-        .next()
-        .map(|worktree| worktree.path)
-        .ok_or_else(|| HzError::Usage("git worktree list was empty".to_owned()))
+    Ok(output)
 }
 
 pub fn worktree_state(path: &Path) -> HzResult<GitWorktreeState> {
@@ -581,6 +584,19 @@ fn parse_worktree_list(output: &[u8]) -> Vec<GitWorktree> {
     worktrees
 }
 
+fn parse_main_worktree_path(output: &[u8]) -> Option<PathBuf> {
+    output
+        .split(|byte| *byte == 0)
+        .find_map(|field| field.strip_prefix(b"worktree ").map(path_from_git_bytes))
+}
+
+fn empty_worktree_list_error(repo: &Path) -> HzError {
+    HzError::Usage(format!(
+        "git worktree list returned no entries for {}; unexpected repository state",
+        repo.display()
+    ))
+}
+
 fn git_error(context: &str, output: &std::process::Output) -> HzError {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let detail = stderr.trim();
@@ -619,6 +635,17 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn parses_main_worktree_path_from_porcelain_list() {
+        let output = b"worktree /repo\0HEAD abc\0branch refs/heads/main\0\0worktree /repo-feature\0HEAD def\0branch refs/heads/feature\0\0";
+
+        assert_eq!(
+            parse_main_worktree_path(output),
+            Some(PathBuf::from("/repo"))
+        );
+        assert_eq!(parse_main_worktree_path(b""), None);
     }
 
     #[test]

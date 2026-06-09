@@ -12,13 +12,14 @@ mod types;
 
 pub use create::{create, path};
 pub use handoff::handoff;
-pub use list::{current_path, find, list, list_targets, local};
+pub use list::{current_path, find, find_many, list, list_targets, local};
 pub use registry::is_hz_worktree_path;
 pub use remove::{remove, remove_found, remove_found_with_force};
 pub use types::{
     CreateWorktree, CreatedWorktree, DEFAULT_MAX_BRANCH_WORKTREES, DEFAULT_MAX_DETACHED_WORKTREES,
-    FindWorktree, HandoffMode, HandoffWorktree, ListWorktrees, LocalWorktree, LocalWorktreeInfo,
-    PathWorktree, RemoveWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
+    FindWorktree, FindWorktrees, HandoffMode, HandoffWorktree, ListWorktrees, LocalWorktree,
+    LocalWorktreeInfo, PathWorktree, RemoveWorktree, WorktreeEntry, WorktreeHandoff,
+    WorktreeSource, WorktreeStatus,
 };
 
 pub(crate) use create::*;

@@ -62,6 +62,12 @@ pub struct FindWorktree {
     pub repo: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindWorktrees {
+    pub targets: Vec<String>,
+    pub repo: Option<PathBuf>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CreatedWorktree {
     pub id: String,
