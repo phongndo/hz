@@ -24,19 +24,19 @@ categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive"] }
-crossterm = "0.28.1"
+crossterm = "0.29.0"
 fs2 = "0.4"
-getrandom = "0.2.17"
+getrandom = "0.3.4"
 notify = "8"
 ratatui = "0.29"
-rustix = { version = "0.38.44", default-features = false, features = ["std", "termios"] }
+rustix = { version = "1.1.4", default-features = false, features = ["std", "termios"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 shlex = "2.0.1"
 toml = "1.1"
 tree-sitter-highlight = "0.26.9"
-tree-sitter-language-pack = "1.9.0-rc.18"
+tree-sitter-language-pack = "1.9.0-rc.30"
 # time 0.3.47 raises MSRV above the workspace Rust 1.85.
 time = { version = "=0.3.45", default-features = false, features = ["local-offset", "std"] }
 unicode-width = "0.2"
