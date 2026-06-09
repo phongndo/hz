@@ -1,8 +1,9 @@
 use crate::render::{
     diff::{
-        SplitCellRender, SplitSide, content_spans_at_scroll, context_hide_line, context_show_line,
-        empty_diff_fill_from, inline_bg, render_row, render_row_with_focus, render_split_line,
-        render_unified_line_at_scroll, row_bg, split_cell_spans_at_scroll, syntax_fg,
+        SplitCellRender, SplitLineRender, SplitSide, content_spans_at_scroll, context_hide_line,
+        context_show_line, empty_diff_fill_from, inline_bg, render_row, render_row_with_focus,
+        render_split_line_with_focus, render_unified_line_at_scroll, row_bg,
+        split_cell_spans_at_scroll, syntax_fg,
     },
     grep::{grep_highlight_target_for_columns, highlighted_grep_text_line},
     headers::{file_header_line, file_separator_line, hunk_header_line, hunk_header_spans},
@@ -1941,7 +1942,18 @@ fn split_view_uses_right_indicator_as_separator() {
     let changeset = changeset_with_context_lines(1);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Split);
 
-    let rendered = render_split_line(&mut app, 0, 0, Some(0), Some(0), 0, 24);
+    let rendered = render_split_line_with_focus(
+        &mut app,
+        SplitLineRender {
+            file: 0,
+            hunk: 0,
+            left: Some(0),
+            right: Some(0),
+            row_index: 0,
+            width: 24,
+            focused: false,
+        },
+    );
     let text = line_text(&rendered);
 
     assert!(!text.contains('│'));
@@ -1968,7 +1980,18 @@ fn split_diff_content_scrolls_horizontally() {
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Split);
     app.horizontal_scroll = 2;
 
-    let rendered = render_split_line(&mut app, 0, 0, Some(0), Some(0), 0, 24);
+    let rendered = render_split_line_with_focus(
+        &mut app,
+        SplitLineRender {
+            file: 0,
+            hunk: 0,
+            left: Some(0),
+            right: Some(0),
+            row_index: 0,
+            width: 24,
+            focused: false,
+        },
+    );
 
     assert_eq!(line_text(&rendered), "▌    1  cdef▌    1  cdef");
 }

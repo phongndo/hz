@@ -160,24 +160,18 @@ pub(crate) fn render_row_with_focus(
             hunk,
             left,
             right,
-        } => {
-            if hunk_focused {
-                render_split_line_with_focus(
-                    app,
-                    SplitLineRender {
-                        file,
-                        hunk,
-                        left,
-                        right,
-                        row_index,
-                        width,
-                        focused: true,
-                    },
-                )
-            } else {
-                render_split_line(app, file, hunk, left, right, row_index, width)
-            }
-        }
+        } => render_split_line_with_focus(
+            app,
+            SplitLineRender {
+                file,
+                hunk,
+                left,
+                right,
+                row_index,
+                width,
+                focused: hunk_focused,
+            },
+        ),
     };
 
     if !app.grep_filter.is_empty() {
@@ -697,29 +691,6 @@ pub(crate) fn inline_bg(kind: DiffLineKind, theme: DiffTheme) -> Color {
 
 pub(crate) fn syntax_fg(class: SyntaxClass, theme: DiffTheme) -> Option<Color> {
     theme.syntax.color(class)
-}
-
-pub(crate) fn render_split_line(
-    app: &mut DiffApp,
-    file: usize,
-    hunk: usize,
-    left: Option<usize>,
-    right: Option<usize>,
-    row_index: usize,
-    width: usize,
-) -> Line<'static> {
-    render_split_line_with_focus(
-        app,
-        SplitLineRender {
-            file,
-            hunk,
-            left,
-            right,
-            row_index,
-            width,
-            focused: false,
-        },
-    )
 }
 
 #[derive(Debug, Clone, Copy)]
