@@ -107,12 +107,9 @@ argument. Quote those names in bash or use the zsh integration.
   safety checks, and lifecycle behavior when those paths change.
 
 `.github/workflows/pr-template.yml` requires pull requests to keep the template
-sections, mark at least one verification command, and complete the CodeRabbit
-review checklist item when that GitHub app is installed.
+sections and mark at least one verification command.
 
 ## CI
 
 `.github/workflows/quality.yml` runs rust-analyzer diagnostics, formatter,
-Clippy, workspace tests, and a full workspace build. `.coderabbit.yaml`
-configures repository-specific AI review behavior when that GitHub app is
-installed.
+Clippy, workspace tests, and a full workspace build.

@@ -63,17 +63,11 @@ jobs:
           require_text "## Motivation"
           require_text "## Changes"
           require_text "## Verification"
-          require_text "## Review"
           require_text "## Risk"
           require_text "## Reviewer Notes"
 
           require_non_empty_section "Summary"
           require_non_empty_section "Risk"
-
-          if ! printf '%s\n' "$body" | grep -Eq -- '- \[[xX]\] CodeRabbit reviewed or was requested'; then
-            printf 'Mark the CodeRabbit review checklist item as completed.\n'
-            missing=1
-          fi
 
           if ! printf '%s\n' "$body" | grep -Eq -- '- \[[xX]\] `(cargo check|cargo fmt|cargo clippy|cargo test|cargo build)'; then
             printf 'Mark at least one cargo verification command as completed.\n'

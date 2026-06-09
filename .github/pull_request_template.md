@@ -20,10 +20,6 @@
 - [ ] `cargo build --workspace --all-targets --all-features --locked`
 - Not run:
 
-## Review
-
-- [ ] CodeRabbit reviewed or was requested
-
 ## Risk
 
 - Blast radius:
