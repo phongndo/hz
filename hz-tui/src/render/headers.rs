@@ -5,7 +5,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     controls::DiffLayoutMode,
     render::{
-        style::{base_bg, diff_indicator_span, file_sidebar_style},
+        style::{base_bg, diff_indicator_span, file_sidebar_style, focused_diff_indicator_span},
         text::{fit, fit_with_ellipsis, status_code},
     },
     theme::{DiffTheme, line_gutter_bg},
@@ -62,6 +62,15 @@ pub(crate) fn hunk_header_line(
     width: usize,
     theme: DiffTheme,
 ) -> Line<'static> {
+    hunk_header_line_with_focus(hunk, width, theme, false)
+}
+
+pub(crate) fn hunk_header_line_with_focus(
+    hunk: &hz_diff::DiffHunk,
+    width: usize,
+    theme: DiffTheme,
+    focused: bool,
+) -> Line<'static> {
     if width == 0 {
         return Line::default();
     }
@@ -69,7 +78,11 @@ pub(crate) fn hunk_header_line(
     let gutter_bg = line_gutter_bg(DiffLineKind::Meta, theme);
     let content_width = width.saturating_sub(1);
     let mut spans = Vec::new();
-    spans.push(diff_indicator_span(DiffLineKind::Meta, theme));
+    spans.push(if focused {
+        focused_diff_indicator_span(DiffLineKind::Meta, theme)
+    } else {
+        diff_indicator_span(DiffLineKind::Meta, theme)
+    });
     if content_width > 0 {
         spans.push(Span::styled(" ", Style::default().bg(gutter_bg)));
         if content_width > 1 {

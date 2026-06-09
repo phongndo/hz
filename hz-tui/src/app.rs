@@ -19,6 +19,7 @@ use crate::{
         branch_match_score, comparison_branches, current_head_label, default_branch_base,
         default_layout_for_width, diff_stats_for_files, filtered_file_indices, grep_match_rows,
     },
+    editor::{EditorTarget, configured_editor, open_editor, repo_file_path},
     live_diff::{LiveDiff, LiveDiffReload, live_diff_supported},
     model::{
         ContextExpansionDirection, ContextKey, ContextSourceEntry, ContextSourceKey, UiModel,
@@ -62,6 +63,10 @@ pub(crate) fn run_loop(
         );
         app.drain_syntax();
         if app.dirty {
+            if app.terminal_clear_requested {
+                terminal.clear()?;
+                app.terminal_clear_requested = false;
+            }
             terminal.draw(|frame| draw(frame, app))?;
             app.dirty = false;
         }
@@ -300,6 +305,7 @@ pub(crate) struct DiffApp {
     pub(crate) syntax: Option<SyntaxRuntime>,
     pub(crate) inline_cache: LruCache<InlineHunkKey, InlineHunkEmphasisCache>,
     pub(crate) generation: u64,
+    pub(crate) terminal_clear_requested: bool,
     pub(crate) dirty: bool,
 }
 
@@ -436,6 +442,7 @@ impl DiffApp {
             syntax,
             inline_cache: LruCache::new(MAX_INLINE_DIFF_CACHE_ENTRIES),
             generation: 0,
+            terminal_clear_requested: false,
             dirty: true,
         }
     }
@@ -552,6 +559,9 @@ impl DiffApp {
             }
             KeyCode::PageDown | KeyCode::Char('d') => self.scroll_by(20),
             KeyCode::PageUp | KeyCode::Char('u') => self.scroll_by(-20),
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_focused_hunk_in_editor();
+            }
             KeyCode::Home | KeyCode::Char('g') => self.set_scroll(0),
             KeyCode::End | KeyCode::Char('G') => self.set_scroll(self.max_scroll()),
             KeyCode::Char('f') => self.open_filter_input(DiffFilterKind::File),
@@ -1506,7 +1516,7 @@ impl DiffApp {
     }
 
     pub(crate) fn set_scroll_centered_on(&mut self, row: usize) {
-        let center_offset = self.viewport_rows.saturating_sub(1) / 2;
+        let center_offset = viewport_center_offset(self.viewport_rows);
         self.set_scroll_with_grep_sync(row.saturating_sub(center_offset), false);
     }
 
@@ -1532,6 +1542,164 @@ impl DiffApp {
     pub(crate) fn max_horizontal_scroll(&self) -> usize {
         self.max_line_width
             .saturating_sub(diff_content_width(self.layout, self.viewport_width))
+    }
+
+    pub(crate) fn focused_hunk_for_viewport(&self, visible_rows: usize) -> Option<(usize, usize)> {
+        let visible_start = self.scroll;
+        let visible_end = visible_start
+            .saturating_add(visible_rows)
+            .min(self.model.len());
+        if visible_start >= visible_end {
+            return None;
+        }
+
+        let focus_row = visible_start
+            .saturating_add(viewport_focus_offset(
+                self.scroll,
+                self.model.len(),
+                visible_rows,
+            ))
+            .min(visible_end.saturating_sub(1));
+        let max_distance = focus_row
+            .saturating_sub(visible_start)
+            .max(visible_end.saturating_sub(1).saturating_sub(focus_row));
+        for distance in 0..=max_distance {
+            if let Some(row_index) = focus_row.checked_add(distance)
+                && row_index < visible_end
+                && let Some(hunk_key) = self.model.row(row_index).and_then(|row| row.hunk_key())
+            {
+                return Some(hunk_key);
+            }
+            if distance > 0
+                && let Some(row_index) = focus_row.checked_sub(distance)
+                && row_index >= visible_start
+                && let Some(hunk_key) = self.model.row(row_index).and_then(|row| row.hunk_key())
+            {
+                return Some(hunk_key);
+            }
+        }
+
+        None
+    }
+
+    pub(crate) fn focused_hunk_editor_target(&self) -> Option<EditorTarget> {
+        if matches!(self.options.source, DiffSource::Patch(_)) {
+            return None;
+        }
+
+        let (file, hunk) = self.focused_hunk_for_viewport(self.viewport_rows)?;
+        let file_diff = self.changeset.files.get(file)?;
+        let hunk_diff = file_diff.hunks.get(hunk)?;
+        let path = file_diff.new_path.as_deref()?;
+        let line = self
+            .focused_hunk_editor_line(file, hunk)
+            .unwrap_or_else(|| hunk_diff.new_start.max(1));
+
+        Some(EditorTarget {
+            path: repo_file_path(&self.changeset.repo, path),
+            line,
+        })
+    }
+
+    pub(crate) fn focused_hunk_editor_line(&self, file: usize, hunk: usize) -> Option<usize> {
+        let visible_start = self.scroll;
+        let visible_end = visible_start
+            .saturating_add(self.viewport_rows)
+            .min(self.model.len());
+        if visible_start >= visible_end {
+            return None;
+        }
+
+        let focus_row = self
+            .viewport_focus_row()
+            .clamp(visible_start, visible_end - 1);
+        let max_distance = focus_row
+            .saturating_sub(visible_start)
+            .max(visible_end.saturating_sub(1).saturating_sub(focus_row));
+        for distance in 0..=max_distance {
+            if let Some(row_index) = focus_row.checked_add(distance)
+                && row_index < visible_end
+                && let Some(line) = self.editor_line_at_hunk_row(row_index, file, hunk)
+            {
+                return Some(line);
+            }
+            if distance > 0
+                && let Some(row_index) = focus_row.checked_sub(distance)
+                && row_index >= visible_start
+                && let Some(line) = self.editor_line_at_hunk_row(row_index, file, hunk)
+            {
+                return Some(line);
+            }
+        }
+
+        None
+    }
+
+    pub(crate) fn editor_line_at_hunk_row(
+        &self,
+        row_index: usize,
+        file: usize,
+        hunk: usize,
+    ) -> Option<usize> {
+        let hunk_diff = self.changeset.files.get(file)?.hunks.get(hunk)?;
+        match self.model.row(row_index)? {
+            UiRow::UnifiedLine {
+                file: row_file,
+                hunk: row_hunk,
+                line,
+            }
+            | UiRow::MetaLine {
+                file: row_file,
+                hunk: row_hunk,
+                line,
+            } if row_file == file && row_hunk == hunk => {
+                hunk_diff.lines.get(line)?.new_line.map(|line| line.max(1))
+            }
+            UiRow::SplitLine {
+                file: row_file,
+                hunk: row_hunk,
+                left,
+                right,
+            } if row_file == file && row_hunk == hunk => right
+                .or(left)
+                .and_then(|line| hunk_diff.lines.get(line))
+                .and_then(|line| line.new_line)
+                .map(|line| line.max(1)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn open_focused_hunk_in_editor(&mut self) {
+        let Some(target) = self.focused_hunk_editor_target() else {
+            self.set_notice("no editable focused hunk");
+            return;
+        };
+        let Some(editor) = configured_editor() else {
+            self.set_notice("set $EDITOR to edit focused hunk");
+            return;
+        };
+
+        self.diff_menu_open = false;
+        self.close_branch_menu();
+        self.terminal_clear_requested = true;
+        match open_editor(&editor, &target) {
+            Ok(status) if status.success() => match self.reload() {
+                Ok(()) => self.set_notice("editor closed"),
+                Err(error) => self.set_notice(format!("editor closed; reload failed: {error}")),
+            },
+            Ok(status) => self.set_notice(format!("editor exited with {status}")),
+            Err(error) => self.set_notice(format!("editor failed: {error}")),
+        }
+    }
+
+    pub(crate) fn viewport_focus_row(&self) -> usize {
+        self.scroll
+            .saturating_add(viewport_focus_offset(
+                self.scroll,
+                self.model.len(),
+                self.viewport_rows,
+            ))
+            .min(self.model.len().saturating_sub(1))
     }
 
     pub(crate) fn set_viewport_rows(&mut self, rows: usize) {
@@ -2167,14 +2335,14 @@ impl DiffApp {
     }
 
     pub(crate) fn next_hunk(&mut self) {
-        if let Some(row) = self.model.next_hunk_row(self.scroll) {
-            self.set_scroll(row);
+        if let Some(row) = self.model.next_hunk_row(self.viewport_focus_row()) {
+            self.set_scroll_centered_on(row);
         }
     }
 
     pub(crate) fn previous_hunk(&mut self) {
-        if let Some(row) = self.model.previous_hunk_row(self.scroll) {
-            self.set_scroll(row);
+        if let Some(row) = self.model.previous_hunk_row(self.viewport_focus_row()) {
+            self.set_scroll_centered_on(row);
         }
     }
 
@@ -2296,6 +2464,36 @@ impl DiffApp {
 
 pub(crate) fn max_scroll_for_viewport(row_count: usize, viewport_rows: usize) -> usize {
     row_count.saturating_sub(viewport_rows.max(1))
+}
+
+pub(crate) fn viewport_center_offset(viewport_rows: usize) -> usize {
+    viewport_rows.saturating_sub(1) / 2
+}
+
+pub(crate) fn viewport_focus_offset(
+    scroll: usize,
+    row_count: usize,
+    viewport_rows: usize,
+) -> usize {
+    if row_count == 0 {
+        return 0;
+    }
+
+    let viewport_rows = viewport_rows.max(1);
+    let visible_rows = viewport_rows.min(row_count);
+    let center = viewport_center_offset(visible_rows);
+    if row_count <= viewport_rows {
+        return center;
+    }
+
+    let bottom = visible_rows.saturating_sub(1);
+    let max_scroll = max_scroll_for_viewport(row_count, viewport_rows);
+    let scroll = scroll.min(max_scroll);
+    let distance_to_end = max_scroll.saturating_sub(scroll);
+    let top_ramp = scroll.min(center);
+    let bottom_ramp = bottom.saturating_sub(distance_to_end);
+
+    top_ramp.max(bottom_ramp).min(bottom)
 }
 
 pub(crate) fn changeset_max_line_width(changeset: &Changeset) -> usize {

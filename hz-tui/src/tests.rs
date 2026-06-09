@@ -1,7 +1,7 @@
 use crate::render::{
     diff::{
         SplitCellRender, SplitSide, content_spans_at_scroll, context_hide_line, context_show_line,
-        empty_diff_fill_from, inline_bg, render_row, render_split_line,
+        empty_diff_fill_from, inline_bg, render_row, render_row_with_focus, render_split_line,
         render_unified_line_at_scroll, row_bg, split_cell_spans_at_scroll, syntax_fg,
     },
     grep::{grep_highlight_target_for_columns, highlighted_grep_text_line},
@@ -20,7 +20,7 @@ use crate::render::{
         skip_display_prefix,
     },
 };
-use crate::{app::*, controls::*, live_diff::*, model::*, syntax::*, theme::*};
+use crate::{app::*, controls::*, editor::*, live_diff::*, model::*, syntax::*, theme::*};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, FileStatus};
 use hz_syntax::{
@@ -56,7 +56,18 @@ fn max_scroll_stops_at_last_full_viewport() {
     assert_eq!(max_scroll_for_viewport(10, 1), 9);
     assert_eq!(max_scroll_for_viewport(10, 4), 6);
     assert_eq!(max_scroll_for_viewport(3, 10), 0);
+    assert_eq!(max_scroll_for_viewport(10, 10), 0);
     assert_eq!(max_scroll_for_viewport(10, 0), 9);
+}
+
+#[test]
+fn viewport_focus_offset_slides_between_edges_and_center() {
+    assert_eq!(viewport_focus_offset(0, 100, 11), 0);
+    assert_eq!(viewport_focus_offset(3, 100, 11), 3);
+    assert_eq!(viewport_focus_offset(20, 100, 11), 5);
+    assert_eq!(viewport_focus_offset(87, 100, 11), 8);
+    assert_eq!(viewport_focus_offset(89, 100, 11), 10);
+    assert_eq!(viewport_focus_offset(0, 5, 11), 2);
 }
 
 #[test]
@@ -68,6 +79,7 @@ fn app_clamps_scroll_to_last_full_viewport() {
     app.set_scroll(usize::MAX);
 
     assert_eq!(app.scroll, app.model.len() - 5);
+    assert_eq!(app.viewport_focus_row(), app.model.len() - 1);
 
     app.set_viewport_rows(usize::MAX);
 
@@ -94,6 +106,93 @@ fn app_clamps_horizontal_scroll_to_diff_content() {
     app.set_horizontal_scroll(8);
     app.set_viewport_width(80);
     assert_eq!(app.horizontal_scroll, 0);
+}
+
+#[test]
+fn hunk_focus_uses_sliding_viewport_anchor() {
+    let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[1, 2, 3]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(5);
+
+    assert_eq!(app.focused_hunk_for_viewport(5), Some((0, 0)));
+
+    app.set_scroll(1);
+    assert_eq!(app.focused_hunk_for_viewport(5), Some((0, 1)));
+
+    app.set_scroll(usize::MAX);
+    assert_eq!(app.focused_hunk_for_viewport(5), Some((0, 2)));
+    assert_eq!(app.scroll, app.max_scroll());
+}
+
+#[test]
+fn focused_hunk_editor_target_uses_new_path_and_visible_line() {
+    let repo = PathBuf::from("/repo");
+    let changeset = changeset_with_context_lines_at(repo.clone(), 1, 100);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(11);
+    app.set_scroll(40);
+
+    assert_eq!(
+        app.focused_hunk_editor_target(),
+        Some(EditorTarget {
+            path: repo.join("file.rs"),
+            line: 44,
+        })
+    );
+}
+
+#[test]
+fn focused_hunk_editor_target_falls_back_to_hunk_start() {
+    let repo = PathBuf::from("/repo");
+    let changeset = changeset_with_hunks_at(repo.clone(), &[20, 40]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(5);
+    app.set_scroll(1);
+
+    assert_eq!(
+        app.focused_hunk_editor_target(),
+        Some(EditorTarget {
+            path: repo.join("file.rs"),
+            line: 40,
+        })
+    );
+}
+
+#[test]
+fn focused_hunk_editor_target_skips_deleted_files() {
+    let mut changeset = changeset_with_hunk_at(PathBuf::from("/repo"), 20);
+    changeset.files[0].status = FileStatus::Deleted;
+    changeset.files[0].new_path = None;
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(5);
+
+    assert_eq!(app.focused_hunk_editor_target(), None);
+}
+
+#[test]
+fn editor_command_helpers_choose_line_arguments() {
+    assert_eq!(
+        split_editor_command("nvim -f").unwrap(),
+        vec!["nvim".to_owned(), "-f".to_owned()]
+    );
+    assert!(editor_uses_goto_arg("/usr/local/bin/code"));
+    assert!(!editor_uses_goto_arg("vim"));
+}
+
+#[test]
+fn ctrl_g_without_editable_target_does_not_scroll_to_top() {
+    let mut changeset = changeset_with_hunk_at(PathBuf::from("/repo"), 20);
+    changeset.files[0].new_path = None;
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(1);
+    app.set_scroll(1);
+
+    let should_quit = app
+        .handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL))
+        .expect("Ctrl-G should be handled");
+
+    assert!(!should_quit);
+    assert_eq!(app.scroll, 1);
 }
 
 #[test]
@@ -1866,6 +1965,37 @@ fn diff_lines_start_with_change_indicator() {
 }
 
 #[test]
+fn focused_hunk_highlights_diff_indicators() {
+    let changeset = changeset_with_context_lines(1);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    let theme = app.theme;
+
+    let header = render_row_with_focus(
+        &mut app,
+        1,
+        UiRow::HunkHeader { file: 0, hunk: 0 },
+        24,
+        Some((0, 0)),
+    );
+    assert_eq!(header.spans[0].style.fg, Some(theme.hunk));
+    assert!(header.spans[0].style.add_modifier.contains(Modifier::BOLD));
+
+    let row = app.model.row(2).expect("diff line should be visible");
+    let focused = render_row_with_focus(&mut app, 2, row, 24, Some((0, 0)));
+    let unfocused = render_row_with_focus(&mut app, 2, row, 24, Some((0, 1)));
+
+    assert_eq!(focused.spans[0].style.fg, Some(theme.hunk));
+    assert!(focused.spans[0].style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(unfocused.spans[0].style.fg, Some(theme.muted));
+    assert!(
+        !unfocused.spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD)
+    );
+}
+
+#[test]
 fn ansi_theme_uses_terminal_palette_indices() {
     let theme = diff_theme_from_config(&SyntaxThemeConfig {
         source: SyntaxThemeSource::Ansi,
@@ -2745,27 +2875,31 @@ fn queue_close_wakes_blocked_pop() {
 }
 
 fn changeset_with_context_lines(line_count: usize) -> Changeset {
+    changeset_with_context_lines_at(PathBuf::from("/repo"), 1, line_count)
+}
+
+fn changeset_with_context_lines_at(repo: PathBuf, start: usize, line_count: usize) -> Changeset {
     let lines = (1..=line_count)
         .map(|line| DiffLine {
             kind: DiffLineKind::Context,
-            old_line: Some(line),
-            new_line: Some(line),
+            old_line: Some(start.saturating_add(line - 1)),
+            new_line: Some(start.saturating_add(line - 1)),
             text: format!("line {line}"),
         })
         .collect();
 
     Changeset {
-        repo: PathBuf::from("/repo"),
+        repo,
         title: "test".to_owned(),
         files: vec![hz_diff::DiffFile {
             old_path: Some("file.rs".to_owned()),
             new_path: Some("file.rs".to_owned()),
             status: hz_diff::FileStatus::Modified,
             hunks: vec![hz_diff::DiffHunk {
-                header: "@@ -1 +1 @@".to_owned(),
-                old_start: 1,
+                header: format!("@@ -{start} +{start} @@"),
+                old_start: start,
                 old_count: line_count,
-                new_start: 1,
+                new_start: start,
                 new_count: line_count,
                 lines,
             }],

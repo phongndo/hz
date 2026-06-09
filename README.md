@@ -278,9 +278,10 @@ Working tree diffs live-reload as files or Git state change; use `--no-watch` to
 disable filesystem watching. Use `b` to toggle the file sidebar, drag its
 divider to resize it, `s` to toggle split/unified, `j/k` to scroll, `h/l` or
 `←/→` to scroll long lines horizontally, `n/p` for files, `]/[` for hunks, `f`
-to filter files, `/` to grep changed diff content, `r` to reload, `?` to show
-keybindings, and `q` to quit. When a grep filter is active, `n`/`p` move between
-grep matches. Active filters stay visible in the bottom bar. In filter prompts,
+to filter files, `/` to grep changed diff content, `Ctrl-G` to open `$EDITOR` at
+the focused hunk, `r` to reload, `?` to show keybindings, and `q` to quit. When
+a grep filter is active, `n`/`p` move between grep matches. Active filters stay
+visible in the bottom bar. In filter prompts,
 `Enter` closes the prompt and keeps the filter, `Esc` clears active filters, and
 `Ctrl-U` clears the current input.
 

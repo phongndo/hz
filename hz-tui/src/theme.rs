@@ -76,6 +76,7 @@ pub(crate) const HELP_MENU_LEFT_ROWS: &[HelpMenuRow] = &[
     HelpMenuRow::Binding("h/l, ←/→", "horizontal"),
     HelpMenuRow::Binding("n/p, J/K", "file"),
     HelpMenuRow::Binding("]/[", "hunk"),
+    HelpMenuRow::Binding("Ctrl-G", "edit focused hunk"),
 ];
 
 pub(crate) const HELP_MENU_RIGHT_ROWS: &[HelpMenuRow] = &[

@@ -49,6 +49,23 @@ pub(crate) enum UiRow {
     },
 }
 
+impl UiRow {
+    pub(crate) fn hunk_key(self) -> Option<(usize, usize)> {
+        match self {
+            Self::HunkHeader { file, hunk }
+            | Self::UnifiedLine { file, hunk, .. }
+            | Self::SplitLine { file, hunk, .. }
+            | Self::MetaLine { file, hunk, .. } => Some((file, hunk)),
+            Self::FileSeparator
+            | Self::FileHeader(_)
+            | Self::BinaryFile(_)
+            | Self::Collapsed { .. }
+            | Self::ContextLine { .. }
+            | Self::ContextHide { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ContextKey {
     pub(crate) file: usize,
