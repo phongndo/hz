@@ -14,6 +14,7 @@ hz-git.workspace = true
 hz-syntax.workspace = true
 notify.workspace = true
 ratatui.workspace = true
+shlex.workspace = true
 unicode-width.workspace = true
 
 [target.'cfg(unix)'.dependencies]

@@ -639,6 +639,7 @@ dependencies = [
  "notify",
  "ratatui",
  "rustix 0.38.44",
+ "shlex",
  "unicode-width 0.2.0",
 ]
 

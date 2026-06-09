@@ -175,6 +175,33 @@ fn editor_command_helpers_choose_line_arguments() {
         split_editor_command("nvim -f").unwrap(),
         vec!["nvim".to_owned(), "-f".to_owned()]
     );
+
+    let quoted_code = split_editor_command(
+        r#""/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" -g"#,
+    )
+    .unwrap();
+    assert_eq!(
+        quoted_code,
+        vec![
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code".to_owned(),
+            "-g".to_owned(),
+        ]
+    );
+    assert!(editor_uses_goto_arg(&quoted_code[0]));
+
+    assert_eq!(
+        split_editor_command(r#"/Applications/Some\ Editor/bin/editor -g"#).unwrap(),
+        vec![
+            "/Applications/Some Editor/bin/editor".to_owned(),
+            "-g".to_owned(),
+        ]
+    );
+    assert_eq!(
+        split_editor_command(r#"editor "--flag with spaces""#).unwrap(),
+        vec!["editor".to_owned(), "--flag with spaces".to_owned()]
+    );
+    assert_eq!(split_editor_command(r#""unterminated"#), None);
+
     assert!(editor_uses_goto_arg("/usr/local/bin/code"));
     assert!(!editor_uses_goto_arg("vim"));
 }
@@ -941,6 +968,7 @@ fn help_menu_lines_list_keybindings() {
     assert!(text.iter().any(|line| line.contains("j/k")));
     assert!(text.iter().any(|line| line.contains("n/p")));
     assert!(text.iter().any(|line| line.contains("]/[")));
+    assert!(text.iter().any(|line| line.contains("Ctrl-G")));
     assert!(text.iter().any(|line| line.contains("Backspace")));
     assert!(text.iter().any(|line| line.contains("Ctrl-U")));
 }

@@ -2,7 +2,7 @@ use std::{
     env, io,
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus, Stdio},
+    process::{Command, ExitStatus},
 };
 
 use crossterm::{
@@ -20,7 +20,7 @@ pub(crate) struct EditorTarget {
 }
 
 pub(crate) fn configured_editor() -> Option<String> {
-    ["VISUAL", "EDITOR", "editor"]
+    ["VISUAL", "GIT_EDITOR", "EDITOR"]
         .into_iter()
         .filter_map(env::var_os)
         .map(|editor| editor.to_string_lossy().trim().to_owned())
@@ -47,7 +47,7 @@ pub(crate) fn editor_status(editor: &str, target: &EditorTarget) -> io::Result<E
     let Some(parts) = split_editor_command(editor) else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "editor command is empty",
+            "editor command is empty or invalid",
         ));
     };
 
@@ -66,11 +66,7 @@ pub(crate) fn editor_status(editor: &str, target: &EditorTarget) -> io::Result<E
 }
 
 pub(crate) fn split_editor_command(editor: &str) -> Option<Vec<String>> {
-    let parts: Vec<_> = editor
-        .split_whitespace()
-        .map(str::to_owned)
-        .filter(|part| !part.is_empty())
-        .collect();
+    let parts = shlex::split(editor)?;
     (!parts.is_empty()).then_some(parts)
 }
 
@@ -117,6 +113,7 @@ impl SuspendedTerminal {
 #[cfg(unix)]
 fn attach_terminal_stdio(command: &mut Command) -> io::Result<()> {
     use std::fs::OpenOptions;
+    use std::process::Stdio;
 
     let tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
     command.stdin(Stdio::from(tty.try_clone()?));
@@ -127,7 +124,10 @@ fn attach_terminal_stdio(command: &mut Command) -> io::Result<()> {
 
 #[cfg(not(unix))]
 fn attach_terminal_stdio(_command: &mut Command) -> io::Result<()> {
-    Ok(())
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "opening editors from the TUI is unsupported on this platform",
+    ))
 }
 
 impl Drop for SuspendedTerminal {
