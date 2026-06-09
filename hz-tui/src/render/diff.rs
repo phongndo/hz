@@ -137,7 +137,6 @@ pub(crate) fn render_row_with_focus(
                 diff_line,
                 syntax.as_ref(),
                 &inline,
-                row_index,
                 width,
                 theme,
                 horizontal_scroll,
@@ -150,7 +149,6 @@ pub(crate) fn render_row_with_focus(
                 diff_line,
                 None,
                 &[],
-                row_index,
                 width,
                 theme,
                 horizontal_scroll,
@@ -164,7 +162,18 @@ pub(crate) fn render_row_with_focus(
             right,
         } => {
             if hunk_focused {
-                render_split_line_with_focus(app, file, hunk, left, right, row_index, width, true)
+                render_split_line_with_focus(
+                    app,
+                    SplitLineRender {
+                        file,
+                        hunk,
+                        left,
+                        right,
+                        row_index,
+                        width,
+                        focused: true,
+                    },
+                )
             } else {
                 render_split_line(app, file, hunk, left, right, row_index, width)
             }
@@ -324,7 +333,7 @@ pub(crate) fn render_unified_line_at_scroll(
     line: &DiffLine,
     syntax: Option<&HighlightedLine>,
     inline: &[InlineRange],
-    row_index: usize,
+    _row_index: usize,
     width: usize,
     theme: DiffTheme,
     horizontal_scroll: usize,
@@ -333,7 +342,6 @@ pub(crate) fn render_unified_line_at_scroll(
         line,
         syntax,
         inline,
-        row_index,
         width,
         theme,
         horizontal_scroll,
@@ -345,7 +353,6 @@ pub(crate) fn render_unified_line_at_scroll_with_focus(
     line: &DiffLine,
     syntax: Option<&HighlightedLine>,
     inline: &[InlineRange],
-    _row_index: usize,
     width: usize,
     theme: DiffTheme,
     horizontal_scroll: usize,
@@ -701,19 +708,44 @@ pub(crate) fn render_split_line(
     row_index: usize,
     width: usize,
 ) -> Line<'static> {
-    render_split_line_with_focus(app, file, hunk, left, right, row_index, width, false)
+    render_split_line_with_focus(
+        app,
+        SplitLineRender {
+            file,
+            hunk,
+            left,
+            right,
+            row_index,
+            width,
+            focused: false,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SplitLineRender {
+    pub(crate) file: usize,
+    pub(crate) hunk: usize,
+    pub(crate) left: Option<usize>,
+    pub(crate) right: Option<usize>,
+    pub(crate) row_index: usize,
+    pub(crate) width: usize,
+    pub(crate) focused: bool,
 }
 
 pub(crate) fn render_split_line_with_focus(
     app: &mut DiffApp,
-    file: usize,
-    hunk: usize,
-    left: Option<usize>,
-    right: Option<usize>,
-    row_index: usize,
-    width: usize,
-    focused: bool,
+    render: SplitLineRender,
 ) -> Line<'static> {
+    let SplitLineRender {
+        file,
+        hunk,
+        left,
+        right,
+        row_index,
+        width,
+        focused,
+    } = render;
     if width == 0 {
         return Line::default();
     }
