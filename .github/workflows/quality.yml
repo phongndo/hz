@@ -75,7 +75,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust 1.85
-        uses: dtolnay/rust-toolchain@1.85
+        uses: dtolnay/rust-toolchain@1.100
 
       - name: Fetch tree-sitter parser source bundle
         uses: ./.github/actions/fetch-parser-bundle
