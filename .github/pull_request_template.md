@@ -23,7 +23,6 @@
 ## Review
 
 - [ ] CodeRabbit reviewed or was requested
-- [ ] Greptile reviewed or was requested
 
 ## Risk
 

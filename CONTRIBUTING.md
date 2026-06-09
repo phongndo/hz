@@ -108,11 +108,11 @@ argument. Quote those names in bash or use the zsh integration.
 
 `.github/workflows/pr-template.yml` requires pull requests to keep the template
 sections, mark at least one verification command, and complete the CodeRabbit
-and Greptile review checklist items when those GitHub apps are installed.
+review checklist item when that GitHub app is installed.
 
 ## CI
 
 `.github/workflows/quality.yml` runs rust-analyzer diagnostics, formatter,
-Clippy, workspace tests, and a full workspace build. `.coderabbit.yaml` and
-`.greptile/` configure repository-specific AI review behavior when those GitHub
-apps are installed.
+Clippy, workspace tests, and a full workspace build. `.coderabbit.yaml`
+configures repository-specific AI review behavior when that GitHub app is
+installed.

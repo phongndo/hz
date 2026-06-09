@@ -75,11 +75,6 @@ jobs:
             missing=1
           fi
 
-          if ! printf '%s\n' "$body" | grep -Eq -- '- \[[xX]\] Greptile reviewed or was requested'; then
-            printf 'Mark the Greptile review checklist item as completed.\n'
-            missing=1
-          fi
-
           if ! printf '%s\n' "$body" | grep -Eq -- '- \[[xX]\] `(cargo check|cargo fmt|cargo clippy|cargo test|cargo build)'; then
             printf 'Mark at least one cargo verification command as completed.\n'
             missing=1
