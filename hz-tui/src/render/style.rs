@@ -30,10 +30,20 @@ pub(crate) fn diff_indicator_span(kind: DiffLineKind, theme: DiffTheme) -> Span<
     Span::styled(DIFF_INDICATOR, diff_indicator_style(kind, theme))
 }
 
+pub(crate) fn focused_diff_indicator_span(kind: DiffLineKind, theme: DiffTheme) -> Span<'static> {
+    Span::styled(DIFF_INDICATOR, focused_diff_indicator_style(kind, theme))
+}
+
 pub(crate) fn diff_indicator_style(kind: DiffLineKind, theme: DiffTheme) -> Style {
     Style::default()
         .fg(diff_indicator_fg(kind, theme))
         .bg(line_gutter_bg(kind, theme))
+}
+
+pub(crate) fn focused_diff_indicator_style(kind: DiffLineKind, theme: DiffTheme) -> Style {
+    diff_indicator_style(kind, theme)
+        .fg(theme.hunk)
+        .add_modifier(Modifier::BOLD)
 }
 
 pub(crate) fn diff_indicator_fg(kind: DiffLineKind, theme: DiffTheme) -> Color {

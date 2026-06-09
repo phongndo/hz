@@ -1,5 +1,6 @@
 mod app;
 mod controls;
+mod editor;
 mod live_diff;
 mod model;
 mod render;
