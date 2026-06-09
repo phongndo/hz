@@ -2,4 +2,3 @@
 set -eu
 
 # Add repo setup commands here.
-just setup 
