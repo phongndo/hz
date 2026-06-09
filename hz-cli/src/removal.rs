@@ -85,12 +85,12 @@ pub(crate) fn find_removal_candidates(
     let mut candidates = Vec::with_capacity(args.targets.len());
     let mut seen = HashSet::new();
 
-    for target in &args.targets {
-        let candidate = hz_command::find_worktree(hz_command::FindWorktree {
-            target: target.clone(),
-            repo: args.repo.clone(),
-        })?;
+    let found = hz_command::find_worktrees(hz_command::FindWorktrees {
+        targets: args.targets.clone(),
+        repo: args.repo.clone(),
+    })?;
 
+    for (target, candidate) in args.targets.iter().zip(found) {
         if !seen.insert((candidate.repo.clone(), candidate.path.clone())) {
             return Err(hz_core::HzError::Usage(format!(
                 "duplicate worktree target: {target}"

@@ -9,9 +9,22 @@ use crate::{
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
 
 pub(crate) fn resolve_repo(repo: Option<&Path>, registry: &Registry) -> HzResult<PathBuf> {
+    let (repo, _) = resolve_repo_with_git_worktrees(repo, registry)?;
+    Ok(repo)
+}
+
+pub(crate) fn resolve_repo_with_git_worktrees(
+    repo: Option<&Path>,
+    registry: &Registry,
+) -> HzResult<(PathBuf, Vec<hz_git::GitWorktree>)> {
     let current = hz_git::repository_root(repo)?;
-    let main = hz_git::main_worktree(&current)?;
-    Ok(resolve_registered_repo(registry, &current, &main).unwrap_or(main))
+    let git_worktrees = hz_git::list_worktrees(&current)?;
+    let main = git_worktrees
+        .first()
+        .map(|worktree| worktree.path.clone())
+        .ok_or_else(|| HzError::Usage("git worktree list was empty".to_owned()))?;
+    let repo = resolve_registered_repo(registry, &current, &main).unwrap_or(main);
+    Ok((repo, git_worktrees))
 }
 
 pub(crate) fn resolve_registered_repo(

@@ -52,6 +52,10 @@ pub fn find_worktree(input: FindWorktree) -> HzResult<WorktreeEntry> {
     hz_worktree::find(input)
 }
 
+pub fn find_worktrees(input: crate::FindWorktrees) -> HzResult<Vec<WorktreeEntry>> {
+    hz_worktree::find_many(input)
+}
+
 pub fn is_user_managed_worktree_path(entry: &WorktreeEntry) -> HzResult<bool> {
     if hz_worktree::is_hz_worktree_path(&entry.repo, &entry.path)? {
         return Ok(true);
