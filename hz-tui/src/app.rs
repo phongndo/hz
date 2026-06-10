@@ -48,6 +48,8 @@ use crate::{
     },
 };
 
+const MOUSE_HUNK_FOCUS_SCROLL_TICKS: isize = 3;
+
 pub(crate) fn run_loop(
     terminal: &mut CrosstermTerminal,
     app: &mut DiffApp,
@@ -180,6 +182,7 @@ pub(crate) struct MouseScroll {
     pub(crate) direction: Option<MouseScrollDirection>,
     pub(crate) intervals: Vec<Duration>,
     pub(crate) pending_lines: f64,
+    pub(crate) pending_hunk_focus_ticks: isize,
 }
 
 impl MouseScroll {
@@ -200,6 +203,28 @@ impl MouseScroll {
         self.direction = None;
         self.intervals.clear();
         self.pending_lines = 0.0;
+        self.pending_hunk_focus_ticks = 0;
+    }
+
+    pub(crate) fn reset_hunk_focus_ticks(&mut self) {
+        self.pending_hunk_focus_ticks = 0;
+    }
+
+    pub(crate) fn hunk_focus_delta(&mut self, direction: MouseScrollDirection) -> isize {
+        match direction {
+            MouseScrollDirection::Down => self.pending_hunk_focus_ticks += 1,
+            MouseScrollDirection::Up => self.pending_hunk_focus_ticks -= 1,
+        }
+
+        if self.pending_hunk_focus_ticks >= MOUSE_HUNK_FOCUS_SCROLL_TICKS {
+            self.pending_hunk_focus_ticks -= MOUSE_HUNK_FOCUS_SCROLL_TICKS;
+            1
+        } else if self.pending_hunk_focus_ticks <= -MOUSE_HUNK_FOCUS_SCROLL_TICKS {
+            self.pending_hunk_focus_ticks += MOUSE_HUNK_FOCUS_SCROLL_TICKS;
+            -1
+        } else {
+            0
+        }
     }
 
     pub(crate) fn multiplier(&mut self, direction: MouseScrollDirection, now: Instant) -> f64 {
@@ -242,6 +267,7 @@ impl MouseScroll {
         self.direction = Some(direction);
         self.intervals.clear();
         self.pending_lines = 0.0;
+        self.pending_hunk_focus_ticks = 0;
     }
 }
 
@@ -272,6 +298,7 @@ pub(crate) struct DiffApp {
     pub(crate) viewport_rows: usize,
     pub(crate) viewport_width: usize,
     pub(crate) max_line_width: usize,
+    pub(crate) manual_hunk_focus: Option<(usize, usize)>,
     pub(crate) selected_file: usize,
     pub(crate) file_sidebar_open: bool,
     pub(crate) file_sidebar_scroll: usize,
@@ -409,6 +436,7 @@ impl DiffApp {
             viewport_rows: 1,
             viewport_width: 1,
             max_line_width,
+            manual_hunk_focus: None,
             selected_file: 0,
             file_sidebar_open: false,
             file_sidebar_scroll: 0,
@@ -549,16 +577,16 @@ impl DiffApp {
         match key.code {
             KeyCode::Esc if self.filters_active() => self.clear_all_filters(),
             KeyCode::Esc | KeyCode::Char('q') => return Ok(true),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll_by(1),
-            KeyCode::Up | KeyCode::Char('k') => self.scroll_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_or_focus_hunk(1),
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_or_focus_hunk(-1),
             KeyCode::Left | KeyCode::Char('h') => {
                 self.scroll_horizontally_by(-(HORIZONTAL_SCROLL_STEP as isize));
             }
             KeyCode::Right | KeyCode::Char('l') => {
                 self.scroll_horizontally_by(HORIZONTAL_SCROLL_STEP as isize);
             }
-            KeyCode::PageDown | KeyCode::Char('d') => self.scroll_by(20),
-            KeyCode::PageUp | KeyCode::Char('u') => self.scroll_by(-20),
+            KeyCode::PageDown | KeyCode::Char('d') => self.scroll_or_focus_hunk(20),
+            KeyCode::PageUp | KeyCode::Char('u') => self.scroll_or_focus_hunk(-20),
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.open_focused_hunk_in_editor();
             }
@@ -664,10 +692,7 @@ impl DiffApp {
                     self.scroll_file_sidebar_by(1);
                     return Ok(());
                 }
-                let delta = self
-                    .mouse_scroll
-                    .scroll_delta(MouseScrollDirection::Down, Instant::now());
-                self.scroll_by(delta);
+                self.mouse_scroll_or_focus_hunk(MouseScrollDirection::Down);
             }
             MouseEventKind::ScrollUp => {
                 if self.is_file_sidebar_position(mouse.column, mouse.row) {
@@ -675,10 +700,7 @@ impl DiffApp {
                     self.scroll_file_sidebar_by(-1);
                     return Ok(());
                 }
-                let delta = self
-                    .mouse_scroll
-                    .scroll_delta(MouseScrollDirection::Up, Instant::now());
-                self.scroll_by(delta);
+                self.mouse_scroll_or_focus_hunk(MouseScrollDirection::Up);
             }
             MouseEventKind::ScrollLeft => {
                 if self.is_file_sidebar_position(mouse.column, mouse.row) {
@@ -1494,6 +1516,28 @@ impl DiffApp {
         self.set_scroll(next);
     }
 
+    pub(crate) fn scroll_or_focus_hunk(&mut self, delta: isize) {
+        let previous_scroll = self.scroll;
+        self.scroll_by(delta);
+        if self.scroll == previous_scroll {
+            self.move_focused_hunk(delta);
+        }
+    }
+
+    pub(crate) fn mouse_scroll_or_focus_hunk(&mut self, direction: MouseScrollDirection) {
+        let delta = self.mouse_scroll.scroll_delta(direction, Instant::now());
+        let previous_scroll = self.scroll;
+        self.scroll_by(delta);
+        if self.scroll == previous_scroll {
+            let hunk_delta = self.mouse_scroll.hunk_focus_delta(direction);
+            if hunk_delta != 0 {
+                self.move_focused_hunk(hunk_delta);
+            }
+        } else {
+            self.mouse_scroll.reset_hunk_focus_ticks();
+        }
+    }
+
     pub(crate) fn scroll_horizontally_by(&mut self, delta: isize) {
         let next = if delta < 0 {
             self.horizontal_scroll.saturating_sub(delta.unsigned_abs())
@@ -1520,10 +1564,33 @@ impl DiffApp {
         self.set_scroll_with_grep_sync(row.saturating_sub(center_offset), false);
     }
 
+    pub(crate) fn set_scroll_focused_on_hunk(&mut self, file: usize, hunk: usize) {
+        let Some(mut range) = self.model.hunk_row_range(file, hunk) else {
+            return;
+        };
+        if range.start > 0
+            && matches!(self.model.row(range.start - 1), Some(UiRow::FileHeader(row_file)) if row_file == file)
+        {
+            range.start -= 1;
+        }
+
+        let focus_rows = range.end.saturating_sub(range.start).max(1);
+        let scroll = if focus_rows > self.viewport_rows {
+            range.start
+        } else {
+            let focus_center = range.start.saturating_add(focus_rows.saturating_sub(1) / 2);
+            focus_center.saturating_sub(viewport_center_offset(self.viewport_rows))
+        };
+        self.set_scroll_with_grep_sync(scroll, false);
+    }
+
     pub(crate) fn set_scroll_with_grep_sync(&mut self, scroll: usize, sync_grep: bool) {
         let previous_scroll = self.scroll;
         let previous_file = self.selected_file;
         self.scroll = scroll.min(self.max_scroll());
+        if self.scroll != previous_scroll {
+            self.manual_hunk_focus = None;
+        }
         if let Some(file) = self.model.file_at_row(self.scroll) {
             self.selected_file = file;
         }
@@ -1550,6 +1617,23 @@ impl DiffApp {
             .saturating_add(visible_rows)
             .min(self.model.len());
         if visible_start >= visible_end {
+            return None;
+        }
+
+        if let Some((file, hunk)) = self.manual_hunk_focus
+            && let Some(row) = self.model.hunk_start_row(file, hunk)
+            && row >= visible_start
+            && row < visible_end
+        {
+            return Some((file, hunk));
+        }
+
+        if max_scroll_for_viewport(self.model.len(), visible_rows) == 0 {
+            for row_index in visible_start..visible_end {
+                if let Some(hunk_key) = self.model.row(row_index).and_then(|row| row.hunk_key()) {
+                    return Some(hunk_key);
+                }
+            }
             return None;
         }
 
@@ -2335,14 +2419,69 @@ impl DiffApp {
     }
 
     pub(crate) fn next_hunk(&mut self) {
-        if let Some(row) = self.model.next_hunk_row(self.viewport_focus_row()) {
-            self.set_scroll_centered_on(row);
+        if let Some(row) = self.model.next_hunk_row(self.hunk_navigation_anchor_row()) {
+            self.focus_hunk_row(row);
         }
     }
 
     pub(crate) fn previous_hunk(&mut self) {
-        if let Some(row) = self.model.previous_hunk_row(self.viewport_focus_row()) {
+        if let Some(row) = self
+            .model
+            .previous_hunk_row(self.hunk_navigation_anchor_row())
+        {
+            self.focus_hunk_row(row);
+        }
+    }
+
+    pub(crate) fn move_focused_hunk(&mut self, delta: isize) {
+        let anchor = self.hunk_navigation_anchor_row();
+        let next = if delta < 0 {
+            self.model.previous_hunk_row(anchor)
+        } else {
+            self.model.next_hunk_row(anchor)
+        };
+        if let Some(row) = next {
+            self.focus_hunk_row(row);
+        }
+    }
+
+    pub(crate) fn hunk_navigation_anchor_row(&self) -> usize {
+        if let Some((file, hunk)) = self.focused_hunk_for_viewport(self.viewport_rows)
+            && let Some(row) = self.model.hunk_start_row(file, hunk)
+        {
+            return row;
+        }
+
+        self.viewport_focus_row()
+    }
+
+    pub(crate) fn focus_hunk_row(&mut self, row: usize) {
+        let target_hunk = self.model.row(row).and_then(|row| row.hunk_key());
+        let previous_hunk = self.manual_hunk_focus;
+        self.manual_hunk_focus = None;
+
+        let Some((file, hunk)) = target_hunk else {
             self.set_scroll_centered_on(row);
+            return;
+        };
+
+        self.set_scroll_focused_on_hunk(file, hunk);
+
+        let visible_start = self.scroll;
+        let visible_end = visible_start
+            .saturating_add(self.viewport_rows)
+            .min(self.model.len());
+        if let Some(row) = self.model.hunk_start_row(file, hunk)
+            && row >= visible_start
+            && row < visible_end
+        {
+            let previous_file = self.selected_file;
+            self.manual_hunk_focus = Some((file, hunk));
+            self.selected_file = file;
+            self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
+            if self.manual_hunk_focus != previous_hunk || self.selected_file != previous_file {
+                self.dirty = true;
+            }
         }
     }
 

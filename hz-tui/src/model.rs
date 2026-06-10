@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ops::Range, sync::Arc};
 
 use hz_diff::{Changeset, DiffLine, DiffLineKind};
 
@@ -347,6 +347,26 @@ impl UiModel {
             .rev()
             .copied()
             .find(|start| *start < row)
+    }
+
+    pub(crate) fn hunk_start_row(&self, file: usize, hunk: usize) -> Option<usize> {
+        self.hunk_start_rows.iter().copied().find(|row| {
+            matches!(
+                self.row(*row),
+                Some(UiRow::HunkHeader {
+                    file: row_file,
+                    hunk: row_hunk,
+                }) if row_file == file && row_hunk == hunk
+            )
+        })
+    }
+
+    pub(crate) fn hunk_row_range(&self, file: usize, hunk: usize) -> Option<Range<usize>> {
+        let start = self.hunk_start_row(file, hunk)?;
+        let end = (start + 1..self.rows.len())
+            .find(|row| self.row(*row).and_then(|row| row.hunk_key()) != Some((file, hunk)))
+            .unwrap_or(self.rows.len());
+        Some(start..end)
     }
 }
 
