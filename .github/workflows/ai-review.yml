@@ -199,6 +199,15 @@ jobs:
           test "$(git rev-parse HEAD)" = "$HEAD_SHA"
           git merge-base "origin/${BASE_REF}" HEAD >/dev/null
 
+      - name: Use PR reviewer driver
+        if: steps.gate.outputs.should_review == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f scripts/ci/ai_pr_review.py
+          cp scripts/ci/ai_pr_review.py "$RUNNER_TEMP/ai-review/ai_pr_review.py"
+          python3 -m py_compile "$RUNNER_TEMP/ai-review/ai_pr_review.py"
+
       - name: Setup Node.js
         if: steps.gate.outputs.should_review == 'true'
         uses: actions/setup-node@v6
