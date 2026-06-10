@@ -237,7 +237,6 @@ jobs:
           AI_REVIEW_MODE: ${{ steps.gate.outputs.mode }}
           PI_CODING_AGENT_DIR: ${{ runner.temp }}/pi-agent
           PI_CODING_AGENT_SESSION_DIR: ${{ runner.temp }}/pi-sessions
-          PI_PACKAGE_DIR: ${{ runner.temp }}/pi-packages
           PI_SKIP_VERSION_CHECK: "1"
           PI_TELEMETRY: "0"
         shell: bash
