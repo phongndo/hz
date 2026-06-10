@@ -487,27 +487,43 @@ def parse_changed_ranges(diff_zero: str) -> list[tuple[int, int]]:
 def parse_commentable_lines(diff_text: str) -> set[int]:
     """Return new-file line numbers present in the rendered PR diff."""
 
-    lines: set[int] = set()
+    return parse_commentable_positions(diff_text)["RIGHT"]
+
+
+def parse_commentable_positions(diff_text: str) -> dict[str, set[int]]:
+    """Return old/new line numbers present in the rendered PR diff."""
+
+    positions: dict[str, set[int]] = {"LEFT": set(), "RIGHT": set()}
+    old_line: int | None = None
     new_line: int | None = None
     for line in diff_text.splitlines():
-        hunk = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+        hunk = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
         if hunk:
-            new_line = int(hunk.group(1))
+            old_line = int(hunk.group(1))
+            new_line = int(hunk.group(2))
             continue
-        if new_line is None:
+        if old_line is None or new_line is None:
             continue
         if line.startswith("+++") or line.startswith("---"):
             continue
-        if line.startswith("+") or line.startswith(" "):
-            lines.add(new_line)
+        if line.startswith(" "):
+            positions["LEFT"].add(old_line)
+            positions["RIGHT"].add(new_line)
+            old_line += 1
+            new_line += 1
+        elif line.startswith("+"):
+            positions["RIGHT"].add(new_line)
             new_line += 1
         elif line.startswith("-"):
+            positions["LEFT"].add(old_line)
+            old_line += 1
             continue
         elif line.startswith("\\"):
             continue
         else:
+            old_line = None
             new_line = None
-    return lines
+    return positions
 
 
 def merge_ranges(ranges: list[tuple[int, int]], radius: int, line_count: int) -> list[tuple[int, int]]:
@@ -557,6 +573,7 @@ def build_context(base_ref: str, head_ref: str) -> dict[str, Any]:
     snippets_truncated = False
     snippet_budget = 80_000
     commentable_lines: dict[str, set[int]] = {}
+    commentable_positions: dict[str, dict[str, set[int]]] = {}
     for item in changed_files:
         status = item["status"]
         path = item["path"]
@@ -575,8 +592,11 @@ def build_context(base_ref: str, head_ref: str) -> dict[str, Any]:
                     path,
                 ]
             )
-            commentable_lines[path] = parse_commentable_lines(diff_context)
+            positions = parse_commentable_positions(diff_context)
+            commentable_positions[path] = positions
+            commentable_lines[path] = positions["RIGHT"]
         except subprocess.CalledProcessError:
+            commentable_positions[path] = {"LEFT": set(), "RIGHT": set()}
             commentable_lines[path] = set()
         content = git_show_text("HEAD", path)
         if content is None:
@@ -649,6 +669,7 @@ def build_context(base_ref: str, head_ref: str) -> dict[str, Any]:
         "head_subject": head_subject,
         "changed_files": changed_files,
         "commentable_lines": commentable_lines,
+        "commentable_positions": commentable_positions,
     }
 
 
@@ -1140,18 +1161,61 @@ def render_summary_comment(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def inline_commentable(finding: dict[str, Any], commentable_lines: dict[str, set[int]]) -> bool:
-    return finding["line"] in commentable_lines.get(finding["file"], set())
+def nearest_commentable_line(target: int, lines: set[int]) -> int | None:
+    if not lines:
+        return None
+    return min(lines, key=lambda line: (abs(line - target), line))
 
 
-def inline_comment_body(finding: dict[str, Any]) -> str:
+def inline_comment_anchor(
+    finding: dict[str, Any],
+    commentable_positions: dict[str, dict[str, set[int]]],
+) -> dict[str, Any] | None:
+    positions = commentable_positions.get(finding["file"], {})
+    right_lines = positions.get("RIGHT", set())
+    left_lines = positions.get("LEFT", set())
+    target_line = finding["line"]
+
+    if target_line in right_lines:
+        return {"path": finding["file"], "line": target_line, "side": "RIGHT", "exact": True}
+    if target_line in left_lines:
+        return {"path": finding["file"], "line": target_line, "side": "LEFT", "exact": True}
+
+    nearest_right = nearest_commentable_line(target_line, right_lines)
+    if nearest_right is not None:
+        return {"path": finding["file"], "line": nearest_right, "side": "RIGHT", "exact": False}
+
+    nearest_left = nearest_commentable_line(target_line, left_lines)
+    if nearest_left is not None:
+        return {"path": finding["file"], "line": nearest_left, "side": "LEFT", "exact": False}
+
+    return None
+
+
+def inline_commentable(
+    finding: dict[str, Any],
+    commentable_positions: dict[str, dict[str, set[int]]],
+) -> bool:
+    return inline_comment_anchor(finding, commentable_positions) is not None
+
+
+def inline_comment_body(finding: dict[str, Any], anchor: dict[str, Any]) -> str:
     evidence = finding["evidence"][0] if finding.get("evidence") else "See PR diff/context."
-    return "\n".join(
+    lines = [
+        INLINE_MARKER,
+        f"**{markdown_escape(finding['title'])}**",
+        "",
+        f"**Severity:** {finding['severity']} · **Category:** {finding['category']} · **Confidence:** {finding['confidence']:.2f}",
+    ]
+    if not anchor.get("exact", False):
+        lines.extend(
+            [
+                "",
+                f"_Reported at `{finding['file']}:{finding['line']}`; anchored to the nearest diff line on {anchor['side'].lower()} side._",
+            ]
+        )
+    lines.extend(
         [
-            INLINE_MARKER,
-            f"**{markdown_escape(finding['title'])}**",
-            "",
-            f"**Severity:** {finding['severity']} · **Category:** {finding['category']} · **Confidence:** {finding['confidence']:.2f}",
             "",
             f"**Why it matters:** {markdown_escape(finding['why_it_matters'] or finding['summary'])}",
             "",
@@ -1162,6 +1226,7 @@ def inline_comment_body(finding: dict[str, Any]) -> str:
             f"**Verification:** {markdown_escape(finding.get('verification_notes', 'Accepted by final verification reviewer.'))}",
         ]
     )
+    return "\n".join(lines)
 
 
 def render_comment(
@@ -1267,18 +1332,21 @@ def post_inline_review(
     reviewed_diff: str,
     diff_summary: str,
     findings: list[dict[str, Any]],
-    commentable_lines: dict[str, set[int]],
+    commentable_positions: dict[str, dict[str, set[int]]],
 ) -> int:
     comments = []
+    unanchored = 0
     for finding in findings:
-        if not inline_commentable(finding, commentable_lines):
+        anchor = inline_comment_anchor(finding, commentable_positions)
+        if anchor is None:
+            unanchored += 1
             continue
         comments.append(
             {
-                "path": finding["file"],
-                "line": finding["line"],
-                "side": "RIGHT",
-                "body": inline_comment_body(finding),
+                "path": anchor["path"],
+                "line": anchor["line"],
+                "side": anchor["side"],
+                "body": inline_comment_body(finding, anchor),
             }
         )
 
@@ -1288,14 +1356,13 @@ def post_inline_review(
     if not comments:
         log("No accepted findings could be anchored to diff lines for inline review comments.")
         return 0
-    fallback_count = len(findings) - len(comments)
-    if fallback_count:
-        log(f"{fallback_count} accepted finding(s) could not be anchored inline.")
+    if unanchored:
+        log(f"{unanchored} accepted finding(s) could not be anchored inline.")
     review_body = render_inline_review_summary(
         reviewed_diff=reviewed_diff,
         diff_summary=diff_summary,
         inline_count=len(comments),
-        fallback_count=fallback_count,
+        fallback_count=unanchored,
     )
 
     try:
@@ -1517,7 +1584,7 @@ def command_review() -> None:
                 reviewed_diff,
                 diff_summary,
                 visible,
-                context["commentable_lines"],
+                context["commentable_positions"],
             )
         except Exception as error:
             inline_failed = True
@@ -1530,7 +1597,7 @@ def command_review() -> None:
         issue_findings = [
             finding
             for finding in visible
-            if not inline_commentable(finding, context["commentable_lines"])
+            if not inline_commentable(finding, context["commentable_positions"])
         ]
 
     if not visible:
@@ -1546,7 +1613,7 @@ def command_review() -> None:
     elif delete_issue_comment(pr_number, MARKER):
         log("Deleted stale AI PR review findings comment.")
     else:
-        log("No AI review findings to comment.")
+        log("All AI review findings were posted inline.")
 
 
 def main() -> None:

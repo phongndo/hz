@@ -272,6 +272,59 @@ jobs:
               script = script.replace(old, new, 1)
               script_path.write_text(script, encoding="utf-8")
           if 'AI PR review posted {len(comments)} inline finding(s).' in script:
+              if "def nearest_commentable_line(" not in script:
+                  start = script.index("def inline_commentable(")
+                  end = script.index("\n\ndef render_comment", start)
+                  replacement = textwrap.dedent('''
+                      def nearest_commentable_line(target: int, lines: set[int]) -> int | None:
+                          if not lines:
+                              return None
+                          return min(lines, key=lambda line: (abs(line - target), line))
+
+
+                      def inline_comment_anchor(finding: dict[str, Any], commentable_lines: dict[str, set[int]]) -> dict[str, Any] | None:
+                          lines = commentable_lines.get(finding["file"], set())
+                          target_line = finding["line"]
+                          line = target_line if target_line in lines else nearest_commentable_line(target_line, lines)
+                          if line is None:
+                              return None
+                          return {"path": finding["file"], "line": line, "side": "RIGHT", "exact": line == target_line}
+
+
+                      def inline_commentable(finding: dict[str, Any], commentable_lines: dict[str, set[int]]) -> bool:
+                          return inline_comment_anchor(finding, commentable_lines) is not None
+
+
+                      def inline_comment_body(finding: dict[str, Any], anchor: dict[str, Any]) -> str:
+                          evidence = finding["evidence"][0] if finding.get("evidence") else "See PR diff/context."
+                          lines = [
+                              INLINE_MARKER,
+                              f"**{markdown_escape(finding['title'])}**",
+                              "",
+                              f"**Severity:** {finding['severity']} · **Category:** {finding['category']} · **Confidence:** {finding['confidence']:.2f}",
+                          ]
+                          if not anchor.get("exact", False):
+                              lines.extend(
+                                  [
+                                      "",
+                                      f"_Reported at `{finding['file']}:{finding['line']}`; anchored to the nearest diff line._",
+                                  ]
+                              )
+                          lines.extend(
+                              [
+                                  "",
+                                  f"**Why it matters:** {markdown_escape(finding['why_it_matters'] or finding['summary'])}",
+                                  "",
+                                  f"**Evidence:** {markdown_escape(evidence)}",
+                                  "",
+                                  f"**Minimal fix:** {markdown_escape(finding['minimal_fix'])}",
+                                  "",
+                                  f"**Verification:** {markdown_escape(finding.get('verification_notes', 'Accepted by final verification reviewer.'))}",
+                              ]
+                          )
+                          return "\\n".join(lines)
+                  ''').strip("\n")
+                  script = script[:start] + replacement + script[end:]
               script = script.replace(
                   'def post_inline_review(\n'
                   '    pr_number: str,\n'
@@ -286,6 +339,38 @@ jobs:
                   '    findings: list[dict[str, Any]],\n'
                   '    commentable_lines: dict[str, set[int]],\n'
                   ') -> int:\n',
+                  1,
+              )
+              script = script.replace(
+                  '    comments = []\n'
+                  '    for finding in findings:\n'
+                  '        if not inline_commentable(finding, commentable_lines):\n'
+                  '            continue\n'
+                  '        comments.append(\n'
+                  '            {\n'
+                  '                "path": finding["file"],\n'
+                  '                "line": finding["line"],\n'
+                  '                "side": "RIGHT",\n'
+                  '                "body": inline_comment_body(finding),\n'
+                  '            }\n'
+                  '        )\n',
+                  '    comments = []\n'
+                  '    unanchored = 0\n'
+                  '    for finding in findings:\n'
+                  '        anchor = inline_comment_anchor(finding, commentable_lines)\n'
+                  '        if anchor is None:\n'
+                  '            unanchored += 1\n'
+                  '            continue\n'
+                  '        comments.append(\n'
+                  '            {\n'
+                  '                "path": anchor["path"],\n'
+                  '                "line": anchor["line"],\n'
+                  '                "side": anchor["side"],\n'
+                  '                "body": inline_comment_body(finding, anchor),\n'
+                  '            }\n'
+                  '        )\n'
+                  '    if unanchored:\n'
+                  '        log(f"{unanchored} accepted finding(s) could not be anchored inline.")\n',
                   1,
               )
               script = script.replace(
