@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import textwrap
 import urllib.error
 import urllib.request
@@ -679,33 +680,38 @@ def pi_env() -> dict[str, str]:
 
 def run_pi(prompt: str, model: str, label: str, *, thinking: str = "low") -> str:
     log(f"Running {label} with {model}")
-    command = [
-        "pi",
-        "--no-session",
-        "--no-extensions",
-        "--no-skills",
-        "--no-prompt-templates",
-        "--no-context-files",
-        "--no-tools",
-        "--no-approve",
-        "--system-prompt",
-        READ_ONLY_SYSTEM_PROMPT,
-        "--model",
-        model,
-        "--thinking",
-        thinking,
-        "-p",
-        prompt,
-    ]
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-        env=pi_env(),
-        timeout=900,
-    )
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", prefix="ai-pr-review-prompt-", suffix=".md"
+    ) as prompt_file:
+        prompt_file.write(prompt)
+        prompt_file.flush()
+        command = [
+            "pi",
+            "--no-session",
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-context-files",
+            "--no-tools",
+            "--no-approve",
+            "--system-prompt",
+            READ_ONLY_SYSTEM_PROMPT,
+            "--model",
+            model,
+            "--thinking",
+            thinking,
+            "-p",
+            f"@{prompt_file.name}",
+        ]
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            env=pi_env(),
+            timeout=900,
+        )
     if result.stderr.strip():
         sys.stderr.write(result.stderr)
     if result.returncode != 0:
