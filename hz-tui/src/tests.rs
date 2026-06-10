@@ -377,6 +377,36 @@ fn hunk_navigation_centers_with_surrounding_collapsed_context() {
 }
 
 #[test]
+fn hunk_navigation_keeps_target_visible_after_expanded_pre_hunk_context() {
+    let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[50, 100]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(9);
+    app.context_expansions.insert(
+        ContextKey { file: 0, hunk: 1 },
+        default_context_expand_step(),
+    );
+    app.model = UiModel::new(&app.changeset, app.layout, &app.context_expansions);
+    let hunk_row = app
+        .model
+        .hunk_start_row(0, 1)
+        .expect("target hunk should have a header row");
+    assert!(matches!(
+        app.model.row(hunk_row - 1),
+        Some(UiRow::Collapsed { .. })
+    ));
+    assert!(matches!(
+        app.model.row(hunk_row - 2),
+        Some(UiRow::ContextLine { .. })
+    ));
+
+    app.next_hunk();
+
+    assert!(hunk_row >= app.scroll);
+    assert!(hunk_row < app.scroll + app.viewport_rows);
+    assert_eq!(app.focused_hunk_for_viewport(9), Some((0, 1)));
+}
+
+#[test]
 fn selecting_file_centers_and_focuses_its_first_hunk() {
     let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);

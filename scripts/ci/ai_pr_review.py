@@ -532,6 +532,7 @@ def git_show_text(revision: str, path: str) -> str | None:
 def build_context(base_ref: str, head_ref: str) -> dict[str, Any]:
     merge_base = run_git(["merge-base", f"origin/{base_ref}", "HEAD"]).strip()
     head_sha = run_git(["rev-parse", "HEAD"]).strip()
+    head_subject = run_git(["log", "-1", "--format=%s", "HEAD"]).strip()
     base_sha = run_git(["rev-parse", f"origin/{base_ref}"]).strip()
     diff_range = f"{merge_base}...HEAD"
 
@@ -602,6 +603,7 @@ def build_context(base_ref: str, head_ref: str) -> dict[str, Any]:
         - merge_base: {merge_base}
         - head_ref: {head_ref}
         - head_sha: {head_sha}
+        - head_commit: {head_subject}
 
         Changed files:
         ```text
@@ -635,6 +637,7 @@ def build_context(base_ref: str, head_ref: str) -> dict[str, Any]:
         "merge_base": merge_base,
         "base_sha": base_sha,
         "head_sha": head_sha,
+        "head_subject": head_subject,
         "changed_files": changed_files,
         "commentable_lines": commentable_lines,
     }
@@ -994,6 +997,15 @@ def markdown_escape(text: str) -> str:
     return text.replace("\r", " ").strip()
 
 
+def text_block_escape(text: str) -> str:
+    return markdown_escape(text).replace("```", "'''")
+
+
+def text_block(lines: list[str]) -> str:
+    body = "\n".join(text_block_escape(line) for line in lines).rstrip()
+    return f"```text\n{body}\n```"
+
+
 def confidence_percent(confidence: float) -> str:
     return f"{round(parse_confidence(confidence) * 100):d}%"
 
@@ -1043,11 +1055,7 @@ def inline_comment_body(finding: dict[str, Any]) -> str:
 def render_comment(
     *,
     author: str,
-    mode: str,
-    model_source: str,
-    base_ref: str,
-    merge_base: str,
-    head_sha: str,
+    reviewed_diff: str,
     pr_summary: str,
     overall_confidence: float,
     findings: list[dict[str, Any]],
@@ -1057,29 +1065,22 @@ def render_comment(
 ) -> str:
     counts = Counter(finding["severity"] for finding in findings)
     lines = [
-        MARKER,
-        "",
-        "## AI PR Review",
-        "",
         f"Author: @{author}",
-        f"Mode: {mode}",
-        "Runtime: Pi",
-        f"Models: {model_source}",
-        f"Reviewed diff: `{base_ref}@{merge_base[:12]}...{head_sha[:12]}`",
+        f"Reviewed diff: {reviewed_diff}",
         "",
-        "### PR Summary",
+        "PR Summary",
         "",
         markdown_escape(pr_summary),
         "",
-        "### Review Result",
+        "Review Result",
         "",
-        f"- Overall confidence: {confidence_percent(overall_confidence)}",
-        f"- Blocker: {counts.get('blocker', 0)}",
-        f"- High: {counts.get('high', 0)}",
-        f"- Medium: {counts.get('medium', 0)}",
-        f"- Low hidden: {len(hidden_low)}",
-        f"- Rejected during verification: {len(rejected)}",
-        f"- Inline GitHub review comments: {inline_comment_count}",
+        f"Overall confidence: {confidence_percent(overall_confidence)}",
+        f"Blocker: {counts.get('blocker', 0)}",
+        f"High: {counts.get('high', 0)}",
+        f"Medium: {counts.get('medium', 0)}",
+        f"Low hidden: {len(hidden_low)}",
+        f"Rejected during verification: {len(rejected)}",
+        f"Inline GitHub review comments: {inline_comment_count}",
         "",
     ]
 
@@ -1096,13 +1097,13 @@ def render_comment(
         severity_findings = [finding for finding in findings if finding["severity"] == severity]
         if not severity_findings:
             continue
-        lines.append(f"### {heading[severity]}")
+        lines.append(heading[severity])
         lines.append("")
         for index, finding in enumerate(severity_findings, start=1):
             evidence = finding["evidence"][0] if finding.get("evidence") else "See PR diff/context."
             lines.extend(
                 [
-                    f"{index}. `{finding['file']}:{finding['line']}` — {markdown_escape(finding['title'])}",
+                    f"{index}. {finding['file']}:{finding['line']} - {markdown_escape(finding['title'])}",
                     f"   Category: {finding['category']}",
                     f"   Confidence: {finding['confidence']:.2f}",
                     f"   Risk: {markdown_escape(finding['why_it_matters'] or finding['summary'])}",
@@ -1119,7 +1120,7 @@ def render_comment(
             "Scope: reviewed the PR diff and surrounding changed-file context only. No project scripts, tests, commits, or pushes were run by this reviewer.",
         ]
     )
-    return "\n".join(lines).rstrip() + "\n"
+    return "\n".join([MARKER, "", "## AI PR Review", "", text_block(lines)]).rstrip() + "\n"
 
 
 def delete_existing_inline_comments(pr_number: str) -> int:
@@ -1271,10 +1272,10 @@ def command_review() -> None:
         else:
             overall_confidence = min_confidence
     pr_summary = clean_string(verified.get("pr_summary"), 1200) or fallback_pr_summary(context["changed_files"])
+    reviewed_diff = clean_string(context.get("head_subject"), 240) or clean_string(
+        head_ref or base_ref or "HEAD", 240
+    )
 
-    model_source = str((config.get("provider") or {}).get("model_source", "OpenCode Go"))
-    if model_source == "opencode-go":
-        model_source = "OpenCode Go"
     github_config = config.get("github") or {}
     inline_count = 0
     if as_bool(github_config.get("inline_comments", False)):
@@ -1290,11 +1291,7 @@ def command_review() -> None:
 
     body = render_comment(
         author=author,
-        mode=mode,
-        model_source=model_source,
-        base_ref=base_ref,
-        merge_base=context["merge_base"],
-        head_sha=context["head_sha"],
+        reviewed_diff=reviewed_diff,
         pr_summary=pr_summary,
         overall_confidence=overall_confidence,
         findings=visible,

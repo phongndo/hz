@@ -1575,14 +1575,11 @@ impl DiffApp {
 
         while range.start > 0 {
             match self.model.row(range.start - 1) {
-                Some(
-                    UiRow::FileHeader(_)
-                    | UiRow::Collapsed { .. }
-                    | UiRow::ContextLine { .. }
-                    | UiRow::ContextHide { .. },
-                ) => range.start -= 1,
+                Some(UiRow::FileHeader(_) | UiRow::Collapsed { .. }) => range.start -= 1,
                 Some(
                     UiRow::FileSeparator
+                    | UiRow::ContextLine { .. }
+                    | UiRow::ContextHide { .. }
                     | UiRow::BinaryFile(_)
                     | UiRow::HunkHeader { .. }
                     | UiRow::UnifiedLine { .. }

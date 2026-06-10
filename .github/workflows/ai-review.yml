@@ -91,8 +91,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
         shell: bash
@@ -135,23 +133,26 @@ jobs:
           if changed > 6:
               notable += f", and {changed - 6} more"
 
+          def text(value):
+              return str(value).replace("```", "'''")
+
           body = "\n".join(
               [
                   marker,
                   "",
                   "## AI PR Review",
                   "",
+                  "```text",
                   f"Author: @{os.environ['PR_AUTHOR']}",
-                  "Mode: bootstrap",
-                  f"Reviewed diff: `{os.environ['PR_BASE_REF']}...{os.environ['PR_HEAD_SHA'][:12]}`",
+                  f"Reviewed diff: {text(os.environ['PR_TITLE'])}",
                   "",
-                  "### PR Summary",
+                  "PR Summary",
                   "",
-                  f"This PR is titled: {os.environ['PR_TITLE']}",
+                  f"This PR is titled: {text(os.environ['PR_TITLE'])}",
                   f"It changes {changed} file(s) with +{additions}/-{deletions} lines.",
-                  f"Notable files: {notable}.",
+                  f"Notable files: {text(notable)}.",
                   "",
-                  "### Review Result",
+                  "Review Result",
                   "",
                   "No findings were produced. Confidence: 0%.",
                   "",
@@ -159,6 +160,7 @@ jobs:
                   "",
                   "---",
                   "Scope: bootstrap status only; no model review was run for this initial rollout PR.",
+                  "```",
                   "",
               ]
           )
@@ -198,15 +200,6 @@ jobs:
           git checkout --detach "$HEAD_SHA"
           test "$(git rev-parse HEAD)" = "$HEAD_SHA"
           git merge-base "origin/${BASE_REF}" HEAD >/dev/null
-
-      - name: Use PR reviewer driver
-        if: steps.gate.outputs.should_review == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f scripts/ci/ai_pr_review.py
-          cp scripts/ci/ai_pr_review.py "$RUNNER_TEMP/ai-review/ai_pr_review.py"
-          python3 -m py_compile "$RUNNER_TEMP/ai-review/ai_pr_review.py"
 
       - name: Setup Node.js
         if: steps.gate.outputs.should_review == 'true'
