@@ -1385,9 +1385,6 @@ def command_summary() -> None:
     reviewed_diff = clean_string(context.get("head_subject"), 240) or clean_string(
         head_ref or base_ref or "HEAD", 240
     )
-    diff_summary = clean_string(verified.get("pr_summary"), 1200) or fallback_pr_summary(
-        context["changed_files"]
-    )
     post_sticky_comment(
         pr_number,
         render_summary_comment(author=author, reviewed_diff=reviewed_diff, summary=summary),
@@ -1460,6 +1457,9 @@ def command_review() -> None:
     )
     reviewed_diff = clean_string(context.get("head_subject"), 240) or clean_string(
         head_ref or base_ref or "HEAD", 240
+    )
+    diff_summary = clean_string(verified.get("pr_summary"), 1200) or fallback_pr_summary(
+        context["changed_files"]
     )
 
     github_config = config.get("github") or {}
