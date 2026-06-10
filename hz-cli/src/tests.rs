@@ -1077,6 +1077,72 @@ fn creation_and_diff_accept_short_flags() {
 }
 
 #[test]
+fn daemon_commands_parse() {
+    let cli = Cli::try_parse_from(["hz", "daemon", "start"]).unwrap();
+    match cli.command {
+        Some(Command::Daemon(args)) => assert!(matches!(args.command, DaemonCommand::Start)),
+        command => panic!("expected daemon start command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "daemon", "attach", "session-1"]).unwrap();
+    match cli.command {
+        Some(Command::Daemon(args)) => match args.command {
+            DaemonCommand::Attach(args) => assert_eq!(args.session.as_deref(), Some("session-1")),
+            command => panic!("expected daemon attach command, got {command:?}"),
+        },
+        command => panic!("expected daemon command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "daemon", "detach", "session-1"]).unwrap();
+    match cli.command {
+        Some(Command::Daemon(args)) => match args.command {
+            DaemonCommand::Detach(args) => assert_eq!(args.session, "session-1"),
+            command => panic!("expected daemon detach command, got {command:?}"),
+        },
+        command => panic!("expected daemon command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from([
+        "hz", "daemon", "run", "claude", "--name", "review", "-C", "/repo", "--", "--model",
+        "sonnet",
+    ])
+    .unwrap();
+    match cli.command {
+        Some(Command::Daemon(args)) => match args.command {
+            DaemonCommand::Run(args) => {
+                assert_eq!(args.cli, AiCliArg::Claude);
+                assert_eq!(args.name.as_deref(), Some("review"));
+                assert_eq!(args.cwd, Some(PathBuf::from("/repo")));
+                assert_eq!(args.args, ["--model", "sonnet"]);
+            }
+            command => panic!("expected daemon run command, got {command:?}"),
+        },
+        command => panic!("expected daemon command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "daemon", "send", "session-1", "hello", "agent"]).unwrap();
+    match cli.command {
+        Some(Command::Daemon(args)) => match args.command {
+            DaemonCommand::Send(args) => {
+                assert_eq!(args.session, "session-1");
+                assert_eq!(args.text, ["hello", "agent"]);
+            }
+            command => panic!("expected daemon send command, got {command:?}"),
+        },
+        command => panic!("expected daemon command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "daemon", "run", "claude-code"]).unwrap();
+    match cli.command {
+        Some(Command::Daemon(args)) => match args.command {
+            DaemonCommand::Run(args) => assert_eq!(args.cli, AiCliArg::Claude),
+            command => panic!("expected daemon run command, got {command:?}"),
+        },
+        command => panic!("expected daemon command, got {command:?}"),
+    }
+}
+
+#[test]
 fn diff_scope_flags_conflict_with_revisions_at_parse_time() {
     assert!(Cli::try_parse_from(["hz", "diff", "--staged", "main"]).is_err());
     assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "main"]).is_err());

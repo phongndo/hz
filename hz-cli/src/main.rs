@@ -1,5 +1,6 @@
 mod args;
 mod complete;
+mod daemon;
 mod lifecycle;
 mod removal;
 mod repo_shell;
@@ -108,13 +109,11 @@ fn run() -> CliResult<()> {
 
     match cli.command {
         None => {
-            let mut command = <Cli as clap::CommandFactory>::command();
-            let mut stdout = io::stdout().lock();
-            command
-                .write_help(&mut stdout)
-                .map_err(stdout_write_error)?;
-            stdout.write_all(b"\n").map_err(stdout_write_error)?;
-            Ok(())
+            if io::stdout().is_terminal() {
+                run_main_tui()
+            } else {
+                write_stdout(format_args!("Hello word\n"))
+            }
         }
         Some(Command::Worktree { command }) => match command {
             WorktreeCommand::New(args) => create_worktree(args),
@@ -150,8 +149,21 @@ fn run() -> CliResult<()> {
                 stream_diff_to_stdout(options)
             }
         }
+        Some(Command::Daemon(args)) => daemon::daemon(args),
         Some(Command::TreeSitter { command }) => tree_sitter(command),
         Some(Command::Complete(args)) => complete(args),
+    }
+}
+
+fn run_main_tui() -> CliResult<()> {
+    let mut session = hz_daemon::attach_main_session()?;
+    let tui_result = hz_tui::run_main().map_err(CliError::from);
+    let detach_result = session.detach().map_err(CliError::from);
+
+    match (tui_result, detach_result) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
     }
 }
 

@@ -105,6 +105,19 @@ function __hz_needs_ts_subcommand
     test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
 end
 
+function __hz_needs_daemon_subcommand
+    set -l tokens (commandline -opc)
+    test (count $tokens) -ge 2; or return 1
+    contains -- $tokens[2] daemon; or return 1
+
+    if test (count $tokens) -eq 2
+        return 0
+    end
+
+    set -l current (commandline -ct)
+    test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
+end
+
 function __hz_top_command_is
     set -l tokens (commandline -opc)
     test (count $tokens) -ge 2; or return 1
@@ -131,6 +144,23 @@ function __hz_ts_subcommand_is
     test (count $tokens) -ge 3; or return 1
     contains -- $tokens[2] ts tree-sitter; or return 1
     contains -- $tokens[3] $argv
+end
+
+function __hz_daemon_subcommand_is
+    set -l tokens (commandline -opc)
+    test (count $tokens) -ge 3; or return 1
+    contains -- $tokens[2] daemon; or return 1
+    contains -- $tokens[3] $argv
+end
+
+function __hz_daemon_run_needs_cli
+    set -l tokens (commandline -opc)
+    test (count $tokens) -ge 3; or return 1
+    contains -- $tokens[2] daemon; or return 1
+    test "$tokens[3]" = run; or return 1
+
+    set -l current (commandline -ct)
+    test (count $tokens) -eq 4; and test "$tokens[4]" = "$current"
 end
 
 function __hz_current_repo_arg
@@ -190,9 +220,11 @@ complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt" -a "new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt"
+complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt" -a "new path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt"
 complete -c hz -n "__hz_needs_worktree_subcommand" -a "new path cd list ls remove rm handoff"
 complete -c hz -n "__hz_needs_ts_subcommand" -a "add update rm remove list ls available clean path doctor"
+complete -c hz -n "__hz_needs_daemon_subcommand" -a "start stop status run agents ls stop-agent logs send attach detach"
+complete -c hz -n "__hz_daemon_run_needs_cli" -a "pi codex claude"
 
 complete -c hz -n "__hz_command_is cd path handoff setup cleanup" -a "(__hz_complete_worktree_targets)"
 complete -c hz -n "__hz_command_is rm remove" -a "(__hz_complete_removable_worktrees)"
@@ -225,11 +257,15 @@ complete -c hz -n "__hz_top_command_is ts tree-sitter" -s h -l help
 complete -c hz -n "__hz_ts_subcommand_is available" -l installed
 complete -c hz -n "__hz_ts_subcommand_is available" -l enabled
 complete -c hz -n "__hz_ts_subcommand_is update" -l all
+complete -c hz -n "__hz_top_command_is daemon" -s h -l help
+complete -c hz -n "__hz_daemon_subcommand_is start stop status run agents ls stop-agent logs send attach detach" -s h -l help
+complete -c hz -n "__hz_daemon_subcommand_is run" -s n -l name -r
+complete -c hz -n "__hz_daemon_subcommand_is run" -s C -l cwd -r -F
 complete -c hz -n "__hz_top_command_is update" -l target-version -r
 complete -c hz -n "__hz_top_command_is update" -l install-dir -r -F
 complete -c hz -n "__hz_top_command_is update" -l force-self-update
 complete -c hz -s h -l help
-complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt" -s V -l version
+complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt" -s V -l version
 
 complete -c hzcd -f
 complete -c hzcd -a "(__hz_complete_worktree_targets)"

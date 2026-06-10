@@ -18,6 +18,7 @@ options:
 {options}
 
 examples:
+  hz
   hz init
   hz install zsh
   hz new feature/ui
@@ -102,6 +103,8 @@ examples:
   hz diff --pr https://github.com/owner/repo/pull/123"
     )]
     Diff(DiffArgs),
+    #[command(about = "Manage the hz daemon")]
+    Daemon(DaemonArgs),
     #[command(
         name = "ts",
         alias = "tree-sitter",
@@ -284,6 +287,89 @@ pub(crate) struct UpdateArgs {
     /// Allow hz update to overwrite a package-manager-managed binary.
     #[arg(long)]
     pub(crate) force_self_update: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DaemonArgs {
+    #[command(subcommand)]
+    pub(crate) command: DaemonCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DaemonCommand {
+    #[command(about = "Start the hz daemon")]
+    Start,
+    #[command(about = "Stop the hz daemon")]
+    Stop,
+    #[command(about = "Show hz daemon status")]
+    Status,
+    #[command(about = "Run an AI CLI under the hz daemon")]
+    Run(DaemonRunArgs),
+    #[command(alias = "ls", about = "List AI CLI sessions")]
+    Agents,
+    #[command(name = "stop-agent", about = "Stop an AI CLI session")]
+    StopAgent(DaemonSessionArgs),
+    #[command(about = "Print an AI CLI session log")]
+    Logs(DaemonSessionArgs),
+    #[command(about = "Send input to a daemon-owned AI CLI session")]
+    Send(DaemonSendArgs),
+    #[command(about = "Attach a session to the hz daemon")]
+    Attach(DaemonAttachArgs),
+    #[command(about = "Detach a session from the hz daemon")]
+    Detach(DaemonDetachArgs),
+    #[command(name = "__run", hide = true)]
+    Serve,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DaemonRunArgs {
+    #[arg(value_enum)]
+    pub(crate) cli: AiCliArg,
+    #[arg(short, long)]
+    pub(crate) name: Option<String>,
+    #[arg(short = 'C', long, value_name = "DIR")]
+    pub(crate) cwd: Option<PathBuf>,
+    #[arg(last = true)]
+    pub(crate) args: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DaemonSessionArgs {
+    #[arg(value_name = "SESSION")]
+    pub(crate) session: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DaemonSendArgs {
+    #[arg(value_name = "SESSION")]
+    pub(crate) session: String,
+    #[arg(
+        value_name = "TEXT",
+        required = true,
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    pub(crate) text: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum AiCliArg {
+    Pi,
+    Codex,
+    #[value(alias = "claude-code", alias = "claudecode")]
+    Claude,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DaemonAttachArgs {
+    #[arg(value_name = "SESSION")]
+    pub(crate) session: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DaemonDetachArgs {
+    #[arg(value_name = "SESSION")]
+    pub(crate) session: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
