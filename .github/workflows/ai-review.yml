@@ -166,6 +166,65 @@ jobs:
               ''').strip("\n")
               script = script[:start] + replacement + script[end:]
               script_path.write_text(script, encoding="utf-8")
+
+          if "def post_no_findings_comment(" not in script:
+              helper = textwrap.dedent('''
+                  def post_no_findings_comment(pr_number: str, head_sha: str, reviewed_diff: str) -> None:
+                      marker = f"<!-- ai-pr-review:no-findings:{head_sha} -->"
+                      body = "\\n".join(
+                          [
+                              marker,
+                              "",
+                              f"AI review: {markdown_escape(reviewed_diff)}",
+                              "",
+                              "No findings.",
+                          ]
+                      )
+                      existing_id = None
+                      page = 1
+                      while True:
+                          comments = github_request("GET", f"issues/{pr_number}/comments?per_page=100&page={page}")
+                          if not comments:
+                              break
+                          for comment in comments:
+                              if marker in str(comment.get("body", "")):
+                                  existing_id = int(comment["id"])
+                                  break
+                          if existing_id is not None:
+                              break
+                          page += 1
+
+                      if existing_id is None:
+                          github_request("POST", f"issues/{pr_number}/comments", {"body": body})
+                      else:
+                          github_request("PATCH", f"issues/comments/{existing_id}", {"body": body})
+              ''').strip("\n")
+              script = script.replace(
+                  "\n\ndef command_review() -> None:\n",
+                  "\n\n" + helper + "\n\ndef command_review() -> None:\n",
+                  1,
+              )
+              old = (
+                  '    if as_bool(github_config.get("sticky_comment", True)):\n'
+                  '        post_sticky_comment(pr_number, body)\n'
+                  '    else:\n'
+                  '        log("Sticky PR comment disabled by configuration.")\n'
+              )
+              new = (
+                  '    if as_bool(github_config.get("sticky_comment", True)):\n'
+                  '        post_sticky_comment(pr_number, body)\n'
+                  '    else:\n'
+                  '        log("Sticky PR comment disabled by configuration.")\n'
+                  '    if not visible:\n'
+                  '        post_no_findings_comment(\n'
+                  '            pr_number,\n'
+                  '            context["head_sha"],\n'
+                  '            clean_string(context.get("head_subject"), 240)\n'
+                  '            or clean_string(head_ref or base_ref or "HEAD", 240),\n'
+                  '        )\n'
+              )
+              script = script.replace(old, new, 1)
+              script_path.write_text(script, encoding="utf-8")
           py_compile.compile(str(script_path), doraise=True)
 
           config = config_path.read_text(encoding="utf-8")

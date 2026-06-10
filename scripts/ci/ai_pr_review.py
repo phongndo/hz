@@ -1301,6 +1301,20 @@ def post_sticky_comment(pr_number: str, body: str, *, marker: str = MARKER) -> N
         log("Updated AI PR comment.")
 
 
+def post_no_findings_comment(pr_number: str, head_sha: str, reviewed_diff: str) -> None:
+    marker = f"<!-- ai-pr-review:no-findings:{head_sha} -->"
+    body = "\n".join(
+        [
+            marker,
+            "",
+            f"AI review: {markdown_escape(reviewed_diff)}",
+            "",
+            "No findings.",
+        ]
+    )
+    post_sticky_comment(pr_number, body, marker=marker)
+
+
 def command_summary() -> None:
     config = load_config()
     github_config = config.get("github") or {}
@@ -1431,7 +1445,9 @@ def command_review() -> None:
             if not inline_commentable(finding, context["commentable_lines"])
         ]
 
-    if issue_findings:
+    if not visible:
+        post_no_findings_comment(pr_number, context["head_sha"], reviewed_diff)
+    elif issue_findings:
         body = render_comment(author=author, reviewed_diff=reviewed_diff, findings=issue_findings)
         post_sticky_comment(pr_number, body)
     elif delete_issue_comment(pr_number, MARKER):
