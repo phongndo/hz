@@ -2396,6 +2396,12 @@ impl DiffApp {
                 .copied()
                 .unwrap_or_default()
         };
+
+        if let Some(row) = self.model.hunk_start_row(next, 0) {
+            self.focus_hunk_row(row);
+            return;
+        }
+
         self.selected_file = next;
         if let Some(row) = self.model.file_start_row(next) {
             self.set_scroll(row);

@@ -377,6 +377,29 @@ fn hunk_navigation_centers_with_surrounding_collapsed_context() {
 }
 
 #[test]
+fn selecting_file_centers_and_focuses_its_first_hunk() {
+    let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(7);
+
+    app.select_file(1);
+
+    let range = app
+        .model
+        .hunk_row_range(1, 0)
+        .expect("selected file hunk should have rows");
+    let hunk_center = range
+        .start
+        .saturating_add(range.end.saturating_sub(range.start).saturating_sub(1) / 2);
+    assert_eq!(
+        app.scroll + viewport_center_offset(app.viewport_rows),
+        hunk_center
+    );
+    assert_eq!(app.selected_file, 1);
+    assert_eq!(app.focused_hunk_for_viewport(7), Some((1, 0)));
+}
+
+#[test]
 fn hunk_navigation_keeps_adjacent_file_header_with_oversized_hunk() {
     let changeset = changeset_with_hunk_line_counts(PathBuf::from("/repo"), &[(1, 20)]);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
