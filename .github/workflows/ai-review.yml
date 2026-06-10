@@ -232,4 +232,10 @@ jobs:
           PI_SKIP_VERSION_CHECK: "1"
           PI_TELEMETRY: "0"
         shell: bash
-        run: python3 "$RUNNER_TEMP/ai-review/ai_pr_review.py" review
+        run: |
+          set +e
+          python3 "$RUNNER_TEMP/ai-review/ai_pr_review.py" review
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::AI PR review failed with exit code ${status}; continuing because advisory review should not block required CI."
+          fi
