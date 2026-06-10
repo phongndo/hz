@@ -284,6 +284,12 @@ pub(crate) enum SyntaxStartupMode {
     Languages(Vec<String>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HunkFocusSearch {
+    FirstVisible,
+    NearestTo(usize),
+}
+
 #[derive(Debug)]
 pub(crate) struct DiffApp {
     pub(crate) options: DiffOptions,
@@ -1569,48 +1575,9 @@ impl DiffApp {
     }
 
     pub(crate) fn set_scroll_focused_on_hunk(&mut self, file: usize, hunk: usize) {
-        let Some(mut range) = self.model.hunk_row_range(file, hunk) else {
+        let Some((range, hunk_start)) = self.model.hunk_focus_row_range(file, hunk) else {
             return;
         };
-        let hunk_start = range.start;
-
-        while range.start > 0 {
-            match self.model.row(range.start - 1) {
-                Some(
-                    UiRow::FileHeader(_)
-                    | UiRow::Collapsed { .. }
-                    | UiRow::ContextLine { .. }
-                    | UiRow::ContextHide { .. },
-                ) => range.start -= 1,
-                Some(
-                    UiRow::FileSeparator
-                    | UiRow::BinaryFile(_)
-                    | UiRow::HunkHeader { .. }
-                    | UiRow::UnifiedLine { .. }
-                    | UiRow::SplitLine { .. }
-                    | UiRow::MetaLine { .. },
-                )
-                | None => break,
-            }
-        }
-
-        while range.end < self.model.len() {
-            match self.model.row(range.end) {
-                Some(
-                    UiRow::Collapsed { .. } | UiRow::ContextLine { .. } | UiRow::ContextHide { .. },
-                ) => range.end += 1,
-                Some(
-                    UiRow::FileSeparator
-                    | UiRow::FileHeader(_)
-                    | UiRow::BinaryFile(_)
-                    | UiRow::HunkHeader { .. }
-                    | UiRow::UnifiedLine { .. }
-                    | UiRow::SplitLine { .. }
-                    | UiRow::MetaLine { .. },
-                )
-                | None => break,
-            }
-        }
 
         let focus_rows = range.end.saturating_sub(range.start).max(1);
         let scroll = if focus_rows > self.viewport_rows {
@@ -1624,6 +1591,49 @@ impl DiffApp {
             focus_center.saturating_sub(viewport_center_offset(self.viewport_rows))
         };
         self.set_scroll_with_grep_sync(scroll, false);
+    }
+
+    fn focused_hunk_in_visible_range(
+        &self,
+        visible_start: usize,
+        visible_end: usize,
+        search: HunkFocusSearch,
+    ) -> Option<(usize, usize)> {
+        match search {
+            HunkFocusSearch::FirstVisible => {
+                for row_index in visible_start..visible_end {
+                    if let Some(hunk_key) = self.model.row(row_index).and_then(|row| row.hunk_key())
+                    {
+                        return Some(hunk_key);
+                    }
+                }
+                None
+            }
+            HunkFocusSearch::NearestTo(focus_row) => {
+                let focus_row = focus_row.clamp(visible_start, visible_end.saturating_sub(1));
+                let max_distance = focus_row
+                    .saturating_sub(visible_start)
+                    .max(visible_end.saturating_sub(1).saturating_sub(focus_row));
+                for distance in 0..=max_distance {
+                    if let Some(row_index) = focus_row.checked_add(distance)
+                        && row_index < visible_end
+                        && let Some(hunk_key) =
+                            self.model.row(row_index).and_then(|row| row.hunk_key())
+                    {
+                        return Some(hunk_key);
+                    }
+                    if distance > 0
+                        && let Some(row_index) = focus_row.checked_sub(distance)
+                        && row_index >= visible_start
+                        && let Some(hunk_key) =
+                            self.model.row(row_index).and_then(|row| row.hunk_key())
+                    {
+                        return Some(hunk_key);
+                    }
+                }
+                None
+            }
+        }
     }
 
     pub(crate) fn set_scroll_with_grep_sync(&mut self, scroll: usize, sync_grep: bool) {
@@ -1670,42 +1680,22 @@ impl DiffApp {
             return Some((file, hunk));
         }
 
-        if max_scroll_for_viewport(self.model.len(), visible_rows) == 0 {
-            for row_index in visible_start..visible_end {
-                if let Some(hunk_key) = self.model.row(row_index).and_then(|row| row.hunk_key()) {
-                    return Some(hunk_key);
-                }
-            }
-            return None;
-        }
-
-        let focus_row = visible_start
-            .saturating_add(viewport_focus_offset(
-                self.scroll,
-                self.model.len(),
-                visible_rows,
-            ))
-            .min(visible_end.saturating_sub(1));
-        let max_distance = focus_row
-            .saturating_sub(visible_start)
-            .max(visible_end.saturating_sub(1).saturating_sub(focus_row));
-        for distance in 0..=max_distance {
-            if let Some(row_index) = focus_row.checked_add(distance)
-                && row_index < visible_end
-                && let Some(hunk_key) = self.model.row(row_index).and_then(|row| row.hunk_key())
-            {
-                return Some(hunk_key);
-            }
-            if distance > 0
-                && let Some(row_index) = focus_row.checked_sub(distance)
-                && row_index >= visible_start
-                && let Some(hunk_key) = self.model.row(row_index).and_then(|row| row.hunk_key())
-            {
-                return Some(hunk_key);
-            }
-        }
-
-        None
+        let search = if max_scroll_for_viewport(self.model.len(), visible_rows) == 0 {
+            // When the whole diff fits, start at the first visible hunk; explicit hunk
+            // navigation is tracked separately with manual_hunk_focus.
+            HunkFocusSearch::FirstVisible
+        } else {
+            HunkFocusSearch::NearestTo(
+                visible_start
+                    .saturating_add(viewport_focus_offset(
+                        self.scroll,
+                        self.model.len(),
+                        visible_rows,
+                    ))
+                    .min(visible_end.saturating_sub(1)),
+            )
+        };
+        self.focused_hunk_in_visible_range(visible_start, visible_end, search)
     }
 
     pub(crate) fn focused_hunk_editor_target(&self) -> Option<EditorTarget> {
