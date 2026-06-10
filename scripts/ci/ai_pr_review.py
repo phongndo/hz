@@ -526,6 +526,31 @@ def parse_commentable_positions(diff_text: str) -> dict[str, set[int]]:
     return positions
 
 
+def github_pr_commentable_positions(pr_number: str) -> dict[str, dict[str, set[int]]]:
+    """Return lines from GitHub's actual PR patch hunks.
+
+    GitHub only accepts review comments on lines it can resolve in its own PR
+    diff. The review prompt uses a wider local diff for model context, so model
+    line numbers may be outside GitHub's commentable hunks. Anchor from the API
+    patch instead of the expanded local diff to avoid unresolved-line failures.
+    """
+
+    positions_by_path: dict[str, dict[str, set[int]]] = {}
+    page = 1
+    while True:
+        files = github_request("GET", f"pulls/{pr_number}/files?per_page=100&page={page}")
+        if not files:
+            break
+        for file in files:
+            path = str(file.get("filename") or "")
+            patch = file.get("patch")
+            if not path or not isinstance(patch, str):
+                continue
+            positions_by_path[path] = parse_commentable_positions(patch)
+        page += 1
+    return positions_by_path
+
+
 def merge_ranges(ranges: list[tuple[int, int]], radius: int, line_count: int) -> list[tuple[int, int]]:
     expanded = [(max(1, start - radius), min(line_count, end + radius)) for start, end in ranges]
     expanded.sort()
@@ -554,7 +579,7 @@ def git_show_text(revision: str, path: str) -> str | None:
     return data.decode("utf-8", errors="replace")
 
 
-def build_context(base_ref: str, head_ref: str) -> dict[str, Any]:
+def build_context(base_ref: str, head_ref: str, pr_number: str | None = None) -> dict[str, Any]:
     merge_base = run_git(["merge-base", f"origin/{base_ref}", "HEAD"]).strip()
     head_sha = run_git(["rev-parse", "HEAD"]).strip()
     head_subject = run_git(["log", "-1", "--format=%s", "HEAD"]).strip()
@@ -622,6 +647,16 @@ def build_context(base_ref: str, head_ref: str) -> dict[str, Any]:
             snippets_truncated = True
             break
         snippets.append(block)
+
+    if pr_number:
+        try:
+            github_positions = github_pr_commentable_positions(pr_number)
+        except Exception as error:
+            log(f"Could not load GitHub PR patch anchors; using local diff anchors: {error}")
+        else:
+            for path, positions in github_positions.items():
+                commentable_positions[path] = positions
+                commentable_lines[path] = positions["RIGHT"]
 
     context_text = textwrap.dedent(
         f"""
@@ -1518,7 +1553,7 @@ def command_review() -> None:
     if not pr_number or not base_ref:
         raise SystemExit("AI_REVIEW_PR_NUMBER and AI_REVIEW_BASE_REF are required")
 
-    context = build_context(base_ref, head_ref)
+    context = build_context(base_ref, head_ref, pr_number)
     context_text = context["text"]
     changed_paths = {item["path"] for item in context["changed_files"]}
     max_findings = mode_max_findings(config, mode)

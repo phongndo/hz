@@ -325,6 +325,25 @@ jobs:
                           return "\\n".join(lines)
                   ''').strip("\n")
                   script = script[:start] + replacement + script[end:]
+              if "def github_pr_commentable_lines(" not in script:
+                  insert_at = script.index("\n\ndef merge_ranges", script.index("def parse_commentable_lines"))
+                  helper = textwrap.dedent('''
+                      def github_pr_commentable_lines(pr_number: str) -> dict[str, set[int]]:
+                          commentable_lines: dict[str, set[int]] = {}
+                          page = 1
+                          while True:
+                              files = github_request("GET", f"pulls/{pr_number}/files?per_page=100&page={page}")
+                              if not files:
+                                  break
+                              for file in files:
+                                  path = str(file.get("filename") or "")
+                                  patch = file.get("patch")
+                                  if path and isinstance(patch, str):
+                                      commentable_lines[path] = parse_commentable_lines(patch)
+                              page += 1
+                          return commentable_lines
+                  ''').strip("\n")
+                  script = script[:insert_at] + "\n\n" + helper + script[insert_at:]
               script = script.replace(
                   'def post_inline_review(\n'
                   '    pr_number: str,\n'
@@ -398,6 +417,104 @@ jobs:
                   '                visible,\n'
                   '                context["commentable_lines"],\n'
                   '            )\n',
+                  1,
+              )
+              start = script.index("def post_inline_review(")
+              end = script.index("\n\ndef post_sticky_comment", start)
+              replacement = textwrap.dedent('''
+                  def post_inline_review(
+                      pr_number: str,
+                      head_sha: str,
+                      diff_summary: str,
+                      findings: list[dict[str, Any]],
+                      commentable_lines: dict[str, set[int]],
+                  ) -> int:
+                      comments = []
+                      unanchored = 0
+                      for finding in findings:
+                          anchor = inline_comment_anchor(finding, commentable_lines)
+                          if anchor is None:
+                              unanchored += 1
+                              continue
+                          comments.append(
+                              {
+                                  "path": anchor["path"],
+                                  "line": anchor["line"],
+                                  "side": anchor["side"],
+                                  "body": inline_comment_body(finding, anchor),
+                              }
+                          )
+
+                      deleted = delete_existing_inline_comments(pr_number)
+                      if deleted:
+                          log(f"Deleted {deleted} existing AI inline review comment(s).")
+                      if not comments:
+                          log("No accepted findings could be anchored to diff lines for inline review comments.")
+                          return 0
+                      if unanchored:
+                          log(f"{unanchored} accepted finding(s) could not be anchored inline.")
+
+                      review_body = "\\n".join(
+                          [
+                              "## AI PR Review — Diff Summary",
+                              "",
+                              markdown_escape(diff_summary),
+                              "",
+                              f"Inline findings: {len(comments)}",
+                              "",
+                              "Detailed findings are posted inline on the changed lines below.",
+                          ]
+                      )
+                      try:
+                          github_request(
+                              "POST",
+                              f"pulls/{pr_number}/reviews",
+                              {
+                                  "commit_id": head_sha,
+                                  "body": review_body,
+                                  "event": "COMMENT",
+                                  "comments": comments,
+                              },
+                          )
+                          log(f"Posted {len(comments)} AI inline GitHub review comment(s).")
+                          return len(comments)
+                      except Exception as batch_error:
+                          log(f"Batch inline review failed, retrying comments individually: {batch_error}")
+
+                      posted = 0
+                      failures = 0
+                      for comment in comments:
+                          try:
+                              github_request(
+                                  "POST",
+                                  f"pulls/{pr_number}/comments",
+                                  {"commit_id": head_sha, **comment},
+                              )
+                              posted += 1
+                          except Exception as error:
+                              failures += 1
+                              log(
+                                  f"Could not anchor inline comment at {comment.get('path')}:{comment.get('line')}: {error}"
+                              )
+                      if posted:
+                          log(f"Posted {posted} AI inline GitHub review comment(s).")
+                      if failures and not posted:
+                          raise RuntimeError(f"{failures} inline GitHub review comment(s) could not be anchored")
+                      return posted
+              ''').strip("\n")
+              script = script[:start] + replacement + script[end:]
+              script = script.replace(
+                  '    context = build_context(base_ref, head_ref)\n'
+                  '    context_text = context["text"]\n',
+                  '    context = build_context(base_ref, head_ref)\n'
+                  '    try:\n'
+                  '        github_commentable_lines = github_pr_commentable_lines(pr_number)\n'
+                  '    except Exception as error:\n'
+                  '        log(f"Could not load GitHub PR patch anchors; using local diff anchors: {error}")\n'
+                  '    else:\n'
+                  '        if github_commentable_lines:\n'
+                  '            context["commentable_lines"] = github_commentable_lines\n'
+                  '    context_text = context["text"]\n',
                   1,
               )
               script_path.write_text(script, encoding="utf-8")
