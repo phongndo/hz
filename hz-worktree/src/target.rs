@@ -10,8 +10,16 @@ use hz_core::{HzError, HzResult, paths::WorktreeTarget};
 
 pub(crate) fn resolve_repo(repo: Option<&Path>, registry: &Registry) -> HzResult<PathBuf> {
     let current = hz_git::repository_root(repo)?;
-    let main = hz_git::main_worktree(&current)?;
-    Ok(resolve_registered_repo(registry, &current, &main).unwrap_or(main))
+    resolve_current_repo(registry, &current)
+}
+
+pub(crate) fn resolve_current_repo(registry: &Registry, current: &Path) -> HzResult<PathBuf> {
+    let main = hz_git::main_worktree(current)?;
+    let worktrees = repo_identity_worktrees(current)?;
+    Ok(
+        resolve_registered_repo_with_worktrees(registry, current, &main, &worktrees)
+            .unwrap_or(main),
+    )
 }
 
 pub(crate) fn resolve_repo_with_git_worktrees(
@@ -29,17 +37,32 @@ pub(crate) fn resolve_repo_with_git_worktrees(
                 current.display()
             ))
         })?;
-    let repo = resolve_registered_repo(registry, &current, &main).unwrap_or(main);
+    let repo = resolve_registered_repo_with_worktrees(registry, &current, &main, &git_worktrees)
+        .unwrap_or(main);
     Ok((repo, git_worktrees))
 }
 
-pub(crate) fn resolve_registered_repo(
+fn repo_identity_worktrees(current: &Path) -> HzResult<Vec<hz_git::GitWorktree>> {
+    if hz_git::source_control(current)? == hz_git::SourceControl::Jj {
+        hz_git::list_worktrees(current)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+pub(crate) fn resolve_registered_repo_with_worktrees(
     registry: &Registry,
     current: &Path,
     main: &Path,
+    worktrees: &[hz_git::GitWorktree],
 ) -> Option<PathBuf> {
     registry
         .find_by_path(current)
+        .or_else(|| {
+            worktrees
+                .iter()
+                .find_map(|worktree| registry.find_by_path(&worktree.path))
+        })
         .or_else(|| registry.find_by_repo(main))
         .map(|entry| entry.repo.clone())
 }
@@ -77,6 +100,7 @@ pub(crate) fn add_git_worktrees(
     repo: &Path,
     worktrees: Vec<hz_git::GitWorktree>,
 ) {
+    let source_control = hz_git::source_control(repo).unwrap_or(hz_git::SourceControl::Git);
     for (index, worktree) in worktrees.into_iter().enumerate() {
         if index == 0 || same_path(&worktree.path, repo) {
             continue;
@@ -86,17 +110,38 @@ pub(crate) fn add_git_worktrees(
             .iter_mut()
             .find(|entry| same_path(&entry.path, &worktree.path))
         {
-            entry.branch = worktree.branch;
+            if source_control.worktree_label_kind() == hz_git::WorktreeLabelKind::Branch
+                || entry.source != WorktreeSource::Managed
+            {
+                entry.branch = worktree.branch;
+            }
             continue;
         }
 
-        entries.push(git_entry(repo, worktree));
+        entries.push(source_control_entry(repo, worktree, source_control));
     }
 }
 
+#[cfg(test)]
 pub(crate) fn git_entry(repo: &Path, worktree: hz_git::GitWorktree) -> WorktreeEntry {
-    let handle = git_worktree_handle(repo, &worktree);
+    let source_control = hz_git::source_control(repo).unwrap_or(hz_git::SourceControl::Git);
+    source_control_entry(repo, worktree, source_control)
+}
+
+pub(crate) fn source_control_entry(
+    repo: &Path,
+    worktree: hz_git::GitWorktree,
+    source_control: hz_git::SourceControl,
+) -> WorktreeEntry {
+    let handle = match source_control.worktree_label_kind() {
+        hz_git::WorktreeLabelKind::Branch => git_worktree_handle(repo, &worktree),
+        hz_git::WorktreeLabelKind::WorkspaceName => worktree
+            .branch
+            .clone()
+            .unwrap_or_else(|| git_worktree_handle(repo, &worktree)),
+    };
     let created_at_unix = worktree_path_timestamp(&worktree.path);
+    let source = WorktreeSource::unmanaged_for_source_control(source_control);
 
     WorktreeEntry {
         id: handle.clone(),
@@ -105,7 +150,7 @@ pub(crate) fn git_entry(repo: &Path, worktree: hz_git::GitWorktree) -> WorktreeE
         path: worktree.path,
         branch: worktree.branch,
         base: None,
-        source: WorktreeSource::Git,
+        source,
         created_at_unix,
         modified_at_unix: created_at_unix,
         status: WorktreeStatus::Unknown,

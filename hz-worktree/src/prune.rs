@@ -56,6 +56,7 @@ pub(crate) fn select_detached_worktree_prune_candidates(
         return Ok(Vec::new());
     }
 
+    let source_control = hz_git::source_control(repo).unwrap_or(hz_git::SourceControl::Git);
     let mut detached: Vec<_> = registry
         .entries
         .iter()
@@ -63,9 +64,7 @@ pub(crate) fn select_detached_worktree_prune_candidates(
             same_path(&entry.repo, repo)
                 && entry.source == WorktreeSource::Managed
                 && entry.branch.is_none()
-                && git_worktrees.iter().any(|worktree| {
-                    same_path(&worktree.path, &entry.path) && worktree.branch.is_none()
-                })
+                && live_worktree_matches_detached(source_control, git_worktrees, entry)
         })
         .cloned()
         .collect();
@@ -111,16 +110,17 @@ pub(crate) fn select_branch_worktree_prune_candidates(
         return Ok(Vec::new());
     }
 
+    let source_control = hz_git::source_control(repo).unwrap_or(hz_git::SourceControl::Git);
     let mut branch_worktrees: Vec<_> = registry
         .entries
         .iter()
         .filter(|entry| same_path(&entry.repo, repo) && entry.source == WorktreeSource::Managed)
         .filter_map(|entry| {
-            let git_worktree = git_worktrees.iter().find(|worktree| {
-                same_path(&worktree.path, &entry.path) && worktree.branch.is_some()
-            })?;
+            let git_worktree = live_worktree_matches_branch(source_control, git_worktrees, entry)?;
             let mut entry = entry.clone();
-            entry.branch = git_worktree.branch.clone();
+            if source_control == hz_git::SourceControl::Git {
+                entry.branch = git_worktree.branch.clone();
+            }
             Some(entry)
         })
         .collect();
@@ -175,4 +175,30 @@ pub(crate) fn branch_prune_warning(error: HzError) -> String {
 
 pub(crate) fn clean_worktree(path: &Path) -> bool {
     hz_git::worktree_state(path).is_ok_and(|state| !state.dirty)
+}
+
+pub(crate) fn live_worktree_matches_detached(
+    source_control: hz_git::SourceControl,
+    git_worktrees: &[hz_git::GitWorktree],
+    entry: &WorktreeEntry,
+) -> bool {
+    git_worktrees.iter().any(|worktree| {
+        same_path(&worktree.path, &entry.path)
+            && (source_control.worktree_label_kind() == hz_git::WorktreeLabelKind::WorkspaceName
+                || worktree.branch.is_none())
+    })
+}
+
+pub(crate) fn live_worktree_matches_branch<'a>(
+    source_control: hz_git::SourceControl,
+    git_worktrees: &'a [hz_git::GitWorktree],
+    entry: &WorktreeEntry,
+) -> Option<&'a hz_git::GitWorktree> {
+    git_worktrees.iter().find(|worktree| {
+        same_path(&worktree.path, &entry.path)
+            && (source_control.worktree_label_kind() == hz_git::WorktreeLabelKind::WorkspaceName
+                || worktree.branch.is_some())
+            && (source_control.worktree_label_kind() == hz_git::WorktreeLabelKind::Branch
+                || entry.branch.is_some())
+    })
 }

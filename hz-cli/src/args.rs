@@ -62,7 +62,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
-    #[command(about = "Create an isolated Git worktree for a task or agent")]
+    #[command(about = "Create an isolated source-control workspace for a task or agent")]
     New(NewWorktreeArgs),
     #[command(alias = "cd", about = "Print the directory for a worktree")]
     Path(PathWorktreeArgs),
@@ -93,7 +93,7 @@ examples:
     )]
     Update(UpdateArgs),
     #[command(
-        about = "Review a Git diff",
+        about = "Review a source-control diff",
         after_help = "\
 examples:
   hz diff
@@ -162,7 +162,7 @@ pub(crate) struct TreeSitterAvailableArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum WorktreeCommand {
-    #[command(about = "Create an isolated Git worktree for a task or agent")]
+    #[command(about = "Create an isolated source-control workspace for a task or agent")]
     New(NewWorktreeArgs),
     #[command(alias = "cd", about = "Print the directory for a worktree")]
     Path(PathWorktreeArgs),

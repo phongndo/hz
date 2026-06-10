@@ -612,6 +612,7 @@ name = "hz-git"
 version = "0.2.0"
 dependencies = [
  "hz-core",
+ "sha2",
 ]
 
 [[package]]

@@ -4,7 +4,7 @@ use crate::{
     CreateWorktree, CreatedWorktree, HandoffMode, HandoffWorktree, PendingWorktreePrune, Registry,
     WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
     create_with_registry_and_deferred_prune, discover_entries, matches_target,
-    remove_registered_entry_with_force_from_registry, resolve_registered_repo, same_path, unix_now,
+    remove_registered_entry_with_force_from_registry, resolve_current_repo, same_path, unix_now,
     validate_worktree_name,
 };
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
@@ -12,8 +12,7 @@ use hz_core::{HzError, HzResult, paths::WorktreeTarget};
 pub fn handoff(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {
     let mut registry = Registry::load_for_update()?;
     let current = hz_git::repository_root(input.repo.as_deref())?;
-    let main = hz_git::main_worktree(&current)?;
-    let repo = resolve_registered_repo(&registry, &current, &main).unwrap_or(main);
+    let repo = resolve_current_repo(&registry, &current)?;
 
     if input.mode == HandoffMode::Patch {
         return handoff_patch(
@@ -25,6 +24,12 @@ pub fn handoff(input: HandoffWorktree) -> HzResult<WorktreeHandoff> {
             input.max_detached_worktrees,
             input.max_branch_worktrees,
         );
+    }
+
+    if !hz_git::source_control(&repo)?.supports_branch_handoff() {
+        return Err(HzError::Usage(
+            "branch handoff is not supported for this source-control backend".to_owned(),
+        ));
     }
 
     if input.create {

@@ -15,8 +15,9 @@ up safely from the terminal.
 
 ## Status
 
-`hz` is pre-1.0. The current release is usable for local Git worktree, handoff,
-lifecycle, shell integration, install/update, and diff review workflows. Built-
+`hz` is pre-1.0. The current release is usable for local Git worktree and
+Jujutsu (`jj`) workspace, handoff, lifecycle, shell integration, install/update,
+and diff review workflows. Built-
 in agent execution, provider adapters, and the broader dashboard/runtime are on
 the roadmap, not shipped yet. Prefer `--json` for scripts, and expect command
 shapes to keep tightening before 1.0.
@@ -25,11 +26,12 @@ See [docs/roadmap.md](docs/roadmap.md) for the product direction.
 
 ## What hz does today
 
-- Creates isolated Git worktrees for parallel human or AI-agent tasks.
+- Creates isolated Git worktrees or Jujutsu (`jj`) workspaces for parallel human
+  or AI-agent tasks.
 - Installs shell integration so `hz new`, `hz cd`, and `hz handoff` can change
   your current directory.
 - Applies uncommitted changes between linked worktrees without forcing a commit.
-- Moves branch ownership between worktrees when both sides are clean.
+- Moves Git branch ownership between worktrees when both sides are clean.
 - Runs repo-local setup and cleanup hooks for reproducible agent workspaces.
 - Reviews worktree or patch diffs in a terminal UI, with plain output for pipes.
 - Lists, finds, prunes, and removes managed and unmanaged worktrees.
@@ -136,11 +138,12 @@ source ~/.zshrc
 
 ## Core workflows
 
-### Worktrees
+### Worktrees and jj workspaces
 
-`hz new` creates a scratch Git worktree with a human-facing handle and a UUID
-directory under `~/.hz/worktrees/<repo>/` by default. Pass a name or `--branch`
-to create a branch-backed worktree:
+`hz new` creates a scratch Git worktree or Jujutsu (`jj`) workspace with a
+human-facing handle and a UUID directory under `~/.hz/worktrees/<repo>/` by
+default. Pass a name or `--branch` to create a branch-backed Git worktree. In a
+`jj` repository, the same option names the new workspace:
 
 ```sh
 hz new fix-login
@@ -155,30 +158,33 @@ hz rm fix-login
 ```
 
 `hz new` without a name generates a four-character lowercase alphanumeric handle
-and leaves the worktree on a detached `HEAD`. Managed worktrees are registered
-in `~/.hz/registry.json`.
-`hz ls`, `hz cd`, and `hz rm` also detect unmanaged Git worktrees created by
-other tools. Removing an unmanaged worktree outside `~/.hz/worktrees/<repo>/`
+and creates a detached Git worktree or unnamed scratch `jj` workspace. Managed
+worktrees are registered in `~/.hz/registry.json`.
+`hz ls`, `hz cd`, and `hz rm` also detect unmanaged Git worktrees and `jj`
+workspaces created by other tools. Removing an unmanaged workspace outside
+`~/.hz/worktrees/<repo>/`
 asks for confirmation because the path is not in `hz`'s worktree namespace. Add
 `[worktree].user_managed_roots` in `.hz/hz.toml` for other directories that
 should be treated as user-managed by `hz`.
 
-Detached scratch worktrees are capped at 15 by default. Creating another
-detached worktree auto-removes the oldest clean managed detached worktrees until
-the cap is satisfied. Branch-backed, unmanaged, dirty, unknown, and current
-worktrees are not auto-removed. If there are not enough removable worktrees,
-`hz new` and `hz handoff --new` refuse to create another detached worktree. Set
-`[worktree].max_detached` in `.hz/hz.toml`, or pass `--max-detached <count>` to
-`hz new` or `hz handoff --new`; `0` disables auto-pruning.
+Detached scratch worktrees/workspaces are capped at 15 by default. Creating
+another detached workspace auto-removes the oldest clean managed detached
+workspaces until the cap is satisfied. Branch-backed, unmanaged, dirty, unknown,
+and current worktrees are not auto-removed. If there are not enough removable
+worktrees, `hz new` and `hz handoff --new` refuse to create another detached
+workspace. Set `[worktree].max_detached` in `.hz/hz.toml`, or pass
+`--max-detached <count>` to `hz new` or `hz handoff --new`; `0` disables
+auto-pruning.
 
-Branch-backed worktrees are also capped at 15 by default. Creating another
-branch-backed worktree auto-removes the oldest clean managed branch-backed
-worktrees until the cap is satisfied. Removing a branch-backed worktree removes
-only the checkout; the Git branch remains in the repo and can be checked out
-again later. Detached, unmanaged, dirty, unknown, and current worktrees are not
-auto-removed. Set `[worktree].max_branch_worktrees` in `.hz/hz.toml`, or pass
-`--max-branch-worktrees <count>` to `hz new` or branch-backed
-`hz handoff --new`; `0` disables auto-pruning.
+Branch-backed Git worktrees, and named `jj` workspaces tracked by `hz`, are also
+capped at 15 by default. Creating another branch-backed worktree auto-removes
+the oldest clean managed branch-backed worktrees until the cap is satisfied.
+Removing a branch-backed worktree removes only the checkout; the Git branch
+remains in the repo and can be checked out again later. Detached, unmanaged,
+dirty, unknown, and current worktrees are not auto-removed. Set
+`[worktree].max_branch_worktrees` in `.hz/hz.toml`, or pass
+`--max-branch-worktrees <count>` to `hz new` or branch-backed `hz handoff --new`;
+`0` disables auto-pruning.
 
 Repo config can set the default base branch for new worktrees and additional
 user-managed worktree roots:
@@ -235,8 +241,9 @@ Use `hz handoff --new` to create a new detached destination worktree and apply
 the current patch there. Use `hz handoff --new fix-login` to create a
 branch-backed destination worktree named `fix-login`.
 
-Use `hz handoff <worktree> --branch` to move branch ownership instead of
-applying a patch. Branch handoff is clean-only on both sides.
+Use `hz handoff <worktree> --branch` to move Git branch ownership instead of
+applying a patch. Branch handoff is clean-only on both sides and is not
+available for `jj` repositories.
 
 ### Diff review
 
@@ -264,8 +271,9 @@ hz ts available --installed
 hz ts rm ruby
 ```
 
-The default view is all working tree changes against `HEAD`, including
-untracked files. `hz diff --pr <number>` reviews a pull request from the current
+The default view is all working tree changes against `HEAD` for Git, or the
+current working-copy change for `jj`, including untracked/new files.
+`hz diff --pr <number>` reviews a pull request from the current
 repository's `origin` GitHub remote. `hz diff --pr <url>` reviews any GitHub pull
 request URL without requiring a local repository. Positional revisions remain
 literal, so refs named `pr` can still be compared normally. Patch mode reads an

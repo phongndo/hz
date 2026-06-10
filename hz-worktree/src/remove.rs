@@ -29,7 +29,7 @@ pub fn remove_found(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
 pub fn remove_found_with_force(entry: WorktreeEntry, force: bool) -> HzResult<WorktreeEntry> {
     match entry.source {
         WorktreeSource::Managed => remove_registered_entry_with_force(entry, force),
-        WorktreeSource::Git => remove_git_entry_with_force(entry, force),
+        WorktreeSource::Git | WorktreeSource::Jj => remove_git_entry_with_force(entry, force),
     }
 }
 

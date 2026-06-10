@@ -8,3 +8,4 @@ repository.workspace = true
 
 [dependencies]
 hz-core.workspace = true
+sha2.workspace = true

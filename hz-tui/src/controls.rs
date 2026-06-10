@@ -534,7 +534,16 @@ pub(crate) fn current_head_label(repo: &Path) -> Option<String> {
     hz_git::current_branch(repo)
         .ok()
         .flatten()
+        .or_else(|| {
+            hz_git::current_head(repo)
+                .ok()
+                .map(|head| short_revision(&head))
+        })
         .or_else(|| git_output(repo, ["rev-parse", "--short", "HEAD"]))
+}
+
+pub(crate) fn short_revision(revision: &str) -> String {
+    revision.chars().take(12).collect()
 }
 
 pub(crate) fn env_branch_base() -> Option<String> {

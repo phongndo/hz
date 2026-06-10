@@ -819,7 +819,7 @@ fn repo_resolution_uses_registered_repo_for_managed_linked_worktree() {
     };
 
     assert_eq!(
-        resolve_registered_repo(&registry, &linked, &repo),
+        resolve_registered_repo_with_worktrees(&registry, &linked, &repo, &[]),
         Some(repo)
     );
 }
@@ -835,7 +835,45 @@ fn repo_resolution_uses_registered_primary_for_unmanaged_linked_worktree() {
     };
 
     assert_eq!(
-        resolve_registered_repo(&registry, &unmanaged, &repo),
+        resolve_registered_repo_with_worktrees(&registry, &unmanaged, &repo, &[]),
+        Some(repo)
+    );
+}
+
+#[test]
+fn repo_resolution_uses_registered_repo_for_listed_jj_workspace() {
+    let repo = PathBuf::from("/repo/hz");
+    let managed = PathBuf::from("/worktrees/managed");
+    let unmanaged = PathBuf::from("/worktrees/unmanaged");
+    let registry = Registry {
+        entries: vec![WorktreeEntry {
+            id: "managed-id".to_owned(),
+            handle: "managed".to_owned(),
+            repo: repo.clone(),
+            path: managed.clone(),
+            branch: Some("managed".to_owned()),
+            base: None,
+            source: WorktreeSource::Managed,
+            created_at_unix: 0,
+            modified_at_unix: 0,
+            status: WorktreeStatus::Unknown,
+        }],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+    let worktrees = vec![
+        hz_git::GitWorktree {
+            path: unmanaged.clone(),
+            branch: Some("unmanaged".to_owned()),
+        },
+        hz_git::GitWorktree {
+            path: managed,
+            branch: Some("managed".to_owned()),
+        },
+    ];
+
+    assert_eq!(
+        resolve_registered_repo_with_worktrees(&registry, &unmanaged, &unmanaged, &worktrees),
         Some(repo)
     );
 }
@@ -851,7 +889,10 @@ fn repo_resolution_falls_back_when_registry_has_no_repo_match() {
         patch_handoffs: Vec::new(),
     };
 
-    assert_eq!(resolve_registered_repo(&registry, &unmanaged, &repo), None);
+    assert_eq!(
+        resolve_registered_repo_with_worktrees(&registry, &unmanaged, &repo, &[]),
+        None
+    );
 }
 
 #[test]
@@ -1405,6 +1446,22 @@ fn git_worktree_handle_keeps_tool_directory_when_branch_exists() {
     assert_eq!(entry.branch.as_deref(), Some("feature/list"));
     assert!(matches_target(&entry, "bd16"));
     assert!(matches_target(&entry, "feature/list"));
+}
+
+#[test]
+fn source_control_entry_uses_jj_workspace_name_for_unmanaged_workspace() {
+    let entry = source_control_entry(
+        &PathBuf::from("/repo/hz"),
+        hz_git::GitWorktree {
+            path: PathBuf::from("/Users/dev/.hz/worktrees/hz/feature"),
+            branch: Some("feature".to_owned()),
+        },
+        hz_git::SourceControl::Jj,
+    );
+
+    assert_eq!(entry.handle, "feature");
+    assert_eq!(entry.branch.as_deref(), Some("feature"));
+    assert_eq!(entry.source, WorktreeSource::Jj);
 }
 
 #[test]

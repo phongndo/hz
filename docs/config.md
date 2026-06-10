@@ -37,11 +37,11 @@ user_managed_roots = ["~/.codex/worktrees", "../agent-worktrees"]
 another detached worktree auto-removes the oldest clean managed detached
 worktrees until the cap is satisfied. Set it to `0` to disable auto-pruning.
 
-`max_branch_worktrees` caps managed branch-backed worktrees for the repo.
-Creating another branch-backed worktree auto-removes the oldest clean managed
-branch-backed worktrees until the cap is satisfied. Only the checkout is
-removed; the Git branch remains available to check out later. Set it to `0` to
-disable auto-pruning.
+`max_branch_worktrees` caps managed branch-backed Git worktrees and named `jj`
+workspaces for the repo. Creating another branch-backed worktree auto-removes
+the oldest clean managed branch-backed worktrees until the cap is satisfied.
+Only the checkout is removed; the Git branch remains available to check out
+later. Set it to `0` to disable auto-pruning.
 
 `default_base` is the branch or revision used when `hz new` is called without
 `--base`.
@@ -54,10 +54,10 @@ hz new feature/ui --base dev
 
 Passing `--base` always overrides `default_base`.
 
-`user_managed_roots` adds directories whose Git worktrees at or under them
-should be treated as user-managed by `hz`, even when they are not in the
-registry. This keeps `hz rm` from prompting for those paths and runs the cleanup
-lifecycle for them. The default `~/.hz/worktrees/<repo>/` root is always
+`user_managed_roots` adds directories whose Git worktrees or `jj` workspaces at
+or under them should be treated as user-managed by `hz`, even when they are not
+in the registry. This keeps `hz rm` from prompting for those paths and runs the
+cleanup lifecycle for them. The default `~/.hz/worktrees/<repo>/` root is always
 included.
 
 Relative roots are resolved from the repository root. `~/` expands to `$HOME`.
@@ -89,7 +89,7 @@ Supported columns:
 ```text
 marker    current/local marker
 target    branch when present, otherwise generated handle
-branch    Git branch, or -
+branch    Git branch, `jj` workspace name for unmanaged workspaces, or -
 handle    hz handle, or -
 status    clean/dirty/unknown status
 base      creation base, or -

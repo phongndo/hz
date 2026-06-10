@@ -165,13 +165,17 @@ pub(crate) fn rollback_created_worktree(
             }
         };
         if worktree_removed && let Some(branch) = branch {
-            match hz_git::branch_exists(repo, branch) {
-                Ok(true) => {
-                    if let Err(error) = hz_git::delete_branch(repo, branch) {
-                        errors.push(format!("branch {branch}: {error}"));
+            match hz_git::source_control(repo) {
+                Ok(hz_git::SourceControl::Git) => match hz_git::branch_exists(repo, branch) {
+                    Ok(true) => {
+                        if let Err(error) = hz_git::delete_branch(repo, branch) {
+                            errors.push(format!("branch {branch}: {error}"));
+                        }
                     }
-                }
-                Ok(false) => {}
+                    Ok(false) => {}
+                    Err(error) => errors.push(format!("branch {branch}: {error}")),
+                },
+                Ok(hz_git::SourceControl::Jj) => {}
                 Err(error) => errors.push(format!("branch {branch}: {error}")),
             }
         }

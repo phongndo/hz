@@ -226,7 +226,7 @@ pub(crate) fn live_diff_watch_spec(repo: &Path) -> HzResult<LiveDiffWatchSpec> {
         "info/exclude",
         "config",
     ] {
-        spec.add_git_state(hz_git::git_path(repo, git_path)?);
+        spec.add_git_state(hz_git::scm_path(repo, git_path)?);
     }
     Ok(spec)
 }

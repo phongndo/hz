@@ -65,6 +65,104 @@ impl Default for DiffOptions {
     }
 }
 
+trait DiffBackend: Sync {
+    fn source_control(&self) -> hz_git::SourceControl;
+    fn patch_bytes(&self, repo: &Path, options: &DiffOptions) -> HzResult<Vec<u8>>;
+    fn patch_to_writer(
+        &self,
+        repo: &Path,
+        options: &DiffOptions,
+        writer: &mut dyn Write,
+    ) -> HzResult<()>;
+    fn patch_stats(&self, repo: &Path, options: &DiffOptions) -> HzResult<PatchStats>;
+}
+
+// Diff rendering is backend-specific, but callers dispatch through this table
+// instead of branching on individual source-control tools at each call site.
+struct GitDiffBackend;
+struct JjDiffBackend;
+
+static GIT_DIFF_BACKEND: GitDiffBackend = GitDiffBackend;
+static JJ_DIFF_BACKEND: JjDiffBackend = JjDiffBackend;
+static DIFF_BACKENDS: [&dyn DiffBackend; 2] = [&JJ_DIFF_BACKEND, &GIT_DIFF_BACKEND];
+
+fn diff_backend(repo: &Path) -> HzResult<&'static dyn DiffBackend> {
+    let source_control = hz_git::source_control(repo)?;
+    DIFF_BACKENDS
+        .into_iter()
+        .find(|backend| backend.source_control() == source_control)
+        .ok_or_else(|| {
+            HzError::Usage(format!(
+                "diff is not supported for source-control backend: {source_control:?}"
+            ))
+        })
+}
+
+impl DiffBackend for GitDiffBackend {
+    fn source_control(&self) -> hz_git::SourceControl {
+        hz_git::SourceControl::Git
+    }
+
+    fn patch_bytes(&self, repo: &Path, options: &DiffOptions) -> HzResult<Vec<u8>> {
+        let args = git_diff_args(options);
+        if should_include_untracked(options) {
+            git_diff_bytes_with_untracked(repo, &args)
+        } else {
+            git_diff_bytes(repo, &args)
+        }
+    }
+
+    fn patch_to_writer(
+        &self,
+        repo: &Path,
+        options: &DiffOptions,
+        writer: &mut dyn Write,
+    ) -> HzResult<()> {
+        let args = git_diff_args(options);
+        if should_include_untracked(options) {
+            git_diff_to_writer_with_untracked(repo, &args, writer)
+        } else {
+            git_diff_to_writer(repo, &args, writer)
+        }
+    }
+
+    fn patch_stats(&self, repo: &Path, options: &DiffOptions) -> HzResult<PatchStats> {
+        let args = git_diff_numstat_args(options);
+        if should_include_untracked(options) {
+            git_numstat_stats_with_untracked(repo, &args)
+        } else {
+            git_numstat_stats(repo, &args)
+        }
+    }
+}
+
+impl DiffBackend for JjDiffBackend {
+    fn source_control(&self) -> hz_git::SourceControl {
+        hz_git::SourceControl::Jj
+    }
+
+    fn patch_bytes(&self, repo: &Path, options: &DiffOptions) -> HzResult<Vec<u8>> {
+        validate_jj_options(options)?;
+        jj_diff_bytes(repo, options)
+    }
+
+    fn patch_to_writer(
+        &self,
+        repo: &Path,
+        options: &DiffOptions,
+        writer: &mut dyn Write,
+    ) -> HzResult<()> {
+        validate_jj_options(options)?;
+        jj_diff_to_writer(repo, options, writer)
+    }
+
+    fn patch_stats(&self, repo: &Path, options: &DiffOptions) -> HzResult<PatchStats> {
+        validate_jj_options(options)?;
+        let patch = jj_diff_bytes(repo, options)?;
+        parse_patch_stats(BufReader::new(patch.as_slice())).map_err(HzError::Io)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Changeset {
     pub repo: PathBuf,
@@ -316,12 +414,7 @@ fn diff_patch_bytes(options: &DiffOptions) -> HzResult<(PathBuf, Cow<'_, [u8]>)>
 
     let repo = hz_git::repository_root(options.repo.as_deref())?;
     validate_options(options)?;
-    let args = git_diff_args(options);
-    let patch = if should_include_untracked(options) {
-        git_diff_bytes_with_untracked(&repo, &args)?
-    } else {
-        git_diff_bytes(&repo, &args)?
-    };
+    let patch = diff_backend(&repo)?.patch_bytes(&repo, options)?;
 
     Ok((repo, Cow::Owned(patch)))
 }
@@ -359,12 +452,7 @@ pub fn render_to_writer_ref(options: &DiffOptions, mut writer: impl Write) -> Hz
 
     let repo = hz_git::repository_root(options.repo.as_deref())?;
     validate_options(options)?;
-    let args = git_diff_args(options);
-    if should_include_untracked(options) {
-        git_diff_to_writer_with_untracked(&repo, &args, writer)
-    } else {
-        git_diff_to_writer(&repo, &args, writer)
-    }
+    diff_backend(&repo)?.patch_to_writer(&repo, options, &mut writer)
 }
 
 fn render_stat_bytes(options: &DiffOptions) -> HzResult<Vec<u8>> {
@@ -481,12 +569,7 @@ fn patch_stats(options: &DiffOptions) -> HzResult<PatchStats> {
 
     let repo = hz_git::repository_root(options.repo.as_deref())?;
     validate_options(options)?;
-    let args = git_diff_numstat_args(options);
-    if should_include_untracked(options) {
-        git_numstat_stats_with_untracked(&repo, &args)
-    } else {
-        git_numstat_stats(&repo, &args)
-    }
+    diff_backend(&repo)?.patch_stats(&repo, options)
 }
 
 fn patch_source_stats(source: &PatchSource) -> HzResult<PatchStats> {
@@ -772,6 +855,75 @@ fn should_include_untracked(options: &DiffOptions) -> bool {
         && matches!(options.scope, DiffScope::All | DiffScope::Unstaged)
 }
 
+fn validate_jj_options(options: &DiffOptions) -> HzResult<()> {
+    if options.scope != DiffScope::All {
+        return Err(HzError::Usage(
+            "--staged and --unstaged are not supported for jj diffs".to_owned(),
+        ));
+    }
+    if !options.include_untracked {
+        return Err(HzError::Usage(
+            "--no-untracked is not supported for jj diffs".to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn jj_diff_args(options: &DiffOptions) -> Vec<String> {
+    let mut args = vec!["diff".to_owned(), "--git".to_owned()];
+
+    match &options.source {
+        DiffSource::Worktree => {}
+        DiffSource::Base(base) => {
+            args.extend(["--from".to_owned(), base.clone()]);
+            args.extend(["--to".to_owned(), "@".to_owned()]);
+        }
+        DiffSource::Branch { base, head } => {
+            args.extend(["--from".to_owned(), base.clone()]);
+            args.extend(["--to".to_owned(), head.clone()]);
+        }
+        DiffSource::Range { left, right } => {
+            args.extend(["--from".to_owned(), left.clone()]);
+            args.extend(["--to".to_owned(), right.clone()]);
+        }
+        DiffSource::Patch(_) => {}
+    }
+
+    args
+}
+
+fn jj_diff_bytes(repo: &Path, options: &DiffOptions) -> HzResult<Vec<u8>> {
+    let output = Command::new("jj")
+        .arg("-R")
+        .arg(repo)
+        .args(jj_diff_args(options))
+        .output()?;
+    if !output.status.success() {
+        return Err(command_error("failed to render jj diff", &output));
+    }
+    Ok(output.stdout)
+}
+
+fn jj_diff_to_writer(repo: &Path, options: &DiffOptions, writer: impl Write) -> HzResult<()> {
+    let mut child = Command::new("jj")
+        .arg("-R")
+        .arg(repo)
+        .args(jj_diff_args(options))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stderr = drain_child_stderr(child.stderr.take());
+    let mut writer = writer;
+    if let Some(mut stdout) = child.stdout.take()
+        && let Err(error) = copy_to_writer(&mut stdout, &mut writer)
+    {
+        abort_git_child(child, stderr);
+        return Err(error.into());
+    }
+    wait_for_child(child, stderr, "failed to render jj diff")
+}
+
 fn diff_title(options: &DiffOptions) -> String {
     match &options.source {
         DiffSource::Worktree => match options.scope {
@@ -916,6 +1068,14 @@ fn drain_child_stderr(stderr: Option<process::ChildStderr>) -> JoinHandle<io::Re
 }
 
 fn wait_for_git_child(
+    child: process::Child,
+    stderr: JoinHandle<io::Result<Vec<u8>>>,
+    message: &str,
+) -> HzResult<()> {
+    wait_for_child(child, stderr, message)
+}
+
+fn wait_for_child(
     mut child: process::Child,
     stderr: JoinHandle<io::Result<Vec<u8>>>,
     message: &str,
@@ -923,14 +1083,14 @@ fn wait_for_git_child(
     let status = child.wait()?;
     let stderr = stderr
         .join()
-        .map_err(|_| io::Error::other("git stderr reader panicked"))??;
+        .map_err(|_| io::Error::other("child stderr reader panicked"))??;
     let output = process::Output {
         status,
         stdout: Vec::new(),
         stderr,
     };
     if !output.status.success() {
-        return Err(git_error(message, &output));
+        return Err(command_error(message, &output));
     }
     Ok(())
 }
@@ -1154,6 +1314,10 @@ fn path_from_git_bytes(path: &[u8]) -> PathBuf {
 }
 
 fn git_error(message: &str, output: &std::process::Output) -> HzError {
+    command_error(message, output)
+}
+
+fn command_error(message: &str, output: &std::process::Output) -> HzError {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if stderr.is_empty() {
         HzError::Usage(message.to_owned())
@@ -1578,6 +1742,18 @@ fn parse_hunk_range(range: &str) -> (usize, usize) {
 mod tests {
     use super::*;
     use std::{env, io::Write, process::Stdio};
+
+    #[test]
+    fn jj_diff_rejects_no_untracked() {
+        let options = DiffOptions {
+            include_untracked: false,
+            ..DiffOptions::default()
+        };
+
+        let error = validate_jj_options(&options).expect_err("option should be rejected");
+
+        assert!(error.to_string().contains("--no-untracked"), "{error}");
+    }
 
     #[test]
     fn parse_patch_reads_file_hunks_and_line_numbers() {

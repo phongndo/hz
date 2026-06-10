@@ -107,6 +107,16 @@ pub enum HandoffMode {
 pub enum WorktreeSource {
     Managed,
     Git,
+    Jj,
+}
+
+impl WorktreeSource {
+    pub(crate) fn unmanaged_for_source_control(source_control: hz_git::SourceControl) -> Self {
+        match source_control {
+            hz_git::SourceControl::Git => Self::Git,
+            hz_git::SourceControl::Jj => Self::Jj,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
