@@ -899,12 +899,7 @@ impl DiffApp {
             .insert(ContextKey { file, hunk }, next);
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.model = UiModel::new_filtered(
-            &self.changeset,
-            self.layout,
-            &self.context_expansions,
-            &visible_files,
-        );
+        self.replace_model(&visible_files);
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
         self.set_scroll(self.scroll);
@@ -925,12 +920,7 @@ impl DiffApp {
 
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.model = UiModel::new_filtered(
-            &self.changeset,
-            self.layout,
-            &self.context_expansions,
-            &visible_files,
-        );
+        self.replace_model(&visible_files);
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
         self.set_scroll(self.scroll);
@@ -1576,6 +1566,23 @@ impl DiffApp {
         self.set_scroll_with_grep_sync(scroll, true, HunkFocusScrollBehavior::ClearOnScroll);
     }
 
+    fn clear_manual_hunk_focus(&mut self) {
+        self.manual_hunk_focus = None;
+    }
+
+    fn replace_model(&mut self, visible_files: &[usize]) {
+        // Manual hunk focus is valid only for the current model. Clear it here
+        // so model rebuilds cannot leave stale focus behind when scroll stays
+        // clamped to the same row.
+        self.clear_manual_hunk_focus();
+        self.model = UiModel::new_filtered(
+            &self.changeset,
+            self.layout,
+            &self.context_expansions,
+            visible_files,
+        );
+    }
+
     pub(crate) fn set_scroll_centered_on(&mut self, row: usize) {
         let center_offset = viewport_center_offset(self.viewport_rows);
         self.set_scroll_with_grep_sync(
@@ -1643,7 +1650,7 @@ impl DiffApp {
         if self.scroll != previous_scroll
             && hunk_focus_behavior == HunkFocusScrollBehavior::ClearOnScroll
         {
-            self.manual_hunk_focus = None;
+            self.clear_manual_hunk_focus();
         }
         if let Some(file) = self.model.file_at_row(self.scroll) {
             self.selected_file = file;
@@ -2193,12 +2200,7 @@ impl DiffApp {
 
         self.stats = diff_stats_for_files(&self.changeset, &visible_files);
         self.max_line_width = changeset_max_line_width_for_files(&self.changeset, &visible_files);
-        self.model = UiModel::new_filtered(
-            &self.changeset,
-            self.layout,
-            &self.context_expansions,
-            &visible_files,
-        );
+        self.replace_model(&visible_files);
         self.selected_file = selected_file;
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
@@ -2377,6 +2379,11 @@ impl DiffApp {
                 .unwrap_or_default()
         };
 
+        if next == self.selected_file {
+            self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
+            return;
+        }
+
         if let Some(row) = self.model.hunk_start_row(next, 0) {
             self.focus_hunk_row(row);
             return;
@@ -2481,7 +2488,7 @@ impl DiffApp {
     pub(crate) fn focus_hunk_row(&mut self, row: usize) {
         let target_hunk = self.model.row(row).and_then(|row| row.hunk_key());
         let previous_hunk = self.manual_hunk_focus;
-        self.manual_hunk_focus = None;
+        self.clear_manual_hunk_focus();
 
         let Some((file, hunk)) = target_hunk else {
             self.set_scroll_centered_on(row);
@@ -2525,15 +2532,9 @@ impl DiffApp {
         }
 
         self.layout = layout;
-        self.manual_hunk_focus = None;
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.model = UiModel::new_filtered(
-            &self.changeset,
-            self.layout,
-            &self.context_expansions,
-            &visible_files,
-        );
+        self.replace_model(&visible_files);
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
         self.set_horizontal_scroll(self.horizontal_scroll);
@@ -2575,7 +2576,6 @@ impl DiffApp {
             }
             return;
         }
-        self.manual_hunk_focus = None;
 
         let selected_path = self
             .changeset

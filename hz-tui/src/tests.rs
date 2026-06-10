@@ -190,6 +190,25 @@ fn scroll_change_clears_manual_hunk_focus() {
 }
 
 #[test]
+fn model_rebuild_clears_manual_hunk_focus_when_scroll_is_unchanged() {
+    let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(20);
+
+    app.next_hunk();
+    assert_eq!(app.scroll, 0);
+    assert_eq!(app.manual_hunk_focus, Some((1, 0)));
+
+    app.file_filter = "a.rs".to_owned();
+    app.apply_filters(false);
+
+    assert_eq!(app.scroll, 0);
+    assert_eq!(app.selected_file, 0);
+    assert_eq!(app.manual_hunk_focus, None);
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 0)));
+}
+
+#[test]
 fn j_and_k_move_hunk_focus_when_diff_fits_viewport() {
     let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[1, 2, 3]);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
@@ -268,6 +287,7 @@ fn j_and_k_scroll_then_move_hunk_focus_at_edges_in_scrollable_diff() {
     app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
         .expect("k should be handled");
     assert_eq!(app.scroll, 0);
+    assert_eq!(app.selected_file, top_hunks[0].0);
     assert_eq!(
         app.focused_hunk_for_viewport(app.viewport_rows),
         Some(top_hunks[0])
@@ -288,6 +308,7 @@ fn j_and_k_scroll_then_move_hunk_focus_at_edges_in_scrollable_diff() {
         .expect("j should be handled");
 
     assert_eq!(app.scroll, bottom_scroll);
+    assert_eq!(app.selected_file, next.0);
     assert_eq!(app.focused_hunk_for_viewport(app.viewport_rows), Some(next));
 }
 
@@ -620,6 +641,45 @@ fn selecting_file_centers_and_focuses_its_first_hunk() {
     );
     assert_eq!(app.selected_file, 1);
     assert_eq!(app.focused_hunk_for_viewport(7), Some((1, 0)));
+}
+
+#[test]
+fn n_and_p_file_navigation_focuses_first_hunk_and_updates_selected_file() {
+    let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(7);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        .expect("n should be handled");
+
+    assert_eq!(app.selected_file, 1);
+    assert_eq!(app.focused_hunk_for_viewport(7), Some((1, 0)));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        .expect("n should be handled");
+    assert_eq!(app.selected_file, 2);
+    assert_eq!(app.focused_hunk_for_viewport(7), Some((2, 0)));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))
+        .expect("p should be handled");
+    assert_eq!(app.selected_file, 1);
+    assert_eq!(app.focused_hunk_for_viewport(7), Some((1, 0)));
+}
+
+#[test]
+fn selecting_current_file_preserves_focused_hunk() {
+    let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[1, 2, 3]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(20);
+
+    app.next_hunk();
+    assert_eq!(app.manual_hunk_focus, Some((0, 1)));
+
+    app.select_file(0);
+
+    assert_eq!(app.selected_file, 0);
+    assert_eq!(app.manual_hunk_focus, Some((0, 1)));
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 1)));
 }
 
 #[test]
@@ -3851,6 +3911,7 @@ fn assert_key_pair_scrolls_then_moves_hunk_focus_at_edges(
     app.handle_key(KeyEvent::new(backward, KeyModifiers::NONE))
         .expect("backward key should be handled");
     assert_eq!(app.scroll, 0);
+    assert_eq!(app.selected_file, top_hunks[0].0);
     assert_eq!(
         app.focused_hunk_for_viewport(app.viewport_rows),
         Some(top_hunks[0])
@@ -3866,6 +3927,7 @@ fn assert_key_pair_scrolls_then_moves_hunk_focus_at_edges(
     app.handle_key(KeyEvent::new(forward, KeyModifiers::NONE))
         .expect("forward key should be handled");
     assert_eq!(app.scroll, bottom_scroll);
+    assert_eq!(app.selected_file, next.0);
     assert_eq!(app.focused_hunk_for_viewport(app.viewport_rows), Some(next));
 }
 
