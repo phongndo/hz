@@ -679,6 +679,10 @@ def pi_env() -> dict[str, str]:
 
 def run_pi(prompt: str, model: str, label: str, *, thinking: str = "low") -> str:
     log(f"Running {label} with {model}")
+    # Large PRs can exceed the OS argument length limit if the full prompt is
+    # passed as a positional CLI argument. Pi print mode reads piped stdin and
+    # merges it into the initial prompt, so keep argv small and stream the full
+    # review prompt through stdin instead.
     command = [
         "pi",
         "--no-session",
@@ -695,10 +699,11 @@ def run_pi(prompt: str, model: str, label: str, *, thinking: str = "low") -> str
         "--thinking",
         thinking,
         "-p",
-        prompt,
+        "Review the pull request using the instructions and context provided on stdin.",
     ]
     result = subprocess.run(
         command,
+        input=prompt,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
