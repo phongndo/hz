@@ -129,6 +129,8 @@ FINDING_SCHEMA = """
 
 VERIFICATION_SCHEMA = """
 {
+  "pr_summary": "Concise summary of what this pull request changes",
+  "overall_confidence": 0.0,
   "accepted_findings": [
     {
       "title": "Short issue title",
@@ -765,6 +767,8 @@ def verification_prompt(findings: list[dict[str, Any]], context_text: str, max_f
         - Lower severity when appropriate.
         - Do not invent new unrelated issues unless you discover a clear blocker while verifying an existing finding.
         - Prefer a short high-signal review.
+        - Write a concise PR summary from the supplied diff and context.
+        - Set overall_confidence from 0.00 to 1.00 for the final review result, including a no-findings result.
         - Return at most {max_findings} accepted findings.
 
         Return JSON only: an object matching this schema:
@@ -815,6 +819,19 @@ def clean_string(value: Any, max_len: int = 800) -> str:
     if len(text) > max_len:
         return text[: max_len - 1].rstrip() + "…"
     return text
+
+
+def parse_confidence(value: Any, default: float = 0.0) -> float:
+    try:
+        if isinstance(value, str) and value.strip().endswith("%"):
+            parsed = float(value.strip()[:-1]) / 100.0
+        else:
+            parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    if parsed > 1.0:
+        parsed = parsed / 100.0
+    return min(1.0, max(0.0, parsed))
 
 
 def normalize_finding(data: Any, default_category: str | None = None) -> dict[str, Any] | None:
@@ -882,6 +899,8 @@ def parse_verification_response(text: str) -> dict[str, Any]:
     value = extract_json(text)
     if not isinstance(value, dict):
         raise ValueError("verification response must be a JSON object")
+    pr_summary = clean_string(value.get("pr_summary") or value.get("summary"), 1200)
+    overall_confidence = parse_confidence(value.get("overall_confidence"), 0.0)
     accepted = []
     for item in value.get("accepted_findings", []):
         finding = normalize_finding(item)
@@ -899,7 +918,12 @@ def parse_verification_response(text: str) -> dict[str, Any]:
                 "reason": clean_string(item.get("reason"), 80) or "unsupported",
             }
         )
-    return {"accepted_findings": accepted, "rejected_findings": rejected}
+    return {
+        "pr_summary": pr_summary,
+        "overall_confidence": overall_confidence,
+        "accepted_findings": accepted,
+        "rejected_findings": rejected,
+    }
 
 
 def dedupe_key(finding: dict[str, Any]) -> str:
@@ -949,6 +973,28 @@ def markdown_escape(text: str) -> str:
     return text.replace("\r", " ").strip()
 
 
+def confidence_percent(confidence: float) -> str:
+    return f"{round(parse_confidence(confidence) * 100):d}%"
+
+
+def fallback_pr_summary(changed_files: list[dict[str, str]]) -> str:
+    if not changed_files:
+        return "No changed files were present in the reviewed diff."
+    paths = [item["path"] for item in changed_files]
+    sample = ", ".join(paths[:5])
+    if len(paths) > 5:
+        sample += f", and {len(paths) - 5} more"
+    status_counts = Counter(item["status"][0] for item in changed_files)
+    parts = []
+    labels = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed", "C": "copied"}
+    for status, label in labels.items():
+        count = status_counts.get(status, 0)
+        if count:
+            parts.append(f"{count} {label}")
+    status_summary = ", ".join(parts) if parts else f"{len(paths)} changed"
+    return f"Reviewed {len(paths)} changed file(s) ({status_summary}): {sample}."
+
+
 def inline_commentable(finding: dict[str, Any], commentable_lines: dict[str, set[int]]) -> bool:
     return finding["line"] in commentable_lines.get(finding["file"], set())
 
@@ -981,6 +1027,8 @@ def render_comment(
     base_ref: str,
     merge_base: str,
     head_sha: str,
+    pr_summary: str,
+    overall_confidence: float,
     findings: list[dict[str, Any]],
     hidden_low: list[dict[str, Any]],
     rejected: list[dict[str, str]],
@@ -998,8 +1046,13 @@ def render_comment(
         f"Models: {model_source}",
         f"Reviewed diff: `{base_ref}@{merge_base[:12]}...{head_sha[:12]}`",
         "",
-        "### Summary",
+        "### PR Summary",
         "",
+        markdown_escape(pr_summary),
+        "",
+        "### Review Result",
+        "",
+        f"- Overall confidence: {confidence_percent(overall_confidence)}",
         f"- Blocker: {counts.get('blocker', 0)}",
         f"- High: {counts.get('high', 0)}",
         f"- Medium: {counts.get('medium', 0)}",
@@ -1012,7 +1065,7 @@ def render_comment(
     if not findings:
         lines.extend(
             [
-                "No high-confidence issues were accepted by the verification reviewer.",
+                f"No findings above the configured confidence threshold were found. Confidence: {confidence_percent(overall_confidence)}.",
                 "",
             ]
         )
@@ -1189,6 +1242,13 @@ def command_review() -> None:
         max_findings=max_findings,
         post_low=post_low,
     )
+    overall_confidence = parse_confidence(verified.get("overall_confidence"), 0.0)
+    if overall_confidence <= 0.0:
+        if visible:
+            overall_confidence = sum(finding["confidence"] for finding in visible) / len(visible)
+        else:
+            overall_confidence = min_confidence
+    pr_summary = clean_string(verified.get("pr_summary"), 1200) or fallback_pr_summary(context["changed_files"])
 
     model_source = str((config.get("provider") or {}).get("model_source", "OpenCode Go"))
     if model_source == "opencode-go":
@@ -1213,6 +1273,8 @@ def command_review() -> None:
         base_ref=base_ref,
         merge_base=context["merge_base"],
         head_sha=context["head_sha"],
+        pr_summary=pr_summary,
+        overall_confidence=overall_confidence,
         findings=visible,
         hidden_low=hidden_low,
         rejected=rejected,

@@ -85,6 +85,104 @@ jobs:
         if: steps.trusted.outputs.available != 'true' || steps.gate.outputs.should_review != 'true'
         run: echo "AI review skipped."
 
+      - name: Post bootstrap review comment
+        if: steps.trusted.outputs.available != 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          marker = "<!-- ai-pr-review -->"
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GITHUB_TOKEN"]
+          pr_number = os.environ["PR_NUMBER"]
+
+          def request(method, path, payload=None):
+              url = f"https://api.github.com/repos/{repo}/{path.lstrip('/')}"
+              data = None if payload is None else json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(url, data=data, method=method)
+              req.add_header("Accept", "application/vnd.github+json")
+              req.add_header("Authorization", f"Bearer {token}")
+              req.add_header("Content-Type", "application/json")
+              req.add_header("User-Agent", "hz-pr-review-bootstrap")
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  body = response.read()
+                  return None if not body else json.loads(body.decode("utf-8"))
+
+          files = []
+          page = 1
+          while True:
+              batch = request("GET", f"pulls/{pr_number}/files?per_page=100&page={page}")
+              if not batch:
+                  break
+              files.extend(batch)
+              page += 1
+
+          changed = len(files)
+          additions = sum(int(item.get("additions", 0)) for item in files)
+          deletions = sum(int(item.get("deletions", 0)) for item in files)
+          notable = ", ".join(item.get("filename", "") for item in files[:6]) or "no changed files"
+          if changed > 6:
+              notable += f", and {changed - 6} more"
+
+          body = "\n".join(
+              [
+                  marker,
+                  "",
+                  "## AI PR Review",
+                  "",
+                  f"Author: @{os.environ['PR_AUTHOR']}",
+                  "Mode: bootstrap",
+                  f"Reviewed diff: `{os.environ['PR_BASE_REF']}...{os.environ['PR_HEAD_SHA'][:12]}`",
+                  "",
+                  "### PR Summary",
+                  "",
+                  f"This PR is titled: {os.environ['PR_TITLE']}",
+                  f"It changes {changed} file(s) with +{additions}/-{deletions} lines.",
+                  f"Notable files: {notable}.",
+                  "",
+                  "### Review Result",
+                  "",
+                  "No findings were produced. Confidence: 0%.",
+                  "",
+                  "The full review did not run because this PR introduces the trusted review driver and settings; the base branch does not contain them yet. After this lands, future PRs will run the full review and update this sticky comment with verified findings and a model-generated PR summary.",
+                  "",
+                  "---",
+                  "Scope: bootstrap status only; no model review was run for this initial rollout PR.",
+                  "",
+              ]
+          )
+
+          existing_id = None
+          page = 1
+          while True:
+              comments = request("GET", f"issues/{pr_number}/comments?per_page=100&page={page}")
+              if not comments:
+                  break
+              for comment in comments:
+                  if marker in str(comment.get("body", "")):
+                      existing_id = comment["id"]
+                      break
+              if existing_id is not None:
+                  break
+              page += 1
+
+          if existing_id is None:
+              request("POST", f"issues/{pr_number}/comments", {"body": body})
+          else:
+              request("PATCH", f"issues/comments/{existing_id}", {"body": body})
+          PY
+
       - name: Check out PR head with full history
         if: steps.gate.outputs.should_review == 'true'
         env:
