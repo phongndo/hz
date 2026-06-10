@@ -1216,6 +1216,35 @@ def render_comment(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_inline_review_summary(
+    *,
+    reviewed_diff: str,
+    diff_summary: str,
+    inline_count: int,
+    fallback_count: int,
+) -> str:
+    lines = [
+        "## AI PR Review — Diff Summary",
+        "",
+        f"Reviewed diff: {markdown_escape(reviewed_diff)}",
+        "",
+        markdown_escape(diff_summary),
+        "",
+        f"Inline findings: {inline_count}",
+    ]
+    if fallback_count:
+        lines.append(
+            f"Issue-comment fallback findings: {fallback_count} (not anchorable on the diff)."
+        )
+    lines.extend(
+        [
+            "",
+            "Detailed findings are posted inline on the changed lines below.",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def delete_existing_inline_comments(pr_number: str) -> int:
     deleted = 0
     page = 1
@@ -1235,6 +1264,8 @@ def delete_existing_inline_comments(pr_number: str) -> int:
 def post_inline_review(
     pr_number: str,
     head_sha: str,
+    reviewed_diff: str,
+    diff_summary: str,
     findings: list[dict[str, Any]],
     commentable_lines: dict[str, set[int]],
 ) -> int:
@@ -1257,6 +1288,15 @@ def post_inline_review(
     if not comments:
         log("No accepted findings could be anchored to diff lines for inline review comments.")
         return 0
+    fallback_count = len(findings) - len(comments)
+    if fallback_count:
+        log(f"{fallback_count} accepted finding(s) could not be anchored inline.")
+    review_body = render_inline_review_summary(
+        reviewed_diff=reviewed_diff,
+        diff_summary=diff_summary,
+        inline_count=len(comments),
+        fallback_count=fallback_count,
+    )
 
     try:
         github_request(
@@ -1264,7 +1304,7 @@ def post_inline_review(
             f"pulls/{pr_number}/reviews",
             {
                 "commit_id": head_sha,
-                "body": f"AI PR review posted {len(comments)} inline finding(s).",
+                "body": review_body,
                 "event": "COMMENT",
                 "comments": comments,
             },
@@ -1278,15 +1318,11 @@ def post_inline_review(
     failures = 0
     for comment in comments:
         try:
+            payload = {"commit_id": head_sha, **comment}
             github_request(
                 "POST",
-                f"pulls/{pr_number}/reviews",
-                {
-                    "commit_id": head_sha,
-                    "body": "AI PR review inline finding.",
-                    "event": "COMMENT",
-                    "comments": [comment],
-                },
+                f"pulls/{pr_number}/comments",
+                payload,
             )
             posted += 1
         except Exception as error:
@@ -1333,13 +1369,22 @@ def post_sticky_comment(pr_number: str, body: str, *, marker: str = MARKER) -> N
         log("Updated AI PR comment.")
 
 
-def post_no_findings_comment(pr_number: str, head_sha: str, reviewed_diff: str) -> None:
+def post_no_findings_comment(
+    pr_number: str,
+    head_sha: str,
+    reviewed_diff: str,
+    diff_summary: str,
+) -> None:
     marker = f"<!-- ai-pr-review:no-findings:{head_sha} -->"
     body = "\n".join(
         [
             marker,
             "",
-            f"AI review: {markdown_escape(reviewed_diff)}",
+            "## AI PR Review — Diff Summary",
+            "",
+            f"Reviewed diff: {markdown_escape(reviewed_diff)}",
+            "",
+            markdown_escape(diff_summary),
             "",
             "No findings.",
         ]
@@ -1469,6 +1514,8 @@ def command_review() -> None:
             post_inline_review(
                 pr_number,
                 context["head_sha"],
+                reviewed_diff,
+                diff_summary,
                 visible,
                 context["commentable_lines"],
             )
@@ -1487,7 +1534,7 @@ def command_review() -> None:
         ]
 
     if not visible:
-        post_no_findings_comment(pr_number, context["head_sha"], reviewed_diff)
+        post_no_findings_comment(pr_number, context["head_sha"], reviewed_diff, diff_summary)
     elif issue_findings:
         body = render_comment(
             author=author,

@@ -1610,28 +1610,9 @@ impl DiffApp {
                 None
             }
             HunkFocusSearch::NearestTo(focus_row) => {
-                let focus_row = focus_row.clamp(visible_start, visible_end.saturating_sub(1));
-                let max_distance = focus_row
-                    .saturating_sub(visible_start)
-                    .max(visible_end.saturating_sub(1).saturating_sub(focus_row));
-                for distance in 0..=max_distance {
-                    if let Some(row_index) = focus_row.checked_add(distance)
-                        && row_index < visible_end
-                        && let Some(hunk_key) =
-                            self.model.row(row_index).and_then(|row| row.hunk_key())
-                    {
-                        return Some(hunk_key);
-                    }
-                    if distance > 0
-                        && let Some(row_index) = focus_row.checked_sub(distance)
-                        && row_index >= visible_start
-                        && let Some(hunk_key) =
-                            self.model.row(row_index).and_then(|row| row.hunk_key())
-                    {
-                        return Some(hunk_key);
-                    }
-                }
-                None
+                find_visible_row_outward(visible_start, visible_end, focus_row, |row_index| {
+                    self.model.row(row_index).and_then(|row| row.hunk_key())
+                })
             }
         }
     }
@@ -1726,29 +1707,12 @@ impl DiffApp {
             return None;
         }
 
-        let focus_row = self
-            .viewport_focus_row()
-            .clamp(visible_start, visible_end - 1);
-        let max_distance = focus_row
-            .saturating_sub(visible_start)
-            .max(visible_end.saturating_sub(1).saturating_sub(focus_row));
-        for distance in 0..=max_distance {
-            if let Some(row_index) = focus_row.checked_add(distance)
-                && row_index < visible_end
-                && let Some(line) = self.editor_line_at_hunk_row(row_index, file, hunk)
-            {
-                return Some(line);
-            }
-            if distance > 0
-                && let Some(row_index) = focus_row.checked_sub(distance)
-                && row_index >= visible_start
-                && let Some(line) = self.editor_line_at_hunk_row(row_index, file, hunk)
-            {
-                return Some(line);
-            }
-        }
-
-        None
+        find_visible_row_outward(
+            visible_start,
+            visible_end,
+            self.viewport_focus_row(),
+            |row_index| self.editor_line_at_hunk_row(row_index, file, hunk),
+        )
     }
 
     pub(crate) fn editor_line_at_hunk_row(
@@ -2673,6 +2637,39 @@ pub(crate) fn viewport_focus_offset(
     let bottom_ramp = bottom.saturating_sub(distance_to_end);
 
     top_ramp.max(bottom_ramp).min(bottom)
+}
+
+fn find_visible_row_outward<T>(
+    visible_start: usize,
+    visible_end: usize,
+    focus_row: usize,
+    mut find: impl FnMut(usize) -> Option<T>,
+) -> Option<T> {
+    if visible_start >= visible_end {
+        return None;
+    }
+
+    let focus_row = focus_row.clamp(visible_start, visible_end.saturating_sub(1));
+    let max_distance = focus_row
+        .saturating_sub(visible_start)
+        .max(visible_end.saturating_sub(1).saturating_sub(focus_row));
+    for distance in 0..=max_distance {
+        if let Some(row_index) = focus_row.checked_add(distance)
+            && row_index < visible_end
+            && let Some(found) = find(row_index)
+        {
+            return Some(found);
+        }
+        if distance > 0
+            && let Some(row_index) = focus_row.checked_sub(distance)
+            && row_index >= visible_start
+            && let Some(found) = find(row_index)
+        {
+            return Some(found);
+        }
+    }
+
+    None
 }
 
 pub(crate) fn changeset_max_line_width(changeset: &Changeset) -> usize {

@@ -271,6 +271,51 @@ jobs:
               )
               script = script.replace(old, new, 1)
               script_path.write_text(script, encoding="utf-8")
+          if 'AI PR review posted {len(comments)} inline finding(s).' in script:
+              script = script.replace(
+                  'def post_inline_review(\n'
+                  '    pr_number: str,\n'
+                  '    head_sha: str,\n'
+                  '    findings: list[dict[str, Any]],\n'
+                  '    commentable_lines: dict[str, set[int]],\n'
+                  ') -> int:\n',
+                  'def post_inline_review(\n'
+                  '    pr_number: str,\n'
+                  '    head_sha: str,\n'
+                  '    diff_summary: str,\n'
+                  '    findings: list[dict[str, Any]],\n'
+                  '    commentable_lines: dict[str, set[int]],\n'
+                  ') -> int:\n',
+                  1,
+              )
+              script = script.replace(
+                  '            "body": f"AI PR review posted {len(comments)} inline finding(s).",\n',
+                  '            "body": "\\n".join(\n'
+                  '                [\n'
+                  '                    "## AI PR Review — Diff Summary",\n'
+                  '                    "",\n'
+                  '                    markdown_escape(diff_summary),\n'
+                  '                    "",\n'
+                  '                    f"Inline findings: {len(comments)}",\n'
+                  '                    "",\n'
+                  '                    "Detailed findings are posted inline on the changed lines below.",\n'
+                  '                ]\n'
+                  '            ),\n',
+                  1,
+              )
+              script = script.replace(
+                  '                context["head_sha"],\n'
+                  '                visible,\n'
+                  '                context["commentable_lines"],\n'
+                  '            )\n',
+                  '                context["head_sha"],\n'
+                  '                pr_summary,\n'
+                  '                visible,\n'
+                  '                context["commentable_lines"],\n'
+                  '            )\n',
+                  1,
+              )
+              script_path.write_text(script, encoding="utf-8")
           py_compile.compile(str(script_path), doraise=True)
 
           config = config_path.read_text(encoding="utf-8")
