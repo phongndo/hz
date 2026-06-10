@@ -908,7 +908,7 @@ impl DiffApp {
         self.replace_model(&visible_files, HunkFocusModelBehavior::PreserveIfValid);
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
-        self.set_scroll(self.scroll);
+        self.set_scroll_with_grep_sync(self.scroll, true, HunkFocusScrollBehavior::Preserve);
         self.sync_grep_match_selection_to_scroll();
         self.set_horizontal_scroll(self.horizontal_scroll);
         self.dirty = true;
@@ -929,7 +929,7 @@ impl DiffApp {
         self.replace_model(&visible_files, HunkFocusModelBehavior::PreserveIfValid);
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
-        self.set_scroll(self.scroll);
+        self.set_scroll_with_grep_sync(self.scroll, true, HunkFocusScrollBehavior::Preserve);
         self.sync_grep_match_selection_to_scroll();
         self.set_horizontal_scroll(self.horizontal_scroll);
         self.dirty = true;
@@ -2229,7 +2229,11 @@ impl DiffApp {
             .file_start_row(self.selected_file)
             .map(|start| start.saturating_add(relative_scroll))
             .unwrap_or_default();
-        self.set_scroll(scroll);
+        let scroll_behavior = match hunk_focus_behavior {
+            HunkFocusModelBehavior::PreserveIfValid => HunkFocusScrollBehavior::Preserve,
+            HunkFocusModelBehavior::Clear => HunkFocusScrollBehavior::ClearOnScroll,
+        };
+        self.set_scroll_with_grep_sync(scroll, true, scroll_behavior);
         self.set_horizontal_scroll(self.horizontal_scroll);
         self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
 

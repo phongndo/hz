@@ -228,6 +228,25 @@ fn model_rebuild_preserves_valid_manual_hunk_focus_when_scroll_is_unchanged() {
 }
 
 #[test]
+fn model_rebuild_preserves_valid_manual_hunk_focus_when_scroll_changes() {
+    let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(3);
+
+    app.select_file(2);
+    assert!(app.scroll > 0);
+    assert_eq!(app.manual_hunk_focus, Some((2, 0)));
+
+    app.file_filter = "c.rs".to_owned();
+    app.apply_filters(false);
+
+    assert_eq!(app.scroll, 0);
+    assert_eq!(app.selected_file, 2);
+    assert_eq!(app.manual_hunk_focus, Some((2, 0)));
+    assert_eq!(app.focused_hunk_for_viewport(3), Some((2, 0)));
+}
+
+#[test]
 fn j_and_k_move_hunk_focus_when_diff_fits_viewport() {
     let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[1, 2, 3]);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
