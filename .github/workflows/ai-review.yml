@@ -1,0 +1,129 @@
+name: AI PR Review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review
+        required: true
+        type: number
+      mode:
+        description: Review mode override
+        required: false
+        type: choice
+        default: config
+        options:
+          - config
+          - fast
+          - balanced
+          - deep
+      override_allowlist:
+        description: Maintainer override for the enabled_users allowlist
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.inputs.pr_number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PI_VERSION: 0.79.1
+
+jobs:
+  review:
+    name: AI PR Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout trusted reviewer configuration
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Preserve trusted reviewer files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ai-review"
+          cp scripts/ci/ai_pr_review.py "$RUNNER_TEMP/ai-review/ai_pr_review.py"
+          cp .github/ai-review.yml "$RUNNER_TEMP/ai-review/ai-review.yml"
+
+      - name: Check PR author allowlist
+        id: gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AI_REVIEW_CONFIG: ${{ runner.temp }}/ai-review/ai-review.yml
+          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number || '' }}
+          INPUT_MODE: ${{ github.event.inputs.mode || 'config' }}
+          INPUT_OVERRIDE_ALLOWLIST: ${{ github.event.inputs.override_allowlist || 'false' }}
+        shell: bash
+        run: python3 "$RUNNER_TEMP/ai-review/ai_pr_review.py" gate
+
+      - name: Skip AI review
+        if: steps.gate.outputs.should_review != 'true'
+        run: echo "AI review skipped."
+
+      - name: Check out PR head with full history
+        if: steps.gate.outputs.should_review == 'true'
+        env:
+          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+          BASE_REF: ${{ steps.gate.outputs.base_ref }}
+          HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --prune origin \
+            "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/ai-review-pr-${PR_NUMBER}"
+          git checkout --detach "$HEAD_SHA"
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          git merge-base "origin/${BASE_REF}" HEAD >/dev/null
+
+      - name: Setup Node.js
+        if: steps.gate.outputs.should_review == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install Pi
+        if: steps.gate.outputs.should_review == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/pi-install" --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}"
+          echo "$RUNNER_TEMP/pi-install/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Run AI PR review
+        if: steps.gate.outputs.should_review == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          AI_REVIEW_CONFIG: ${{ runner.temp }}/ai-review/ai-review.yml
+          AI_REVIEW_PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+          AI_REVIEW_AUTHOR: ${{ steps.gate.outputs.author }}
+          AI_REVIEW_BASE_REF: ${{ steps.gate.outputs.base_ref }}
+          AI_REVIEW_BASE_SHA: ${{ steps.gate.outputs.base_sha }}
+          AI_REVIEW_HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+          AI_REVIEW_HEAD_REF: ${{ steps.gate.outputs.head_ref }}
+          AI_REVIEW_MODE: ${{ steps.gate.outputs.mode }}
+          PI_CODING_AGENT_DIR: ${{ runner.temp }}/pi-agent
+          PI_CODING_AGENT_SESSION_DIR: ${{ runner.temp }}/pi-sessions
+          PI_PACKAGE_DIR: ${{ runner.temp }}/pi-packages
+          PI_SKIP_VERSION_CHECK: "1"
+          PI_TELEMETRY: "0"
+        shell: bash
+        run: python3 "$RUNNER_TEMP/ai-review/ai_pr_review.py" review
