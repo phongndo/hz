@@ -1148,6 +1148,7 @@ def post_inline_review(
         f"pulls/{pr_number}/reviews",
         {
             "commit_id": head_sha,
+            "body": f"AI PR review posted {len(comments)} inline finding(s).",
             "event": "COMMENT",
             "comments": comments,
         },
