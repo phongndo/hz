@@ -1572,14 +1572,18 @@ impl DiffApp {
         let Some(mut range) = self.model.hunk_row_range(file, hunk) else {
             return;
         };
+        let hunk_start = range.start;
 
         while range.start > 0 {
             match self.model.row(range.start - 1) {
-                Some(UiRow::FileHeader(_) | UiRow::Collapsed { .. }) => range.start -= 1,
+                Some(
+                    UiRow::FileHeader(_)
+                    | UiRow::Collapsed { .. }
+                    | UiRow::ContextLine { .. }
+                    | UiRow::ContextHide { .. },
+                ) => range.start -= 1,
                 Some(
                     UiRow::FileSeparator
-                    | UiRow::ContextLine { .. }
-                    | UiRow::ContextHide { .. }
                     | UiRow::BinaryFile(_)
                     | UiRow::HunkHeader { .. }
                     | UiRow::UnifiedLine { .. }
@@ -1610,7 +1614,11 @@ impl DiffApp {
 
         let focus_rows = range.end.saturating_sub(range.start).max(1);
         let scroll = if focus_rows > self.viewport_rows {
-            range.start
+            range.start.max(
+                hunk_start
+                    .saturating_add(1)
+                    .saturating_sub(self.viewport_rows),
+            )
         } else {
             let focus_center = range.start.saturating_add(focus_rows.saturating_sub(1) / 2);
             focus_center.saturating_sub(viewport_center_offset(self.viewport_rows))
@@ -2592,6 +2600,7 @@ impl DiffApp {
             }
             return;
         }
+        self.manual_hunk_focus = None;
 
         let selected_path = self
             .changeset

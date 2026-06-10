@@ -173,6 +173,23 @@ fn layout_toggle_resets_manual_hunk_focus_when_diff_fits_viewport() {
 }
 
 #[test]
+fn scroll_change_clears_manual_hunk_focus() {
+    let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[1, 2, 3]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(5);
+
+    app.next_hunk();
+    assert_eq!(app.manual_hunk_focus, Some((0, 1)));
+    assert_eq!(app.focused_hunk_for_viewport(5), Some((0, 1)));
+
+    app.set_scroll(0);
+
+    assert_eq!(app.scroll, 0);
+    assert_eq!(app.manual_hunk_focus, None);
+    assert_eq!(app.focused_hunk_for_viewport(5), Some((0, 0)));
+}
+
+#[test]
 fn j_and_k_move_hunk_focus_when_diff_fits_viewport() {
     let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[1, 2, 3]);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
@@ -199,6 +216,50 @@ fn j_and_k_move_hunk_focus_when_diff_fits_viewport() {
         .expect("k should be handled");
     assert_eq!(app.scroll, 0);
     assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 0)));
+}
+
+#[test]
+fn j_and_k_scroll_then_move_hunk_focus_at_edges_in_scrollable_diff() {
+    let changeset = changeset_with_files(&[
+        "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs",
+    ]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(6);
+
+    assert!(app.max_scroll() > 0);
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+        .expect("j should be handled");
+    assert_eq!(app.scroll, 1);
+    assert_eq!(app.manual_hunk_focus, None);
+
+    app.set_scroll(0);
+    let top_hunks = visible_hunk_keys(&app);
+    assert!(top_hunks.len() >= 2);
+    app.manual_hunk_focus = Some(top_hunks[1]);
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
+        .expect("k should be handled");
+    assert_eq!(app.scroll, 0);
+    assert_eq!(
+        app.focused_hunk_for_viewport(app.viewport_rows),
+        Some(top_hunks[0])
+    );
+
+    while app.scroll < app.max_scroll() {
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+            .expect("j should be handled");
+    }
+    let bottom_scroll = app.scroll;
+    let bottom_hunks = visible_hunk_keys(&app);
+    assert!(bottom_hunks.len() >= 2);
+    let previous = bottom_hunks[bottom_hunks.len() - 2];
+    let next = bottom_hunks[bottom_hunks.len() - 1];
+    app.manual_hunk_focus = Some(previous);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+        .expect("j should be handled");
+
+    assert_eq!(app.scroll, bottom_scroll);
+    assert_eq!(app.focused_hunk_for_viewport(app.viewport_rows), Some(next));
 }
 
 #[test]
@@ -249,6 +310,43 @@ fn mouse_wheel_moves_hunk_focus_when_diff_fits_viewport() {
     .expect("mouse wheel should be handled");
     assert_eq!(app.scroll, 0);
     assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 0)));
+}
+
+#[test]
+fn mouse_wheel_scrolls_then_accumulates_hunk_focus_at_edge_in_scrollable_diff() {
+    let changeset = changeset_with_files(&[
+        "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs",
+    ]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(6);
+
+    assert!(app.max_scroll() > 0);
+    for _ in 0..100 {
+        if app.scroll == app.max_scroll() {
+            break;
+        }
+        mouse_scroll(&mut app, MouseEventKind::ScrollDown);
+    }
+    assert_eq!(app.scroll, app.max_scroll());
+
+    let bottom_hunks = visible_hunk_keys(&app);
+    assert!(bottom_hunks.len() >= 2);
+    let previous = bottom_hunks[bottom_hunks.len() - 2];
+    let next = bottom_hunks[bottom_hunks.len() - 1];
+    app.manual_hunk_focus = Some(previous);
+
+    for _ in 0..2 {
+        mouse_scroll(&mut app, MouseEventKind::ScrollDown);
+        assert_eq!(app.scroll, app.max_scroll());
+        assert_eq!(
+            app.focused_hunk_for_viewport(app.viewport_rows),
+            Some(previous)
+        );
+    }
+    mouse_scroll(&mut app, MouseEventKind::ScrollDown);
+
+    assert_eq!(app.scroll, app.max_scroll());
+    assert_eq!(app.focused_hunk_for_viewport(app.viewport_rows), Some(next));
 }
 
 #[test]
@@ -429,6 +527,50 @@ fn hunk_navigation_keeps_target_visible_after_expanded_pre_hunk_context() {
 }
 
 #[test]
+fn hunk_navigation_includes_expanded_context_before_hunk() {
+    let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[50, 100, 150]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(8);
+    app.context_expansions
+        .insert(ContextKey { file: 0, hunk: 1 }, 3);
+    app.model = UiModel::new(&app.changeset, app.layout, &app.context_expansions);
+    let context_start = app
+        .model
+        .rows
+        .iter()
+        .position(|row| {
+            matches!(
+                row,
+                UiRow::ContextHide {
+                    file: 0,
+                    hunk: 1,
+                    ..
+                }
+            )
+        })
+        .expect("expanded context should have a hide control");
+    let hunk_row = app
+        .model
+        .hunk_start_row(0, 1)
+        .expect("target hunk should have a header row");
+
+    app.next_hunk();
+
+    assert_eq!(app.scroll, context_start);
+    assert!(hunk_row >= app.scroll);
+    assert!(hunk_row < app.scroll + app.viewport_rows);
+    assert_eq!(
+        app.model.row(app.scroll),
+        Some(UiRow::ContextHide {
+            file: 0,
+            hunk: 1,
+            lines: 3
+        })
+    );
+    assert_eq!(app.focused_hunk_for_viewport(8), Some((0, 1)));
+}
+
+#[test]
 fn selecting_file_centers_and_focuses_its_first_hunk() {
     let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
@@ -527,6 +669,41 @@ fn focused_hunk_editor_target_uses_manual_focus_when_diff_fits_viewport() {
         Some(EditorTarget {
             path: repo.join("file.rs"),
             line: 30,
+        })
+    );
+}
+
+#[test]
+fn replace_loaded_diff_clears_manual_hunk_focus() {
+    let repo = PathBuf::from("/repo");
+    let changeset = changeset_with_hunks_at(repo.clone(), &[10, 20, 30]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(20);
+
+    app.next_hunk();
+    app.next_hunk();
+    assert_eq!(app.manual_hunk_focus, Some((0, 2)));
+    assert_eq!(
+        app.focused_hunk_editor_target(),
+        Some(EditorTarget {
+            path: repo.join("file.rs"),
+            line: 30,
+        })
+    );
+
+    app.replace_loaded_diff(
+        DiffOptions::default(),
+        changeset_with_hunks_at(repo.clone(), &[100, 200, 300]),
+        None,
+    );
+
+    assert_eq!(app.manual_hunk_focus, None);
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 0)));
+    assert_eq!(
+        app.focused_hunk_editor_target(),
+        Some(EditorTarget {
+            path: repo.join("file.rs"),
+            line: 100,
         })
     );
 }
@@ -3571,6 +3748,32 @@ fn visible_paths(app: &DiffApp) -> Vec<&str> {
 
 fn span_text(spans: &[Span<'_>]) -> String {
     spans.iter().map(|span| span.content.as_ref()).collect()
+}
+
+fn visible_hunk_keys(app: &DiffApp) -> Vec<(usize, usize)> {
+    let visible_end = app
+        .scroll
+        .saturating_add(app.viewport_rows)
+        .min(app.model.len());
+    let mut hunks = Vec::new();
+    for row_index in app.scroll..visible_end {
+        if let Some(hunk) = app.model.row(row_index).and_then(|row| row.hunk_key())
+            && hunks.last().copied() != Some(hunk)
+        {
+            hunks.push(hunk);
+        }
+    }
+    hunks
+}
+
+fn mouse_scroll(app: &mut DiffApp, kind: MouseEventKind) {
+    app.handle_mouse(MouseEvent {
+        kind,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    })
+    .expect("mouse wheel should be handled");
 }
 
 fn default_context_expand_step() -> usize {
