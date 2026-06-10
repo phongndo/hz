@@ -672,6 +672,10 @@ def ensure_credentials(config: dict[str, Any]) -> None:
 
 def pi_env() -> dict[str, str]:
     env = os.environ.copy()
+    # The npm-installed Pi package already knows where its bundled assets live.
+    # A CI scratch PI_PACKAGE_DIR makes Pi look for built-in themes under the
+    # empty temp directory instead, which fails before the review can start.
+    env.pop("PI_PACKAGE_DIR", None)
     env.setdefault("PI_SKIP_VERSION_CHECK", "1")
     env.setdefault("PI_TELEMETRY", "0")
     return env
