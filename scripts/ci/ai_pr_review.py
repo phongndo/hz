@@ -1315,6 +1315,12 @@ def post_no_findings_comment(pr_number: str, head_sha: str, reviewed_diff: str) 
     post_sticky_comment(pr_number, body, marker=marker)
 
 
+def post_findings_comment(pr_number: str, head_sha: str, body: str) -> None:
+    marker = f"<!-- ai-pr-review:findings:{head_sha} -->"
+    body = body.replace(MARKER, marker, 1)
+    post_sticky_comment(pr_number, body, marker=marker)
+
+
 def command_summary() -> None:
     config = load_config()
     github_config = config.get("github") or {}
@@ -1449,7 +1455,7 @@ def command_review() -> None:
         post_no_findings_comment(pr_number, context["head_sha"], reviewed_diff)
     elif issue_findings:
         body = render_comment(author=author, reviewed_diff=reviewed_diff, findings=issue_findings)
-        post_sticky_comment(pr_number, body)
+        post_findings_comment(pr_number, context["head_sha"], body)
     elif delete_issue_comment(pr_number, MARKER):
         log("Deleted stale AI PR review findings comment.")
     else:

@@ -169,17 +169,7 @@ jobs:
 
           if "def post_no_findings_comment(" not in script:
               helper = textwrap.dedent('''
-                  def post_no_findings_comment(pr_number: str, head_sha: str, reviewed_diff: str) -> None:
-                      marker = f"<!-- ai-pr-review:no-findings:{head_sha} -->"
-                      body = "\\n".join(
-                          [
-                              marker,
-                              "",
-                              f"AI review: {markdown_escape(reviewed_diff)}",
-                              "",
-                              "No findings.",
-                          ]
-                      )
+                  def post_ai_issue_comment(pr_number: str, marker: str, body: str) -> None:
                       existing_id = None
                       page = 1
                       while True:
@@ -198,12 +188,49 @@ jobs:
                           github_request("POST", f"issues/{pr_number}/comments", {"body": body})
                       else:
                           github_request("PATCH", f"issues/comments/{existing_id}", {"body": body})
+
+
+                  def post_no_findings_comment(pr_number: str, head_sha: str, reviewed_diff: str) -> None:
+                      marker = f"<!-- ai-pr-review:no-findings:{head_sha} -->"
+                      body = "\\n".join(
+                          [
+                              marker,
+                              "",
+                              f"AI review: {markdown_escape(reviewed_diff)}",
+                              "",
+                              "No findings.",
+                          ]
+                      )
+                      post_ai_issue_comment(pr_number, marker, body)
+
+
+                  def post_findings_comment(pr_number: str, head_sha: str, body: str) -> None:
+                      marker = f"<!-- ai-pr-review:findings:{head_sha} -->"
+                      body = body.replace(MARKER, marker, 1)
+                      post_ai_issue_comment(pr_number, marker, body)
               ''').strip("\n")
               script = script.replace(
                   "\n\ndef command_review() -> None:\n",
                   "\n\n" + helper + "\n\ndef command_review() -> None:\n",
                   1,
               )
+              if "inline_failed = False" not in script:
+                  script = script.replace(
+                      '    inline_count = 0\n'
+                      '    if as_bool(github_config.get("inline_comments", False)):\n',
+                      '    inline_failed = False\n'
+                      '    inline_count = 0\n'
+                      '    if as_bool(github_config.get("inline_comments", False)):\n',
+                      1,
+                  )
+                  script = script.replace(
+                      '        except Exception as error:\n'
+                      '            log(f"Could not post inline GitHub review comments: {error}")\n',
+                      '        except Exception as error:\n'
+                      '            inline_failed = True\n'
+                      '            log(f"Could not post inline GitHub review comments: {error}")\n',
+                      1,
+                  )
               old = (
                   '    if as_bool(github_config.get("sticky_comment", True)):\n'
                   '        post_sticky_comment(pr_number, body)\n'
@@ -213,15 +240,17 @@ jobs:
               new = (
                   '    if as_bool(github_config.get("sticky_comment", True)):\n'
                   '        post_sticky_comment(pr_number, body)\n'
-                  '    else:\n'
-                  '        log("Sticky PR comment disabled by configuration.")\n'
-                  '    if not visible:\n'
+                  '    elif not visible:\n'
                   '        post_no_findings_comment(\n'
                   '            pr_number,\n'
                   '            context["head_sha"],\n'
                   '            clean_string(context.get("head_subject"), 240)\n'
                   '            or clean_string(head_ref or base_ref or "HEAD", 240),\n'
                   '        )\n'
+                  '    elif inline_failed:\n'
+                  '        post_findings_comment(pr_number, context["head_sha"], body)\n'
+                  '    else:\n'
+                  '        log("Sticky PR comment disabled by configuration.")\n'
               )
               script = script.replace(old, new, 1)
               script_path.write_text(script, encoding="utf-8")
