@@ -204,9 +204,20 @@ jobs:
                       post_ai_issue_comment(pr_number, marker, body)
 
 
-                  def post_findings_comment(pr_number: str, head_sha: str, body: str) -> None:
+                  def post_findings_comment(pr_number: str, head_sha: str, body: str, reviewed_diff: str) -> None:
                       marker = f"<!-- ai-pr-review:findings:{head_sha} -->"
-                      body = body.replace(MARKER, marker, 1)
+                      lines = []
+                      for line in body.replace(MARKER, marker, 1).splitlines():
+                          if line.startswith(("Mode:", "Runtime:", "Models:")):
+                              continue
+                          if line.startswith("Reviewed diff:"):
+                              lines.append(f"Reviewed diff: {markdown_escape(reviewed_diff)}")
+                              continue
+                          if line == "### PR Summary":
+                              lines.append("### Diff Summary")
+                              continue
+                          lines.append(line)
+                      body = "\\n".join(lines).rstrip() + "\\n"
                       post_ai_issue_comment(pr_number, marker, body)
               ''').strip("\n")
               script = script.replace(
@@ -248,7 +259,13 @@ jobs:
                   '            or clean_string(head_ref or base_ref or "HEAD", 240),\n'
                   '        )\n'
                   '    elif inline_failed:\n'
-                  '        post_findings_comment(pr_number, context["head_sha"], body)\n'
+                  '        post_findings_comment(\n'
+                  '            pr_number,\n'
+                  '            context["head_sha"],\n'
+                  '            body,\n'
+                  '            clean_string(context.get("head_subject"), 240)\n'
+                  '            or clean_string(head_ref or base_ref or "HEAD", 240),\n'
+                  '        )\n'
                   '    else:\n'
                   '        log("Sticky PR comment disabled by configuration.")\n'
               )

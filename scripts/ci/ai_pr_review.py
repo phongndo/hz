@@ -1168,6 +1168,7 @@ def render_comment(
     *,
     author: str,
     reviewed_diff: str,
+    diff_summary: str,
     findings: list[dict[str, Any]],
 ) -> str:
     lines = [
@@ -1179,6 +1180,8 @@ def render_comment(
         f"Reviewed diff: {reviewed_diff}",
         "",
     ]
+    if diff_summary:
+        lines.extend(["### Diff Summary", "", markdown_escape(diff_summary), ""])
 
     heading = {"blocker": "Blocker", "high": "High", "medium": "Medium", "low": "Low"}
     for severity in SEVERITIES:
@@ -1255,18 +1258,47 @@ def post_inline_review(
         log("No accepted findings could be anchored to diff lines for inline review comments.")
         return 0
 
-    github_request(
-        "POST",
-        f"pulls/{pr_number}/reviews",
-        {
-            "commit_id": head_sha,
-            "body": f"AI PR review posted {len(comments)} inline finding(s).",
-            "event": "COMMENT",
-            "comments": comments,
-        },
-    )
-    log(f"Posted {len(comments)} AI inline GitHub review comment(s).")
-    return len(comments)
+    try:
+        github_request(
+            "POST",
+            f"pulls/{pr_number}/reviews",
+            {
+                "commit_id": head_sha,
+                "body": f"AI PR review posted {len(comments)} inline finding(s).",
+                "event": "COMMENT",
+                "comments": comments,
+            },
+        )
+        log(f"Posted {len(comments)} AI inline GitHub review comment(s).")
+        return len(comments)
+    except Exception as batch_error:
+        log(f"Batch inline review failed, retrying comments individually: {batch_error}")
+
+    posted = 0
+    failures = 0
+    for comment in comments:
+        try:
+            github_request(
+                "POST",
+                f"pulls/{pr_number}/reviews",
+                {
+                    "commit_id": head_sha,
+                    "body": "AI PR review inline finding.",
+                    "event": "COMMENT",
+                    "comments": [comment],
+                },
+            )
+            posted += 1
+        except Exception as error:
+            failures += 1
+            log(
+                f"Could not anchor inline comment at {comment.get('path')}:{comment.get('line')}: {error}"
+            )
+    if posted:
+        log(f"Posted {posted} AI inline GitHub review comment(s).")
+    if failures:
+        raise RuntimeError(f"{failures} inline GitHub review comment(s) could not be anchored")
+    return posted
 
 
 def find_issue_comment_id(pr_number: str, marker: str) -> int | None:
@@ -1352,6 +1384,9 @@ def command_summary() -> None:
         summary["pr_summary"] = fallback_pr_summary(context["changed_files"])
     reviewed_diff = clean_string(context.get("head_subject"), 240) or clean_string(
         head_ref or base_ref or "HEAD", 240
+    )
+    diff_summary = clean_string(verified.get("pr_summary"), 1200) or fallback_pr_summary(
+        context["changed_files"]
     )
     post_sticky_comment(
         pr_number,
@@ -1454,7 +1489,12 @@ def command_review() -> None:
     if not visible:
         post_no_findings_comment(pr_number, context["head_sha"], reviewed_diff)
     elif issue_findings:
-        body = render_comment(author=author, reviewed_diff=reviewed_diff, findings=issue_findings)
+        body = render_comment(
+            author=author,
+            reviewed_diff=reviewed_diff,
+            diff_summary=diff_summary,
+            findings=issue_findings,
+        )
         post_findings_comment(pr_number, context["head_sha"], body)
     elif delete_issue_comment(pr_number, MARKER):
         log("Deleted stale AI PR review findings comment.")
