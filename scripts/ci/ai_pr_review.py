@@ -998,12 +998,50 @@ def markdown_escape(text: str) -> str:
 
 
 def text_block_escape(text: str) -> str:
-    return markdown_escape(text).replace("```", "'''")
+    return str(text).replace("\r", " ").replace("```", "'''")
 
 
 def text_block(lines: list[str]) -> str:
     body = "\n".join(text_block_escape(line) for line in lines).rstrip()
     return f"```text\n{body}\n```"
+
+
+def copyable_findings_block(findings: list[dict[str, Any]]) -> list[str]:
+    if not findings:
+        return []
+
+    lines: list[str] = []
+    heading = {"blocker": "Blocker", "high": "High", "medium": "Medium", "low": "Low"}
+    for severity in SEVERITIES:
+        severity_findings = [finding for finding in findings if finding["severity"] == severity]
+        if not severity_findings:
+            continue
+        if lines:
+            lines.append("")
+        lines.append(heading[severity])
+        for index, finding in enumerate(severity_findings, start=1):
+            evidence = finding["evidence"][0] if finding.get("evidence") else "See PR diff/context."
+            lines.extend(
+                [
+                    f"{index}. {finding['file']}:{finding['line']} - {finding['title']}",
+                    f"   Category: {finding['category']}",
+                    f"   Confidence: {finding['confidence']:.2f}",
+                    f"   Risk: {finding['why_it_matters'] or finding['summary']}",
+                    f"   Evidence: {evidence}",
+                    f"   Minimal fix: {finding['minimal_fix']}",
+                    f"   Verification: {finding.get('verification_notes', 'Accepted by final verification reviewer.')}",
+                ]
+            )
+
+    return [
+        "<details>",
+        "<summary>Copy findings</summary>",
+        "",
+        text_block(lines),
+        "",
+        "</details>",
+        "",
+    ]
 
 
 def confidence_percent(confidence: float) -> str:
@@ -1065,22 +1103,26 @@ def render_comment(
 ) -> str:
     counts = Counter(finding["severity"] for finding in findings)
     lines = [
+        MARKER,
+        "",
+        "## AI PR Review",
+        "",
         f"Author: @{author}",
         f"Reviewed diff: {reviewed_diff}",
         "",
-        "PR Summary",
+        "### PR Summary",
         "",
         markdown_escape(pr_summary),
         "",
-        "Review Result",
+        "### Review Result",
         "",
-        f"Overall confidence: {confidence_percent(overall_confidence)}",
-        f"Blocker: {counts.get('blocker', 0)}",
-        f"High: {counts.get('high', 0)}",
-        f"Medium: {counts.get('medium', 0)}",
-        f"Low hidden: {len(hidden_low)}",
-        f"Rejected during verification: {len(rejected)}",
-        f"Inline GitHub review comments: {inline_comment_count}",
+        f"- Overall confidence: {confidence_percent(overall_confidence)}",
+        f"- Blocker: {counts.get('blocker', 0)}",
+        f"- High: {counts.get('high', 0)}",
+        f"- Medium: {counts.get('medium', 0)}",
+        f"- Low hidden: {len(hidden_low)}",
+        f"- Rejected during verification: {len(rejected)}",
+        f"- Inline GitHub review comments: {inline_comment_count}",
         "",
     ]
 
@@ -1097,13 +1139,13 @@ def render_comment(
         severity_findings = [finding for finding in findings if finding["severity"] == severity]
         if not severity_findings:
             continue
-        lines.append(heading[severity])
+        lines.append(f"### {heading[severity]}")
         lines.append("")
         for index, finding in enumerate(severity_findings, start=1):
             evidence = finding["evidence"][0] if finding.get("evidence") else "See PR diff/context."
             lines.extend(
                 [
-                    f"{index}. {finding['file']}:{finding['line']} - {markdown_escape(finding['title'])}",
+                    f"{index}. `{finding['file']}:{finding['line']}` — {markdown_escape(finding['title'])}",
                     f"   Category: {finding['category']}",
                     f"   Confidence: {finding['confidence']:.2f}",
                     f"   Risk: {markdown_escape(finding['why_it_matters'] or finding['summary'])}",
@@ -1114,13 +1156,15 @@ def render_comment(
                 ]
             )
 
+    lines.extend(copyable_findings_block(findings))
+
     lines.extend(
         [
             "---",
             "Scope: reviewed the PR diff and surrounding changed-file context only. No project scripts, tests, commits, or pushes were run by this reviewer.",
         ]
     )
-    return "\n".join([MARKER, "", "## AI PR Review", "", text_block(lines)]).rstrip() + "\n"
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def delete_existing_inline_comments(pr_number: str) -> int:
