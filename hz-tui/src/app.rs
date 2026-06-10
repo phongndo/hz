@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    ops::Range,
     sync::{Arc, mpsc::Receiver},
     time::{Duration, Instant},
 };
@@ -47,6 +48,20 @@ use crate::{
         diff_theme_from_config,
     },
 };
+
+const MOUSE_HUNK_FOCUS_SCROLL_TICKS: isize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HunkFocusScrollBehavior {
+    Preserve,
+    ClearOnScroll,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HunkFocusModelBehavior {
+    PreserveIfValid,
+    Clear,
+}
 
 pub(crate) fn run_loop(
     terminal: &mut CrosstermTerminal,
@@ -180,6 +195,7 @@ pub(crate) struct MouseScroll {
     pub(crate) direction: Option<MouseScrollDirection>,
     pub(crate) intervals: Vec<Duration>,
     pub(crate) pending_lines: f64,
+    pub(crate) pending_hunk_focus_ticks: isize,
 }
 
 impl MouseScroll {
@@ -200,6 +216,28 @@ impl MouseScroll {
         self.direction = None;
         self.intervals.clear();
         self.pending_lines = 0.0;
+        self.pending_hunk_focus_ticks = 0;
+    }
+
+    pub(crate) fn reset_hunk_focus_ticks(&mut self) {
+        self.pending_hunk_focus_ticks = 0;
+    }
+
+    pub(crate) fn hunk_focus_delta(&mut self, direction: MouseScrollDirection) -> isize {
+        match direction {
+            MouseScrollDirection::Down => self.pending_hunk_focus_ticks += 1,
+            MouseScrollDirection::Up => self.pending_hunk_focus_ticks -= 1,
+        }
+
+        if self.pending_hunk_focus_ticks >= MOUSE_HUNK_FOCUS_SCROLL_TICKS {
+            self.pending_hunk_focus_ticks -= MOUSE_HUNK_FOCUS_SCROLL_TICKS;
+            1
+        } else if self.pending_hunk_focus_ticks <= -MOUSE_HUNK_FOCUS_SCROLL_TICKS {
+            self.pending_hunk_focus_ticks += MOUSE_HUNK_FOCUS_SCROLL_TICKS;
+            -1
+        } else {
+            0
+        }
     }
 
     pub(crate) fn multiplier(&mut self, direction: MouseScrollDirection, now: Instant) -> f64 {
@@ -242,6 +280,7 @@ impl MouseScroll {
         self.direction = Some(direction);
         self.intervals.clear();
         self.pending_lines = 0.0;
+        self.pending_hunk_focus_ticks = 0;
     }
 }
 
@@ -258,6 +297,12 @@ pub(crate) enum SyntaxStartupMode {
     Languages(Vec<String>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HunkFocusSearch {
+    FirstVisible,
+    NearestTo(usize),
+}
+
 #[derive(Debug)]
 pub(crate) struct DiffApp {
     pub(crate) options: DiffOptions,
@@ -272,6 +317,7 @@ pub(crate) struct DiffApp {
     pub(crate) viewport_rows: usize,
     pub(crate) viewport_width: usize,
     pub(crate) max_line_width: usize,
+    pub(crate) manual_hunk_focus: Option<(usize, usize)>,
     pub(crate) selected_file: usize,
     pub(crate) file_sidebar_open: bool,
     pub(crate) file_sidebar_scroll: usize,
@@ -343,6 +389,10 @@ impl DiffApp {
         let context_expansions = HashMap::new();
         let context_cache = HashMap::new();
         let model = UiModel::new(&changeset, layout, &context_expansions);
+        let manual_hunk_focus = model
+            .hunk_start_rows
+            .first()
+            .and_then(|row| model.row(*row).and_then(UiRow::hunk_key));
         let stats = changeset.stats();
         let total_stats = stats.clone();
         let branch_base = default_branch_base(&options, &changeset.repo);
@@ -409,6 +459,7 @@ impl DiffApp {
             viewport_rows: 1,
             viewport_width: 1,
             max_line_width,
+            manual_hunk_focus,
             selected_file: 0,
             file_sidebar_open: false,
             file_sidebar_scroll: 0,
@@ -549,16 +600,16 @@ impl DiffApp {
         match key.code {
             KeyCode::Esc if self.filters_active() => self.clear_all_filters(),
             KeyCode::Esc | KeyCode::Char('q') => return Ok(true),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll_by(1),
-            KeyCode::Up | KeyCode::Char('k') => self.scroll_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_or_focus_hunk(1),
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_or_focus_hunk(-1),
             KeyCode::Left | KeyCode::Char('h') => {
                 self.scroll_horizontally_by(-(HORIZONTAL_SCROLL_STEP as isize));
             }
             KeyCode::Right | KeyCode::Char('l') => {
                 self.scroll_horizontally_by(HORIZONTAL_SCROLL_STEP as isize);
             }
-            KeyCode::PageDown | KeyCode::Char('d') => self.scroll_by(20),
-            KeyCode::PageUp | KeyCode::Char('u') => self.scroll_by(-20),
+            KeyCode::PageDown | KeyCode::Char('d') => self.scroll_or_focus_hunk(20),
+            KeyCode::PageUp | KeyCode::Char('u') => self.scroll_or_focus_hunk(-20),
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.open_focused_hunk_in_editor();
             }
@@ -664,10 +715,7 @@ impl DiffApp {
                     self.scroll_file_sidebar_by(1);
                     return Ok(());
                 }
-                let delta = self
-                    .mouse_scroll
-                    .scroll_delta(MouseScrollDirection::Down, Instant::now());
-                self.scroll_by(delta);
+                self.mouse_scroll_or_focus_hunk(MouseScrollDirection::Down);
             }
             MouseEventKind::ScrollUp => {
                 if self.is_file_sidebar_position(mouse.column, mouse.row) {
@@ -675,10 +723,7 @@ impl DiffApp {
                     self.scroll_file_sidebar_by(-1);
                     return Ok(());
                 }
-                let delta = self
-                    .mouse_scroll
-                    .scroll_delta(MouseScrollDirection::Up, Instant::now());
-                self.scroll_by(delta);
+                self.mouse_scroll_or_focus_hunk(MouseScrollDirection::Up);
             }
             MouseEventKind::ScrollLeft => {
                 if self.is_file_sidebar_position(mouse.column, mouse.row) {
@@ -860,15 +905,10 @@ impl DiffApp {
             .insert(ContextKey { file, hunk }, next);
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.model = UiModel::new_filtered(
-            &self.changeset,
-            self.layout,
-            &self.context_expansions,
-            &visible_files,
-        );
+        self.replace_model(&visible_files, HunkFocusModelBehavior::PreserveIfValid);
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
-        self.set_scroll(self.scroll);
+        self.set_scroll_with_grep_sync(self.scroll, true, HunkFocusScrollBehavior::Preserve);
         self.sync_grep_match_selection_to_scroll();
         self.set_horizontal_scroll(self.horizontal_scroll);
         self.dirty = true;
@@ -886,15 +926,10 @@ impl DiffApp {
 
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.model = UiModel::new_filtered(
-            &self.changeset,
-            self.layout,
-            &self.context_expansions,
-            &visible_files,
-        );
+        self.replace_model(&visible_files, HunkFocusModelBehavior::PreserveIfValid);
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
-        self.set_scroll(self.scroll);
+        self.set_scroll_with_grep_sync(self.scroll, true, HunkFocusScrollBehavior::Preserve);
         self.sync_grep_match_selection_to_scroll();
         self.set_horizontal_scroll(self.horizontal_scroll);
         self.dirty = true;
@@ -1494,6 +1529,28 @@ impl DiffApp {
         self.set_scroll(next);
     }
 
+    pub(crate) fn scroll_or_focus_hunk(&mut self, delta: isize) {
+        let previous_scroll = self.scroll;
+        self.scroll_by(delta);
+        if self.scroll == previous_scroll {
+            self.move_focused_hunk(delta);
+        }
+    }
+
+    pub(crate) fn mouse_scroll_or_focus_hunk(&mut self, direction: MouseScrollDirection) {
+        let delta = self.mouse_scroll.scroll_delta(direction, Instant::now());
+        let previous_scroll = self.scroll;
+        self.scroll_by(delta);
+        if self.scroll == previous_scroll {
+            let hunk_delta = self.mouse_scroll.hunk_focus_delta(direction);
+            if hunk_delta != 0 {
+                self.move_focused_hunk(hunk_delta);
+            }
+        } else {
+            self.mouse_scroll.reset_hunk_focus_ticks();
+        }
+    }
+
     pub(crate) fn scroll_horizontally_by(&mut self, delta: isize) {
         let next = if delta < 0 {
             self.horizontal_scroll.saturating_sub(delta.unsigned_abs())
@@ -1512,18 +1569,101 @@ impl DiffApp {
     }
 
     pub(crate) fn set_scroll(&mut self, scroll: usize) {
-        self.set_scroll_with_grep_sync(scroll, true);
+        self.set_scroll_with_grep_sync(scroll, true, HunkFocusScrollBehavior::ClearOnScroll);
+    }
+
+    fn clear_manual_hunk_focus(&mut self) {
+        self.manual_hunk_focus = None;
+    }
+
+    fn replace_model(
+        &mut self,
+        visible_files: &[usize],
+        hunk_focus_behavior: HunkFocusModelBehavior,
+    ) {
+        let previous_manual_hunk_focus = self.manual_hunk_focus;
+        self.model = UiModel::new_filtered(
+            &self.changeset,
+            self.layout,
+            &self.context_expansions,
+            visible_files,
+        );
+        self.manual_hunk_focus = match hunk_focus_behavior {
+            HunkFocusModelBehavior::PreserveIfValid => previous_manual_hunk_focus
+                .filter(|(file, hunk)| self.model.hunk_start_row(*file, *hunk).is_some()),
+            HunkFocusModelBehavior::Clear => None,
+        };
     }
 
     pub(crate) fn set_scroll_centered_on(&mut self, row: usize) {
         let center_offset = viewport_center_offset(self.viewport_rows);
-        self.set_scroll_with_grep_sync(row.saturating_sub(center_offset), false);
+        self.set_scroll_with_grep_sync(
+            row.saturating_sub(center_offset),
+            false,
+            HunkFocusScrollBehavior::ClearOnScroll,
+        );
     }
 
-    pub(crate) fn set_scroll_with_grep_sync(&mut self, scroll: usize, sync_grep: bool) {
+    pub(crate) fn set_scroll_focused_on_hunk(&mut self, file: usize, hunk: usize) {
+        let Some((range, hunk_start)) = hunk_focus_row_range(&self.model, file, hunk) else {
+            return;
+        };
+
+        let focus_rows = range.end.saturating_sub(range.start).max(1);
+        let scroll = if focus_rows > self.viewport_rows {
+            // Oversized focus ranges cannot be fully centered. Keep the first
+            // useful context row when possible, but never so much context that
+            // the hunk header itself falls below the viewport.
+            range.start.max(
+                hunk_start
+                    .saturating_add(1)
+                    .saturating_sub(self.viewport_rows),
+            )
+        } else {
+            let focus_center = range.start.saturating_add(focus_rows.saturating_sub(1) / 2);
+            focus_center.saturating_sub(viewport_center_offset(self.viewport_rows))
+        };
+        self.set_scroll_with_grep_sync(scroll, false, HunkFocusScrollBehavior::Preserve);
+    }
+
+    fn focused_hunk_in_visible_range(
+        &self,
+        visible_start: usize,
+        visible_end: usize,
+        search: HunkFocusSearch,
+    ) -> Option<(usize, usize)> {
+        match search {
+            HunkFocusSearch::FirstVisible => {
+                for row_index in visible_start..visible_end {
+                    if let Some(hunk_key) = self.model.row(row_index).and_then(|row| row.hunk_key())
+                    {
+                        return Some(hunk_key);
+                    }
+                }
+                None
+            }
+            HunkFocusSearch::NearestTo(focus_row) => {
+                find_visible_row_outward(visible_start, visible_end, focus_row, |row_index| {
+                    self.model.row(row_index).and_then(|row| row.hunk_key())
+                })
+            }
+        }
+    }
+
+    fn set_scroll_with_grep_sync(
+        &mut self,
+        scroll: usize,
+        sync_grep: bool,
+        hunk_focus_behavior: HunkFocusScrollBehavior,
+    ) {
         let previous_scroll = self.scroll;
         let previous_file = self.selected_file;
         self.scroll = scroll.min(self.max_scroll());
+        if self.scroll != previous_scroll
+            && hunk_focus_behavior == HunkFocusScrollBehavior::ClearOnScroll
+        {
+            self.clear_manual_hunk_focus();
+        }
         if let Some(file) = self.model.file_at_row(self.scroll) {
             self.selected_file = file;
         }
@@ -1553,33 +1693,30 @@ impl DiffApp {
             return None;
         }
 
-        let focus_row = visible_start
-            .saturating_add(viewport_focus_offset(
-                self.scroll,
-                self.model.len(),
-                visible_rows,
-            ))
-            .min(visible_end.saturating_sub(1));
-        let max_distance = focus_row
-            .saturating_sub(visible_start)
-            .max(visible_end.saturating_sub(1).saturating_sub(focus_row));
-        for distance in 0..=max_distance {
-            if let Some(row_index) = focus_row.checked_add(distance)
-                && row_index < visible_end
-                && let Some(hunk_key) = self.model.row(row_index).and_then(|row| row.hunk_key())
-            {
-                return Some(hunk_key);
-            }
-            if distance > 0
-                && let Some(row_index) = focus_row.checked_sub(distance)
-                && row_index >= visible_start
-                && let Some(hunk_key) = self.model.row(row_index).and_then(|row| row.hunk_key())
-            {
-                return Some(hunk_key);
-            }
+        if let Some((file, hunk)) = self.manual_hunk_focus
+            && let Some(row) = self.model.hunk_start_row(file, hunk)
+            && row >= visible_start
+            && row < visible_end
+        {
+            return Some((file, hunk));
         }
 
-        None
+        let search = if max_scroll_for_viewport(self.model.len(), visible_rows) == 0 {
+            // When the whole diff fits, start at the first visible hunk; explicit hunk
+            // navigation is tracked separately with manual_hunk_focus.
+            HunkFocusSearch::FirstVisible
+        } else {
+            HunkFocusSearch::NearestTo(
+                visible_start
+                    .saturating_add(viewport_focus_offset(
+                        self.scroll,
+                        self.model.len(),
+                        visible_rows,
+                    ))
+                    .min(visible_end.saturating_sub(1)),
+            )
+        };
+        self.focused_hunk_in_visible_range(visible_start, visible_end, search)
     }
 
     pub(crate) fn focused_hunk_editor_target(&self) -> Option<EditorTarget> {
@@ -1610,29 +1747,12 @@ impl DiffApp {
             return None;
         }
 
-        let focus_row = self
-            .viewport_focus_row()
-            .clamp(visible_start, visible_end - 1);
-        let max_distance = focus_row
-            .saturating_sub(visible_start)
-            .max(visible_end.saturating_sub(1).saturating_sub(focus_row));
-        for distance in 0..=max_distance {
-            if let Some(row_index) = focus_row.checked_add(distance)
-                && row_index < visible_end
-                && let Some(line) = self.editor_line_at_hunk_row(row_index, file, hunk)
-            {
-                return Some(line);
-            }
-            if distance > 0
-                && let Some(row_index) = focus_row.checked_sub(distance)
-                && row_index >= visible_start
-                && let Some(line) = self.editor_line_at_hunk_row(row_index, file, hunk)
-            {
-                return Some(line);
-            }
-        }
-
-        None
+        find_visible_row_outward(
+            visible_start,
+            visible_end,
+            self.viewport_focus_row(),
+            |row_index| self.editor_line_at_hunk_row(row_index, file, hunk),
+        )
     }
 
     pub(crate) fn editor_line_at_hunk_row(
@@ -2069,15 +2189,22 @@ impl DiffApp {
 
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.replace_visible_files(visible_files, selected_path, relative_scroll, jump_to_grep);
+        self.replace_visible_files(
+            visible_files,
+            selected_path,
+            relative_scroll,
+            jump_to_grep,
+            HunkFocusModelBehavior::PreserveIfValid,
+        );
     }
 
-    pub(crate) fn replace_visible_files(
+    fn replace_visible_files(
         &mut self,
         visible_files: Vec<usize>,
         selected_path: Option<String>,
         relative_scroll: usize,
         jump_to_grep: bool,
+        hunk_focus_behavior: HunkFocusModelBehavior,
     ) {
         let selected_file = selected_path
             .and_then(|path| {
@@ -2092,12 +2219,7 @@ impl DiffApp {
 
         self.stats = diff_stats_for_files(&self.changeset, &visible_files);
         self.max_line_width = changeset_max_line_width_for_files(&self.changeset, &visible_files);
-        self.model = UiModel::new_filtered(
-            &self.changeset,
-            self.layout,
-            &self.context_expansions,
-            &visible_files,
-        );
+        self.replace_model(&visible_files, hunk_focus_behavior);
         self.selected_file = selected_file;
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
@@ -2107,7 +2229,11 @@ impl DiffApp {
             .file_start_row(self.selected_file)
             .map(|start| start.saturating_add(relative_scroll))
             .unwrap_or_default();
-        self.set_scroll(scroll);
+        let scroll_behavior = match hunk_focus_behavior {
+            HunkFocusModelBehavior::PreserveIfValid => HunkFocusScrollBehavior::Preserve,
+            HunkFocusModelBehavior::Clear => HunkFocusScrollBehavior::ClearOnScroll,
+        };
+        self.set_scroll_with_grep_sync(scroll, true, scroll_behavior);
         self.set_horizontal_scroll(self.horizontal_scroll);
         self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
 
@@ -2275,6 +2401,18 @@ impl DiffApp {
                 .copied()
                 .unwrap_or_default()
         };
+
+        if next == self.selected_file {
+            self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
+            self.dirty = true;
+            return;
+        }
+
+        if let Some(row) = self.model.hunk_start_row(next, 0) {
+            self.focus_hunk_row(row);
+            return;
+        }
+
         self.selected_file = next;
         if let Some(row) = self.model.file_start_row(next) {
             self.set_scroll(row);
@@ -2335,14 +2473,69 @@ impl DiffApp {
     }
 
     pub(crate) fn next_hunk(&mut self) {
-        if let Some(row) = self.model.next_hunk_row(self.viewport_focus_row()) {
-            self.set_scroll_centered_on(row);
+        if let Some(row) = self.model.next_hunk_row(self.hunk_navigation_anchor_row()) {
+            self.focus_hunk_row(row);
         }
     }
 
     pub(crate) fn previous_hunk(&mut self) {
-        if let Some(row) = self.model.previous_hunk_row(self.viewport_focus_row()) {
+        if let Some(row) = self
+            .model
+            .previous_hunk_row(self.hunk_navigation_anchor_row())
+        {
+            self.focus_hunk_row(row);
+        }
+    }
+
+    pub(crate) fn move_focused_hunk(&mut self, delta: isize) {
+        let anchor = self.hunk_navigation_anchor_row();
+        let next = if delta < 0 {
+            self.model.previous_hunk_row(anchor)
+        } else {
+            self.model.next_hunk_row(anchor)
+        };
+        if let Some(row) = next {
+            self.focus_hunk_row(row);
+        }
+    }
+
+    pub(crate) fn hunk_navigation_anchor_row(&self) -> usize {
+        if let Some((file, hunk)) = self.focused_hunk_for_viewport(self.viewport_rows)
+            && let Some(row) = self.model.hunk_start_row(file, hunk)
+        {
+            return row;
+        }
+
+        self.viewport_focus_row()
+    }
+
+    pub(crate) fn focus_hunk_row(&mut self, row: usize) {
+        let target_hunk = self.model.row(row).and_then(|row| row.hunk_key());
+        let previous_hunk = self.manual_hunk_focus;
+        self.clear_manual_hunk_focus();
+
+        let Some((file, hunk)) = target_hunk else {
             self.set_scroll_centered_on(row);
+            return;
+        };
+
+        self.set_scroll_focused_on_hunk(file, hunk);
+
+        let visible_start = self.scroll;
+        let visible_end = visible_start
+            .saturating_add(self.viewport_rows)
+            .min(self.model.len());
+        if let Some(row) = self.model.hunk_start_row(file, hunk)
+            && row >= visible_start
+            && row < visible_end
+        {
+            let previous_file = self.selected_file;
+            self.manual_hunk_focus = Some((file, hunk));
+            self.selected_file = file;
+            self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
+            if self.manual_hunk_focus != previous_hunk || self.selected_file != previous_file {
+                self.dirty = true;
+            }
         }
     }
 
@@ -2365,12 +2558,7 @@ impl DiffApp {
         self.layout = layout;
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.model = UiModel::new_filtered(
-            &self.changeset,
-            self.layout,
-            &self.context_expansions,
-            &visible_files,
-        );
+        self.replace_model(&visible_files, HunkFocusModelBehavior::Clear);
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
         self.set_horizontal_scroll(self.horizontal_scroll);
@@ -2455,7 +2643,13 @@ impl DiffApp {
         }
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.replace_visible_files(visible_files, selected_path, relative_scroll, false);
+        self.replace_visible_files(
+            visible_files,
+            selected_path,
+            relative_scroll,
+            false,
+            HunkFocusModelBehavior::Clear,
+        );
         if let Some(notice) = notice {
             self.set_notice(notice);
         }
@@ -2494,6 +2688,83 @@ pub(crate) fn viewport_focus_offset(
     let bottom_ramp = bottom.saturating_sub(distance_to_end);
 
     top_ramp.max(bottom_ramp).min(bottom)
+}
+
+fn hunk_focus_row_range(
+    model: &UiModel,
+    file: usize,
+    hunk: usize,
+) -> Option<(Range<usize>, usize)> {
+    let mut range = model.hunk_row_range(file, hunk)?;
+    let hunk_start = range.start;
+
+    while range.start > 0
+        && model
+            .row(range.start - 1)
+            .is_some_and(row_extends_hunk_focus_before)
+    {
+        range.start -= 1;
+    }
+
+    while range.end < model.len()
+        && model
+            .row(range.end)
+            .is_some_and(row_extends_hunk_focus_after)
+    {
+        range.end += 1;
+    }
+
+    Some((range, hunk_start))
+}
+
+fn row_extends_hunk_focus_before(row: UiRow) -> bool {
+    matches!(
+        row,
+        UiRow::FileHeader(_)
+            | UiRow::Collapsed { .. }
+            | UiRow::ContextLine { .. }
+            | UiRow::ContextHide { .. }
+    )
+}
+
+fn row_extends_hunk_focus_after(row: UiRow) -> bool {
+    matches!(
+        row,
+        UiRow::Collapsed { .. } | UiRow::ContextLine { .. } | UiRow::ContextHide { .. }
+    )
+}
+
+fn find_visible_row_outward<T>(
+    visible_start: usize,
+    visible_end: usize,
+    focus_row: usize,
+    mut find: impl FnMut(usize) -> Option<T>,
+) -> Option<T> {
+    if visible_start >= visible_end {
+        return None;
+    }
+
+    let focus_row = focus_row.clamp(visible_start, visible_end.saturating_sub(1));
+    let max_distance = focus_row
+        .saturating_sub(visible_start)
+        .max(visible_end.saturating_sub(1).saturating_sub(focus_row));
+    for distance in 0..=max_distance {
+        if let Some(row_index) = focus_row.checked_add(distance)
+            && row_index < visible_end
+            && let Some(found) = find(row_index)
+        {
+            return Some(found);
+        }
+        if distance > 0
+            && let Some(row_index) = focus_row.checked_sub(distance)
+            && row_index >= visible_start
+            && let Some(found) = find(row_index)
+        {
+            return Some(found);
+        }
+    }
+
+    None
 }
 
 pub(crate) fn changeset_max_line_width(changeset: &Changeset) -> usize {
