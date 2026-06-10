@@ -57,6 +57,12 @@ enum HunkFocusScrollBehavior {
     ClearOnScroll,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HunkFocusModelBehavior {
+    PreserveIfValid,
+    Clear,
+}
+
 pub(crate) fn run_loop(
     terminal: &mut CrosstermTerminal,
     app: &mut DiffApp,
@@ -899,7 +905,7 @@ impl DiffApp {
             .insert(ContextKey { file, hunk }, next);
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.replace_model(&visible_files);
+        self.replace_model(&visible_files, HunkFocusModelBehavior::PreserveIfValid);
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
         self.set_scroll(self.scroll);
@@ -920,7 +926,7 @@ impl DiffApp {
 
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.replace_model(&visible_files);
+        self.replace_model(&visible_files, HunkFocusModelBehavior::PreserveIfValid);
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
         self.set_scroll(self.scroll);
@@ -1570,17 +1576,23 @@ impl DiffApp {
         self.manual_hunk_focus = None;
     }
 
-    fn replace_model(&mut self, visible_files: &[usize]) {
-        // Manual hunk focus is valid only for the current model. Clear it here
-        // so model rebuilds cannot leave stale focus behind when scroll stays
-        // clamped to the same row.
-        self.clear_manual_hunk_focus();
+    fn replace_model(
+        &mut self,
+        visible_files: &[usize],
+        hunk_focus_behavior: HunkFocusModelBehavior,
+    ) {
+        let previous_manual_hunk_focus = self.manual_hunk_focus;
         self.model = UiModel::new_filtered(
             &self.changeset,
             self.layout,
             &self.context_expansions,
             visible_files,
         );
+        self.manual_hunk_focus = match hunk_focus_behavior {
+            HunkFocusModelBehavior::PreserveIfValid => previous_manual_hunk_focus
+                .filter(|(file, hunk)| self.model.hunk_start_row(*file, *hunk).is_some()),
+            HunkFocusModelBehavior::Clear => None,
+        };
     }
 
     pub(crate) fn set_scroll_centered_on(&mut self, row: usize) {
@@ -2177,15 +2189,22 @@ impl DiffApp {
 
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.replace_visible_files(visible_files, selected_path, relative_scroll, jump_to_grep);
+        self.replace_visible_files(
+            visible_files,
+            selected_path,
+            relative_scroll,
+            jump_to_grep,
+            HunkFocusModelBehavior::PreserveIfValid,
+        );
     }
 
-    pub(crate) fn replace_visible_files(
+    fn replace_visible_files(
         &mut self,
         visible_files: Vec<usize>,
         selected_path: Option<String>,
         relative_scroll: usize,
         jump_to_grep: bool,
+        hunk_focus_behavior: HunkFocusModelBehavior,
     ) {
         let selected_file = selected_path
             .and_then(|path| {
@@ -2200,7 +2219,7 @@ impl DiffApp {
 
         self.stats = diff_stats_for_files(&self.changeset, &visible_files);
         self.max_line_width = changeset_max_line_width_for_files(&self.changeset, &visible_files);
-        self.replace_model(&visible_files);
+        self.replace_model(&visible_files, hunk_focus_behavior);
         self.selected_file = selected_file;
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
@@ -2381,6 +2400,7 @@ impl DiffApp {
 
         if next == self.selected_file {
             self.ensure_file_sidebar_selection_visible(self.visible_file_sidebar_rows());
+            self.dirty = true;
             return;
         }
 
@@ -2534,7 +2554,7 @@ impl DiffApp {
         self.layout = layout;
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.replace_model(&visible_files);
+        self.replace_model(&visible_files, HunkFocusModelBehavior::Clear);
         self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
         self.selected_grep_match = None;
         self.set_horizontal_scroll(self.horizontal_scroll);
@@ -2619,7 +2639,13 @@ impl DiffApp {
         }
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.replace_visible_files(visible_files, selected_path, relative_scroll, false);
+        self.replace_visible_files(
+            visible_files,
+            selected_path,
+            relative_scroll,
+            false,
+            HunkFocusModelBehavior::Clear,
+        );
         if let Some(notice) = notice {
             self.set_notice(notice);
         }
