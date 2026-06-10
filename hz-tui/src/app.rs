@@ -370,6 +370,10 @@ impl DiffApp {
         let context_expansions = HashMap::new();
         let context_cache = HashMap::new();
         let model = UiModel::new(&changeset, layout, &context_expansions);
+        let manual_hunk_focus = model
+            .hunk_start_rows
+            .first()
+            .and_then(|row| model.row(*row).and_then(UiRow::hunk_key));
         let stats = changeset.stats();
         let total_stats = stats.clone();
         let branch_base = default_branch_base(&options, &changeset.repo);
@@ -436,7 +440,7 @@ impl DiffApp {
             viewport_rows: 1,
             viewport_width: 1,
             max_line_width,
-            manual_hunk_focus: None,
+            manual_hunk_focus,
             selected_file: 0,
             file_sidebar_open: false,
             file_sidebar_scroll: 0,
@@ -1568,10 +1572,43 @@ impl DiffApp {
         let Some(mut range) = self.model.hunk_row_range(file, hunk) else {
             return;
         };
-        if range.start > 0
-            && matches!(self.model.row(range.start - 1), Some(UiRow::FileHeader(row_file)) if row_file == file)
-        {
-            range.start -= 1;
+
+        while range.start > 0 {
+            match self.model.row(range.start - 1) {
+                Some(
+                    UiRow::FileHeader(_)
+                    | UiRow::Collapsed { .. }
+                    | UiRow::ContextLine { .. }
+                    | UiRow::ContextHide { .. },
+                ) => range.start -= 1,
+                Some(
+                    UiRow::FileSeparator
+                    | UiRow::BinaryFile(_)
+                    | UiRow::HunkHeader { .. }
+                    | UiRow::UnifiedLine { .. }
+                    | UiRow::SplitLine { .. }
+                    | UiRow::MetaLine { .. },
+                )
+                | None => break,
+            }
+        }
+
+        while range.end < self.model.len() {
+            match self.model.row(range.end) {
+                Some(
+                    UiRow::Collapsed { .. } | UiRow::ContextLine { .. } | UiRow::ContextHide { .. },
+                ) => range.end += 1,
+                Some(
+                    UiRow::FileSeparator
+                    | UiRow::FileHeader(_)
+                    | UiRow::BinaryFile(_)
+                    | UiRow::HunkHeader { .. }
+                    | UiRow::UnifiedLine { .. }
+                    | UiRow::SplitLine { .. }
+                    | UiRow::MetaLine { .. },
+                )
+                | None => break,
+            }
         }
 
         let focus_rows = range.end.saturating_sub(range.start).max(1);

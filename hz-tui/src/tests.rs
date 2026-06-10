@@ -281,6 +281,7 @@ fn bracket_hunk_navigation_can_return_to_first_hunk_in_short_scrollable_diff() {
     app.set_viewport_rows(20);
 
     assert!(app.max_scroll() > 0);
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 0)));
 
     for _ in 0..10 {
         app.previous_hunk();
@@ -331,7 +332,47 @@ fn bracket_hunk_navigation_places_oversized_hunk_at_top() {
 
     app.next_hunk();
 
-    assert_eq!(app.scroll, range.start);
+    assert_eq!(app.scroll, range.start - 1);
+    assert!(matches!(
+        app.model.row(app.scroll),
+        Some(UiRow::Collapsed { .. })
+    ));
+    assert_eq!(
+        app.model.row(app.scroll + 1),
+        Some(UiRow::HunkHeader { file: 0, hunk: 1 })
+    );
+    assert_eq!(app.focused_hunk_for_viewport(9), Some((0, 1)));
+}
+
+#[test]
+fn hunk_navigation_centers_with_surrounding_collapsed_context() {
+    let changeset =
+        changeset_with_hunk_line_counts(PathBuf::from("/repo"), &[(1, 2), (20, 2), (40, 2)]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(9);
+
+    let range = app
+        .model
+        .hunk_row_range(0, 1)
+        .expect("target hunk should have rows");
+    let range_start = range.start - 1;
+    let range_end = range.end + 1;
+    assert!(matches!(
+        app.model.row(range_start),
+        Some(UiRow::Collapsed { .. })
+    ));
+    assert!(matches!(
+        app.model.row(range.end),
+        Some(UiRow::Collapsed { .. })
+    ));
+
+    app.next_hunk();
+
+    let center = range_start.saturating_add(range_end.saturating_sub(range_start + 1) / 2);
+    assert_eq!(
+        app.scroll + viewport_center_offset(app.viewport_rows),
+        center
+    );
     assert_eq!(app.focused_hunk_for_viewport(9), Some((0, 1)));
 }
 
@@ -350,6 +391,32 @@ fn hunk_navigation_keeps_adjacent_file_header_with_oversized_hunk() {
 
     assert_eq!(app.scroll, app.model.file_start_row(0).unwrap());
     assert_eq!(app.model.row(app.scroll), Some(UiRow::FileHeader(0)));
+    assert_eq!(app.focused_hunk_for_viewport(9), Some((0, 0)));
+}
+
+#[test]
+fn hunk_navigation_keeps_file_header_before_collapsed_context() {
+    let changeset = changeset_with_hunk_line_counts(PathBuf::from("/repo"), &[(233, 20)]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(9);
+    app.set_scroll(5);
+
+    let hunk_row = app
+        .model
+        .hunk_start_row(0, 0)
+        .expect("target hunk should have a header row");
+    app.focus_hunk_row(hunk_row);
+
+    assert_eq!(app.scroll, app.model.file_start_row(0).unwrap());
+    assert_eq!(app.model.row(app.scroll), Some(UiRow::FileHeader(0)));
+    assert!(matches!(
+        app.model.row(app.scroll + 1),
+        Some(UiRow::Collapsed { .. })
+    ));
+    assert_eq!(
+        app.model.row(app.scroll + 2),
+        Some(UiRow::HunkHeader { file: 0, hunk: 0 })
+    );
     assert_eq!(app.focused_hunk_for_viewport(9), Some((0, 0)));
 }
 
