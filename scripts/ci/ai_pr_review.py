@@ -369,10 +369,19 @@ def pr_metadata(pr: dict[str, Any]) -> dict[str, str]:
         "author": str((pr.get("user") or {}).get("login", "")),
         "base_ref": str((pr.get("base") or {}).get("ref", "")),
         "base_sha": str((pr.get("base") or {}).get("sha", "")),
+        "base_repo": str(((pr.get("base") or {}).get("repo") or {}).get("full_name", "")),
         "head_ref": str((pr.get("head") or {}).get("ref", "")),
         "head_sha": str((pr.get("head") or {}).get("sha", "")),
         "head_repo": str(((pr.get("head") or {}).get("repo") or {}).get("full_name", "")),
     }
+
+
+def is_untrusted_pull_request_event(metadata: dict[str, str]) -> bool:
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        return False
+    base_repo = metadata["base_repo"] or os.environ.get("GITHUB_REPOSITORY", "")
+    head_repo = metadata["head_repo"]
+    return not base_repo or not head_repo or head_repo != base_repo
 
 
 def command_gate() -> None:
@@ -400,6 +409,12 @@ def command_gate() -> None:
     author = metadata["author"]
     if not enabled_users:
         log("AI review allowlist is empty; skipping.")
+        set_output("should_review", "false")
+    elif is_untrusted_pull_request_event(metadata):
+        log(
+            "AI review skipped: fork pull_request events do not receive review secrets "
+            "or a writable token; run workflow_dispatch after maintainer review."
+        )
         set_output("should_review", "false")
     elif author not in enabled_users and not override:
         log(f"AI review skipped: PR author @{author} is not allowlisted.")
