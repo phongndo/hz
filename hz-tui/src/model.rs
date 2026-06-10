@@ -68,23 +68,6 @@ impl UiRow {
     pub(crate) fn is_hunk_row(self, file: usize, hunk: usize) -> bool {
         self.hunk_key() == Some((file, hunk))
     }
-
-    pub(crate) fn extends_hunk_focus_before(self) -> bool {
-        matches!(
-            self,
-            Self::FileHeader(_)
-                | Self::Collapsed { .. }
-                | Self::ContextLine { .. }
-                | Self::ContextHide { .. }
-        )
-    }
-
-    pub(crate) fn extends_hunk_focus_after(self) -> bool {
-        matches!(
-            self,
-            Self::Collapsed { .. } | Self::ContextLine { .. } | Self::ContextHide { .. }
-        )
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -392,33 +375,6 @@ impl UiModel {
             })
             .unwrap_or(self.rows.len());
         Some(start..end)
-    }
-
-    pub(crate) fn hunk_focus_row_range(
-        &self,
-        file: usize,
-        hunk: usize,
-    ) -> Option<(Range<usize>, usize)> {
-        let mut range = self.hunk_row_range(file, hunk)?;
-        let hunk_start = range.start;
-
-        while range.start > 0
-            && self
-                .row(range.start - 1)
-                .is_some_and(UiRow::extends_hunk_focus_before)
-        {
-            range.start -= 1;
-        }
-
-        while range.end < self.rows.len()
-            && self
-                .row(range.end)
-                .is_some_and(UiRow::extends_hunk_focus_after)
-        {
-            range.end += 1;
-        }
-
-        Some((range, hunk_start))
     }
 }
 

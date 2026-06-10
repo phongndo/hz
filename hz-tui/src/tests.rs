@@ -219,6 +219,35 @@ fn j_and_k_move_hunk_focus_when_diff_fits_viewport() {
 }
 
 #[test]
+fn arrow_keys_move_hunk_focus_when_diff_fits_viewport() {
+    assert_key_pair_moves_hunk_focus_when_diff_fits_viewport(KeyCode::Down, KeyCode::Up);
+}
+
+#[test]
+fn page_keys_move_hunk_focus_when_diff_fits_viewport() {
+    assert_key_pair_moves_hunk_focus_when_diff_fits_viewport(KeyCode::PageDown, KeyCode::PageUp);
+    assert_key_pair_moves_hunk_focus_when_diff_fits_viewport(
+        KeyCode::Char('d'),
+        KeyCode::Char('u'),
+    );
+}
+
+#[test]
+fn arrow_keys_scroll_then_move_hunk_focus_at_edges_in_scrollable_diff() {
+    assert_key_pair_scrolls_then_moves_hunk_focus_at_edges(KeyCode::Down, KeyCode::Up, 1);
+}
+
+#[test]
+fn page_keys_scroll_then_move_hunk_focus_at_edges_in_scrollable_diff() {
+    assert_key_pair_scrolls_then_moves_hunk_focus_at_edges(KeyCode::PageDown, KeyCode::PageUp, 20);
+    assert_key_pair_scrolls_then_moves_hunk_focus_at_edges(
+        KeyCode::Char('d'),
+        KeyCode::Char('u'),
+        20,
+    );
+}
+
+#[test]
 fn j_and_k_scroll_then_move_hunk_focus_at_edges_in_scrollable_diff() {
     let changeset = changeset_with_files(&[
         "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs",
@@ -3764,6 +3793,80 @@ fn visible_hunk_keys(app: &DiffApp) -> Vec<(usize, usize)> {
         }
     }
     hunks
+}
+
+fn assert_key_pair_moves_hunk_focus_when_diff_fits_viewport(forward: KeyCode, backward: KeyCode) {
+    let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[1, 2, 3]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(20);
+
+    assert_eq!(app.max_scroll(), 0);
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 0)));
+
+    app.handle_key(KeyEvent::new(forward, KeyModifiers::NONE))
+        .expect("forward key should be handled");
+    assert_eq!(app.scroll, 0);
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 1)));
+
+    app.handle_key(KeyEvent::new(forward, KeyModifiers::NONE))
+        .expect("forward key should be handled");
+    assert_eq!(app.scroll, 0);
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 2)));
+
+    app.handle_key(KeyEvent::new(backward, KeyModifiers::NONE))
+        .expect("backward key should be handled");
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 1)));
+
+    app.handle_key(KeyEvent::new(backward, KeyModifiers::NONE))
+        .expect("backward key should be handled");
+    assert_eq!(app.scroll, 0);
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 0)));
+}
+
+fn assert_key_pair_scrolls_then_moves_hunk_focus_at_edges(
+    forward: KeyCode,
+    backward: KeyCode,
+    scroll_delta: usize,
+) {
+    let changeset = changeset_with_files(&[
+        "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs",
+    ]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(6);
+
+    assert!(app.max_scroll() >= scroll_delta);
+    app.handle_key(KeyEvent::new(forward, KeyModifiers::NONE))
+        .expect("forward key should be handled");
+    assert_eq!(app.scroll, scroll_delta);
+    assert_eq!(app.manual_hunk_focus, None);
+
+    app.handle_key(KeyEvent::new(backward, KeyModifiers::NONE))
+        .expect("backward key should be handled");
+    assert_eq!(app.scroll, 0);
+    assert_eq!(app.manual_hunk_focus, None);
+
+    let top_hunks = visible_hunk_keys(&app);
+    assert!(top_hunks.len() >= 2);
+    app.manual_hunk_focus = Some(top_hunks[1]);
+    app.handle_key(KeyEvent::new(backward, KeyModifiers::NONE))
+        .expect("backward key should be handled");
+    assert_eq!(app.scroll, 0);
+    assert_eq!(
+        app.focused_hunk_for_viewport(app.viewport_rows),
+        Some(top_hunks[0])
+    );
+
+    app.set_scroll(app.max_scroll());
+    let bottom_scroll = app.scroll;
+    let bottom_hunks = visible_hunk_keys(&app);
+    assert!(bottom_hunks.len() >= 2);
+    let previous = bottom_hunks[bottom_hunks.len() - 2];
+    let next = bottom_hunks[bottom_hunks.len() - 1];
+    app.manual_hunk_focus = Some(previous);
+    app.handle_key(KeyEvent::new(forward, KeyModifiers::NONE))
+        .expect("forward key should be handled");
+    assert_eq!(app.scroll, bottom_scroll);
+    assert_eq!(app.focused_hunk_for_viewport(app.viewport_rows), Some(next));
 }
 
 fn mouse_scroll(app: &mut DiffApp, kind: MouseEventKind) {

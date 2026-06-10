@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    ops::Range,
     sync::{Arc, mpsc::Receiver},
     time::{Duration, Instant},
 };
@@ -49,6 +50,12 @@ use crate::{
 };
 
 const MOUSE_HUNK_FOCUS_SCROLL_TICKS: isize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HunkFocusScrollBehavior {
+    Preserve,
+    ClearOnScroll,
+}
 
 pub(crate) fn run_loop(
     terminal: &mut CrosstermTerminal,
@@ -1566,21 +1573,28 @@ impl DiffApp {
     }
 
     pub(crate) fn set_scroll(&mut self, scroll: usize) {
-        self.set_scroll_with_grep_sync(scroll, true);
+        self.set_scroll_with_grep_sync(scroll, true, HunkFocusScrollBehavior::ClearOnScroll);
     }
 
     pub(crate) fn set_scroll_centered_on(&mut self, row: usize) {
         let center_offset = viewport_center_offset(self.viewport_rows);
-        self.set_scroll_with_grep_sync(row.saturating_sub(center_offset), false);
+        self.set_scroll_with_grep_sync(
+            row.saturating_sub(center_offset),
+            false,
+            HunkFocusScrollBehavior::ClearOnScroll,
+        );
     }
 
     pub(crate) fn set_scroll_focused_on_hunk(&mut self, file: usize, hunk: usize) {
-        let Some((range, hunk_start)) = self.model.hunk_focus_row_range(file, hunk) else {
+        let Some((range, hunk_start)) = hunk_focus_row_range(&self.model, file, hunk) else {
             return;
         };
 
         let focus_rows = range.end.saturating_sub(range.start).max(1);
         let scroll = if focus_rows > self.viewport_rows {
+            // Oversized focus ranges cannot be fully centered. Keep the first
+            // useful context row when possible, but never so much context that
+            // the hunk header itself falls below the viewport.
             range.start.max(
                 hunk_start
                     .saturating_add(1)
@@ -1590,7 +1604,7 @@ impl DiffApp {
             let focus_center = range.start.saturating_add(focus_rows.saturating_sub(1) / 2);
             focus_center.saturating_sub(viewport_center_offset(self.viewport_rows))
         };
-        self.set_scroll_with_grep_sync(scroll, false);
+        self.set_scroll_with_grep_sync(scroll, false, HunkFocusScrollBehavior::Preserve);
     }
 
     fn focused_hunk_in_visible_range(
@@ -1617,11 +1631,18 @@ impl DiffApp {
         }
     }
 
-    pub(crate) fn set_scroll_with_grep_sync(&mut self, scroll: usize, sync_grep: bool) {
+    fn set_scroll_with_grep_sync(
+        &mut self,
+        scroll: usize,
+        sync_grep: bool,
+        hunk_focus_behavior: HunkFocusScrollBehavior,
+    ) {
         let previous_scroll = self.scroll;
         let previous_file = self.selected_file;
         self.scroll = scroll.min(self.max_scroll());
-        if self.scroll != previous_scroll {
+        if self.scroll != previous_scroll
+            && hunk_focus_behavior == HunkFocusScrollBehavior::ClearOnScroll
+        {
             self.manual_hunk_focus = None;
         }
         if let Some(file) = self.model.file_at_row(self.scroll) {
@@ -2637,6 +2658,50 @@ pub(crate) fn viewport_focus_offset(
     let bottom_ramp = bottom.saturating_sub(distance_to_end);
 
     top_ramp.max(bottom_ramp).min(bottom)
+}
+
+fn hunk_focus_row_range(
+    model: &UiModel,
+    file: usize,
+    hunk: usize,
+) -> Option<(Range<usize>, usize)> {
+    let mut range = model.hunk_row_range(file, hunk)?;
+    let hunk_start = range.start;
+
+    while range.start > 0
+        && model
+            .row(range.start - 1)
+            .is_some_and(row_extends_hunk_focus_before)
+    {
+        range.start -= 1;
+    }
+
+    while range.end < model.len()
+        && model
+            .row(range.end)
+            .is_some_and(row_extends_hunk_focus_after)
+    {
+        range.end += 1;
+    }
+
+    Some((range, hunk_start))
+}
+
+fn row_extends_hunk_focus_before(row: UiRow) -> bool {
+    matches!(
+        row,
+        UiRow::FileHeader(_)
+            | UiRow::Collapsed { .. }
+            | UiRow::ContextLine { .. }
+            | UiRow::ContextHide { .. }
+    )
+}
+
+fn row_extends_hunk_focus_after(row: UiRow) -> bool {
+    matches!(
+        row,
+        UiRow::Collapsed { .. } | UiRow::ContextLine { .. } | UiRow::ContextHide { .. }
+    )
 }
 
 fn find_visible_row_outward<T>(
