@@ -101,6 +101,93 @@ jobs:
           test "$(git rev-parse HEAD)" = "$HEAD_SHA"
           git merge-base "origin/${BASE_REF}" HEAD >/dev/null
 
+      - name: Prepare trusted AI review driver
+        if: steps.gate.outputs.should_review == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          import py_compile
+          import re
+          import textwrap
+          from pathlib import Path
+
+          review_dir = Path(os.environ["RUNNER_TEMP"]) / "ai-review"
+          script_path = review_dir / "ai_pr_review.py"
+          config_path = review_dir / "ai-review.yml"
+
+          script = script_path.read_text(encoding="utf-8")
+          if 'f"@{prompt_file.name}"' not in script:
+              if "import tempfile\n" not in script:
+                  script = script.replace("import sys\n", "import sys\nimport tempfile\n", 1)
+              start = script.index("def run_pi(")
+              end = script.index("\n\ndef reviewer_prompt", start)
+              replacement = textwrap.dedent('''
+                  def run_pi(prompt: str, model: str, label: str, *, thinking: str = "low") -> str:
+                      log(f"Running {label} with {model}")
+                      with tempfile.NamedTemporaryFile(
+                          "w", encoding="utf-8", prefix="ai-pr-review-prompt-", suffix=".md"
+                      ) as prompt_file:
+                          prompt_file.write(prompt)
+                          prompt_file.flush()
+                          command = [
+                              "pi",
+                              "--no-session",
+                              "--no-extensions",
+                              "--no-skills",
+                              "--no-prompt-templates",
+                              "--no-context-files",
+                              "--no-tools",
+                              "--no-approve",
+                              "--system-prompt",
+                              READ_ONLY_SYSTEM_PROMPT,
+                              "--model",
+                              model,
+                              "--thinking",
+                              thinking,
+                              "-p",
+                              f"@{prompt_file.name}",
+                          ]
+                          result = subprocess.run(
+                              command,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,
+                              text=True,
+                              errors="replace",
+                              env=pi_env(),
+                              timeout=900,
+                          )
+                      if result.stderr.strip():
+                          sys.stderr.write(result.stderr)
+                      if result.returncode != 0:
+                          raise RuntimeError(f"Pi {label} failed with exit code {result.returncode}")
+                      return result.stdout.strip()
+              ''').strip("\n")
+              script = script[:start] + replacement + script[end:]
+              script_path.write_text(script, encoding="utf-8")
+          py_compile.compile(str(script_path), doraise=True)
+
+          config = config_path.read_text(encoding="utf-8")
+          config = re.sub(r"(?m)^  fast: .*$", "  fast: opencode-go/deepseek-v4-flash", config)
+          config = re.sub(r"(?m)^  serious: .*$", "  serious: opencode-go/deepseek-v4-pro", config)
+          if re.search(r"(?m)^  dedupe:", config):
+              config = re.sub(r"(?m)^  dedupe: .*$", "  dedupe: opencode-go/deepseek-v4-pro", config)
+          else:
+              config = re.sub(
+                  r"(?m)^(  serious: opencode-go/deepseek-v4-pro)$",
+                  "\\1\n  dedupe: opencode-go/deepseek-v4-pro",
+                  config,
+                  count=1,
+              )
+          config = re.sub(r"(?m)^  judge: .*$", "  judge: opencode-go/deepseek-v4-pro", config)
+          if re.search(r"(?m)^  sticky_comment:", config):
+              config = re.sub(r"(?m)^  sticky_comment: .*$", "  sticky_comment: false", config)
+          else:
+              config = config.rstrip() + "\n  sticky_comment: false\n"
+          config_path.write_text(config, encoding="utf-8")
+          PY
+
       - name: Setup Node.js
         if: steps.gate.outputs.should_review == 'true'
         uses: actions/setup-node@v6
