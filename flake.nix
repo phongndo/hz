@@ -59,7 +59,17 @@ set -eu
 repo="''${HZ_DEV_ROOT:?HZ_DEV_ROOT is not set}"
 binary="$repo/target/debug/hz"
 
+needs_build=0
 if [ ! -x "$binary" ]; then
+  needs_build=1
+else
+  newer_source="$(find "$repo" \( -path "$repo/target" -o -path "$repo/.git" \) -prune -o -type f \( -name '*.rs' -o -name Cargo.toml -o -name Cargo.lock \) -newer "$binary" -print | sed -n '1p')"
+  if [ -n "$newer_source" ]; then
+    needs_build=1
+  fi
+fi
+
+if [ "$needs_build" -eq 1 ]; then
   echo "hz dev shim: building hz-cli..." >&2
   (cd "$repo" && cargo build -p hz-cli --locked >&2)
 fi
