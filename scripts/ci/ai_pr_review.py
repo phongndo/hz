@@ -5,7 +5,7 @@ This CI driver intentionally keeps the trusted orchestration small:
 - gate on a repo-owned allowlist;
 - collect only the PR diff plus changed-file surrounding context via git;
 - invoke Pi in read-only/no-tool print mode for focused review passes;
-- run a final verification pass before posting one sticky PR comment.
+- post a one-time PR summary and findings-only review comments.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from typing import Any
 
 
 MARKER = "<!-- ai-pr-review -->"
+SUMMARY_MARKER = "<!-- ai-pr-summary -->"
 INLINE_MARKER = "<!-- ai-pr-review:inline -->"
 VALID_MODES = {"fast", "balanced", "deep"}
 SEVERITIES = ("blocker", "high", "medium", "low")
@@ -43,9 +44,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "enabled_users": ["phongndo"],
     "provider": {"runtime": "pi", "model_source": "opencode-go"},
     "models": {
-        "fast": "opencode-go/mimo-v2.5",
+        "fast": "opencode-go/deepseek-v4-flash",
         "serious": "opencode-go/deepseek-v4-pro",
-        "judge": "opencode-go/mimo-v2.5-pro",
+        "dedupe": "opencode-go/deepseek-v4-pro",
+        "judge": "opencode-go/deepseek-v4-pro",
     },
     "mode": "balanced",
     "agents": {
@@ -62,7 +64,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_findings": 12,
         "post_low_severity": False,
     },
-    "github": {"sticky_comment": True, "inline_comments": True},
+    "github": {"summary_comment": True, "sticky_comment": False, "inline_comments": True},
 }
 
 REVIEWER_FOCUS: dict[str, list[str]] = {
@@ -130,7 +132,6 @@ FINDING_SCHEMA = """
 
 VERIFICATION_SCHEMA = """
 {
-  "pr_summary": "Concise summary of what this pull request changes",
   "overall_confidence": 0.0,
   "accepted_findings": [
     {
@@ -153,6 +154,14 @@ VERIFICATION_SCHEMA = """
       "reason": "duplicate | speculative | style-only | unsupported | already-handled | too-low-severity"
     }
   ]
+}
+""".strip()
+
+SUMMARY_SCHEMA = """
+{
+  "pr_summary": "Concise summary of what this pull request changes",
+  "notable_changes": ["Short bullet describing an important changed area"],
+  "risk_notes": "Concise risk or reviewer note, or an empty string"
 }
 """.strip()
 
@@ -643,23 +652,23 @@ def build_context(base_ref: str, head_ref: str) -> dict[str, Any]:
     }
 
 
-def model_for_category(config: dict[str, Any], mode: str, category: str) -> str:
+def reviewer_model(config: dict[str, Any]) -> str:
     models = config.get("models", {})
-    if mode == "fast":
-        return str(models.get("fast"))
-    if mode == "deep":
-        return str(models.get("serious") or models.get("fast"))
-    return str(models.get("fast"))
+    return str(models.get("fast") or "opencode-go/deepseek-v4-flash")
+
+
+def model_for_category(config: dict[str, Any], mode: str, category: str) -> str:
+    return reviewer_model(config)
 
 
 def verification_model(config: dict[str, Any]) -> str:
     models = config.get("models", {})
-    return str(models.get("judge") or models.get("serious") or models.get("fast"))
+    return str(models.get("judge") or models.get("dedupe") or "opencode-go/deepseek-v4-pro")
 
 
 def serious_model(config: dict[str, Any]) -> str:
     models = config.get("models", {})
-    return str(models.get("serious") or models.get("fast"))
+    return str(models.get("dedupe") or models.get("serious") or "opencode-go/deepseek-v4-pro")
 
 
 def mode_max_findings(config: dict[str, Any], mode: str) -> int:
@@ -778,7 +787,7 @@ def verification_prompt(findings: list[dict[str, Any]], context_text: str, max_f
         f"""
         You are the final verification reviewer for this pull request.
 
-        Your job is to reduce noise before CI posts a sticky GitHub PR comment.
+        Your job is to reduce noise before CI posts GitHub review comments.
         Verify the candidate findings against the supplied PR diff and nearby context.
 
         Requirements:
@@ -791,7 +800,6 @@ def verification_prompt(findings: list[dict[str, Any]], context_text: str, max_f
         - Lower severity when appropriate.
         - Do not invent new unrelated issues unless you discover a clear blocker while verifying an existing finding.
         - Prefer a short high-signal review.
-        - Write a concise PR summary from the supplied diff and context.
         - Set overall_confidence from 0.00 to 1.00 for the final review result, including a no-findings result.
         - Return at most {max_findings} accepted findings.
 
@@ -802,6 +810,26 @@ def verification_prompt(findings: list[dict[str, Any]], context_text: str, max_f
         ```json
         {json.dumps(findings, indent=2, sort_keys=True)}
         ```
+
+        PR context:
+        {context_text}
+        """
+    ).strip()
+
+
+def summary_prompt(context_text: str) -> str:
+    return textwrap.dedent(
+        f"""
+        You are writing the one-time PR summary comment for this pull request.
+
+        Requirements:
+        - Summarize only what changed in the supplied PR diff and nearby context.
+        - Do not report review findings, issues, suggestions, or required fixes.
+        - Be concise and useful to a human reviewer.
+        - Return at most 5 notable_changes bullets.
+
+        Return JSON only: an object matching this schema:
+        {SUMMARY_SCHEMA}
 
         PR context:
         {context_text}
@@ -950,6 +978,22 @@ def parse_verification_response(text: str) -> dict[str, Any]:
     }
 
 
+def parse_summary_response(text: str) -> dict[str, Any]:
+    value = extract_json(text)
+    if not isinstance(value, dict):
+        raise ValueError("summary response must be a JSON object")
+    notable_value = value.get("notable_changes", [])
+    if isinstance(notable_value, list):
+        notable_changes = [clean_string(item, 240) for item in notable_value if clean_string(item, 240)]
+    else:
+        notable_changes = [clean_string(notable_value, 240)] if clean_string(notable_value, 240) else []
+    return {
+        "pr_summary": clean_string(value.get("pr_summary") or value.get("summary"), 1200),
+        "notable_changes": notable_changes[:5],
+        "risk_notes": clean_string(value.get("risk_notes"), 800),
+    }
+
+
 def dedupe_key(finding: dict[str, Any]) -> str:
     title = re.sub(r"[^a-z0-9]+", " ", finding["title"].lower()).strip()
     return f"{finding['category']}|{finding['file']}|{title}"
@@ -1044,10 +1088,6 @@ def copyable_findings_block(findings: list[dict[str, Any]]) -> list[str]:
     ]
 
 
-def confidence_percent(confidence: float) -> str:
-    return f"{round(parse_confidence(confidence) * 100):d}%"
-
-
 def fallback_pr_summary(changed_files: list[dict[str, str]]) -> str:
     if not changed_files:
         return "No changed files were present in the reviewed diff."
@@ -1064,6 +1104,40 @@ def fallback_pr_summary(changed_files: list[dict[str, str]]) -> str:
             parts.append(f"{count} {label}")
     status_summary = ", ".join(parts) if parts else f"{len(paths)} changed"
     return f"Reviewed {len(paths)} changed file(s) ({status_summary}): {sample}."
+
+
+def render_summary_comment(
+    *,
+    author: str,
+    reviewed_diff: str,
+    summary: dict[str, Any],
+) -> str:
+    lines = [
+        SUMMARY_MARKER,
+        "",
+        "## AI PR Summary",
+        "",
+        f"Author: @{author}",
+        f"Reviewed diff: {reviewed_diff}",
+        "",
+        markdown_escape(str(summary.get("pr_summary") or "")),
+        "",
+    ]
+    notable_changes = summary.get("notable_changes") or []
+    if notable_changes:
+        lines.extend(["### Notable changes", ""])
+        lines.extend(f"- {markdown_escape(str(item))}" for item in notable_changes)
+        lines.append("")
+    risk_notes = markdown_escape(str(summary.get("risk_notes") or ""))
+    if risk_notes:
+        lines.extend(["### Reviewer note", "", risk_notes, ""])
+    lines.extend(
+        [
+            "---",
+            "Generated once when AI review first saw this PR. Later pushes run findings-only review comments.",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def inline_commentable(finding: dict[str, Any], commentable_lines: dict[str, set[int]]) -> bool:
@@ -1094,45 +1168,17 @@ def render_comment(
     *,
     author: str,
     reviewed_diff: str,
-    pr_summary: str,
-    overall_confidence: float,
     findings: list[dict[str, Any]],
-    hidden_low: list[dict[str, Any]],
-    rejected: list[dict[str, str]],
-    inline_comment_count: int,
 ) -> str:
-    counts = Counter(finding["severity"] for finding in findings)
     lines = [
         MARKER,
         "",
-        "## AI PR Review",
+        "## AI PR Review Findings",
         "",
         f"Author: @{author}",
         f"Reviewed diff: {reviewed_diff}",
         "",
-        "### PR Summary",
-        "",
-        markdown_escape(pr_summary),
-        "",
-        "### Review Result",
-        "",
-        f"- Overall confidence: {confidence_percent(overall_confidence)}",
-        f"- Blocker: {counts.get('blocker', 0)}",
-        f"- High: {counts.get('high', 0)}",
-        f"- Medium: {counts.get('medium', 0)}",
-        f"- Low hidden: {len(hidden_low)}",
-        f"- Rejected during verification: {len(rejected)}",
-        f"- Inline GitHub review comments: {inline_comment_count}",
-        "",
     ]
-
-    if not findings:
-        lines.extend(
-            [
-                f"No findings above the configured confidence threshold were found. Confidence: {confidence_percent(overall_confidence)}.",
-                "",
-            ]
-        )
 
     heading = {"blocker": "Blocker", "high": "High", "medium": "Medium", "low": "Low"}
     for severity in SEVERITIES:
@@ -1223,27 +1269,75 @@ def post_inline_review(
     return len(comments)
 
 
-def post_sticky_comment(pr_number: str, body: str) -> None:
+def find_issue_comment_id(pr_number: str, marker: str) -> int | None:
     page = 1
-    existing_id: int | None = None
     while True:
         comments = github_request("GET", f"issues/{pr_number}/comments?per_page=100&page={page}")
         if not comments:
             break
         for comment in comments:
-            if MARKER in str(comment.get("body", "")):
-                existing_id = int(comment["id"])
-                break
-        if existing_id is not None:
-            break
+            if marker in str(comment.get("body", "")):
+                return int(comment["id"])
         page += 1
+    return None
+
+
+def delete_issue_comment(pr_number: str, marker: str) -> bool:
+    existing_id = find_issue_comment_id(pr_number, marker)
+    if existing_id is None:
+        return False
+    github_request("DELETE", f"issues/comments/{existing_id}")
+    return True
+
+
+def post_sticky_comment(pr_number: str, body: str, *, marker: str = MARKER) -> None:
+    existing_id = find_issue_comment_id(pr_number, marker)
 
     if existing_id is None:
         github_request("POST", f"issues/{pr_number}/comments", {"body": body})
-        log("Created AI PR review sticky comment.")
+        log("Created AI PR comment.")
     else:
         github_request("PATCH", f"issues/comments/{existing_id}", {"body": body})
-        log("Updated AI PR review sticky comment.")
+        log("Updated AI PR comment.")
+
+
+def command_summary() -> None:
+    config = load_config()
+    github_config = config.get("github") or {}
+    if not as_bool(github_config.get("summary_comment", True)):
+        log("One-time PR summary comment disabled by configuration.")
+        return
+    ensure_credentials(config)
+
+    pr_number = os.environ.get("AI_REVIEW_PR_NUMBER", "")
+    author = os.environ.get("AI_REVIEW_AUTHOR", "")
+    base_ref = os.environ.get("AI_REVIEW_BASE_REF", "")
+    head_ref = os.environ.get("AI_REVIEW_HEAD_REF", "")
+    if not pr_number or not base_ref:
+        raise SystemExit("AI_REVIEW_PR_NUMBER and AI_REVIEW_BASE_REF are required")
+
+    if find_issue_comment_id(pr_number, SUMMARY_MARKER) is not None:
+        log("One-time AI PR summary already exists; skipping.")
+        return
+
+    context = build_context(base_ref, head_ref)
+    response = run_pi(
+        summary_prompt(context["text"]),
+        reviewer_model(config),
+        "one-time PR summary",
+        thinking="low",
+    )
+    summary = parse_summary_response(response)
+    if not summary.get("pr_summary"):
+        summary["pr_summary"] = fallback_pr_summary(context["changed_files"])
+    reviewed_diff = clean_string(context.get("head_subject"), 240) or clean_string(
+        head_ref or base_ref or "HEAD", 240
+    )
+    post_sticky_comment(
+        pr_number,
+        render_summary_comment(author=author, reviewed_diff=reviewed_diff, summary=summary),
+        marker=SUMMARY_MARKER,
+    )
 
 
 def command_review() -> None:
@@ -1302,61 +1396,61 @@ def command_review() -> None:
         thinking="medium" if mode != "deep" else "high",
     )
     verified = parse_verification_response(verification_response)
-    visible, hidden_low, rejected = filter_verified_findings(
+    visible, _hidden_low, _rejected = filter_verified_findings(
         verified,
         changed_paths=changed_paths,
         min_confidence=min_confidence,
         max_findings=max_findings,
         post_low=post_low,
     )
-    overall_confidence = parse_confidence(verified.get("overall_confidence"), 0.0)
-    if overall_confidence <= 0.0:
-        if visible:
-            overall_confidence = sum(finding["confidence"] for finding in visible) / len(visible)
-        else:
-            overall_confidence = min_confidence
-    pr_summary = clean_string(verified.get("pr_summary"), 1200) or fallback_pr_summary(context["changed_files"])
     reviewed_diff = clean_string(context.get("head_subject"), 240) or clean_string(
         head_ref or base_ref or "HEAD", 240
     )
 
     github_config = config.get("github") or {}
-    inline_count = 0
+    inline_failed = False
     if as_bool(github_config.get("inline_comments", False)):
         try:
-            inline_count = post_inline_review(
+            post_inline_review(
                 pr_number,
                 context["head_sha"],
                 visible,
                 context["commentable_lines"],
             )
         except Exception as error:
+            inline_failed = True
             log(f"Could not post inline GitHub review comments: {error}")
 
-    body = render_comment(
-        author=author,
-        reviewed_diff=reviewed_diff,
-        pr_summary=pr_summary,
-        overall_confidence=overall_confidence,
-        findings=visible,
-        hidden_low=hidden_low,
-        rejected=rejected,
-        inline_comment_count=inline_count,
-    )
-    if as_bool(github_config.get("sticky_comment", True)):
-        post_sticky_comment(pr_number, body)
+    sticky_enabled = as_bool(github_config.get("sticky_comment", False))
+    if sticky_enabled or inline_failed or not as_bool(github_config.get("inline_comments", False)):
+        issue_findings = visible
     else:
-        log("Sticky PR comment disabled by configuration.")
+        issue_findings = [
+            finding
+            for finding in visible
+            if not inline_commentable(finding, context["commentable_lines"])
+        ]
+
+    if issue_findings:
+        body = render_comment(author=author, reviewed_diff=reviewed_diff, findings=issue_findings)
+        post_sticky_comment(pr_number, body)
+    elif delete_issue_comment(pr_number, MARKER):
+        log("Deleted stale AI PR review findings comment.")
+    else:
+        log("No AI review findings to comment.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Repo-local AI PR review CI driver")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("gate", help="Check allowlist and emit GitHub Actions outputs")
-    subparsers.add_parser("review", help="Run Pi review agents and post sticky PR comment")
+    subparsers.add_parser("summary", help="Post the one-time AI PR summary comment")
+    subparsers.add_parser("review", help="Run Pi review agents and post findings-only comments")
     args = parser.parse_args()
     if args.command == "gate":
         command_gate()
+    elif args.command == "summary":
+        command_summary()
     elif args.command == "review":
         command_review()
 

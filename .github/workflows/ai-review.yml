@@ -85,104 +85,6 @@ jobs:
         if: steps.trusted.outputs.available != 'true' || steps.gate.outputs.should_review != 'true'
         run: echo "AI review skipped."
 
-      - name: Post bootstrap review comment
-        if: steps.trusted.outputs.available != 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        shell: bash
-        run: |
-          python3 <<'PY'
-          import json
-          import os
-          import urllib.request
-
-          marker = "<!-- ai-pr-review -->"
-          repo = os.environ["GITHUB_REPOSITORY"]
-          token = os.environ["GITHUB_TOKEN"]
-          pr_number = os.environ["PR_NUMBER"]
-
-          def request(method, path, payload=None):
-              url = f"https://api.github.com/repos/{repo}/{path.lstrip('/')}"
-              data = None if payload is None else json.dumps(payload).encode("utf-8")
-              req = urllib.request.Request(url, data=data, method=method)
-              req.add_header("Accept", "application/vnd.github+json")
-              req.add_header("Authorization", f"Bearer {token}")
-              req.add_header("Content-Type", "application/json")
-              req.add_header("User-Agent", "hz-pr-review-bootstrap")
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  body = response.read()
-                  return None if not body else json.loads(body.decode("utf-8"))
-
-          files = []
-          page = 1
-          while True:
-              batch = request("GET", f"pulls/{pr_number}/files?per_page=100&page={page}")
-              if not batch:
-                  break
-              files.extend(batch)
-              page += 1
-
-          changed = len(files)
-          additions = sum(int(item.get("additions", 0)) for item in files)
-          deletions = sum(int(item.get("deletions", 0)) for item in files)
-          notable = ", ".join(item.get("filename", "") for item in files[:6]) or "no changed files"
-          if changed > 6:
-              notable += f", and {changed - 6} more"
-
-          def text(value):
-              return str(value).replace("```", "'''")
-
-          body = "\n".join(
-              [
-                  marker,
-                  "",
-                  "## AI PR Review",
-                  "",
-                  f"Author: @{os.environ['PR_AUTHOR']}",
-                  f"Reviewed diff: {text(os.environ['PR_TITLE'])}",
-                  "",
-                  "### PR Summary",
-                  "",
-                  f"This PR is titled: {text(os.environ['PR_TITLE'])}",
-                  f"It changes {changed} file(s) with +{additions}/-{deletions} lines.",
-                  f"Notable files: {text(notable)}.",
-                  "",
-                  "### Review Result",
-                  "",
-                  "No findings were produced. Confidence: 0%.",
-                  "",
-                  "The full review did not run because this PR introduces the trusted review driver and settings; the base branch does not contain them yet. After this lands, future PRs will run the full review and update this sticky comment with verified findings and a model-generated PR summary.",
-                  "",
-                  "---",
-                  "Scope: bootstrap status only; no model review was run for this initial rollout PR.",
-                  "",
-              ]
-          )
-
-          existing_id = None
-          page = 1
-          while True:
-              comments = request("GET", f"issues/{pr_number}/comments?per_page=100&page={page}")
-              if not comments:
-                  break
-              for comment in comments:
-                  if marker in str(comment.get("body", "")):
-                      existing_id = comment["id"]
-                      break
-              if existing_id is not None:
-                  break
-              page += 1
-
-          if existing_id is None:
-              request("POST", f"issues/{pr_number}/comments", {"body": body})
-          else:
-              request("PATCH", f"issues/comments/{existing_id}", {"body": body})
-          PY
-
       - name: Check out PR head with full history
         if: steps.gate.outputs.should_review == 'true'
         env:
@@ -199,69 +101,6 @@ jobs:
           test "$(git rev-parse HEAD)" = "$HEAD_SHA"
           git merge-base "origin/${BASE_REF}" HEAD >/dev/null
 
-      - name: Backport trusted reviewer prompt-file fix
-        if: steps.gate.outputs.should_review == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 <<'PY'
-          import os
-          import py_compile
-          import textwrap
-          from pathlib import Path
-
-          path = Path(os.environ["RUNNER_TEMP"]) / "ai-review" / "ai_pr_review.py"
-          text = path.read_text(encoding="utf-8")
-          if 'f"@{prompt_file.name}"' not in text:
-              text = text.replace("import sys\n", "import sys\nimport tempfile\n", 1)
-              start = text.index("def run_pi(")
-              end = text.index("\n\ndef reviewer_prompt", start)
-              replacement = textwrap.dedent('''
-                  def run_pi(prompt: str, model: str, label: str, *, thinking: str = "low") -> str:
-                      log(f"Running {label} with {model}")
-                      with tempfile.NamedTemporaryFile(
-                          "w", encoding="utf-8", prefix="ai-pr-review-prompt-", suffix=".md"
-                      ) as prompt_file:
-                          prompt_file.write(prompt)
-                          prompt_file.flush()
-                          command = [
-                              "pi",
-                              "--no-session",
-                              "--no-extensions",
-                              "--no-skills",
-                              "--no-prompt-templates",
-                              "--no-context-files",
-                              "--no-tools",
-                              "--no-approve",
-                              "--system-prompt",
-                              READ_ONLY_SYSTEM_PROMPT,
-                              "--model",
-                              model,
-                              "--thinking",
-                              thinking,
-                              "-p",
-                              f"@{prompt_file.name}",
-                          ]
-                          result = subprocess.run(
-                              command,
-                              stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE,
-                              text=True,
-                              errors="replace",
-                              env=pi_env(),
-                              timeout=900,
-                          )
-                      if result.stderr.strip():
-                          sys.stderr.write(result.stderr)
-                      if result.returncode != 0:
-                          raise RuntimeError(f"Pi {label} failed with exit code {result.returncode}")
-                      return result.stdout.strip()
-              ''').strip("\n")
-              text = text[:start] + replacement + text[end:]
-              path.write_text(text, encoding="utf-8")
-          py_compile.compile(str(path), doraise=True)
-          PY
-
       - name: Setup Node.js
         if: steps.gate.outputs.should_review == 'true'
         uses: actions/setup-node@v6
@@ -275,6 +114,32 @@ jobs:
           set -euo pipefail
           npm install --prefix "$RUNNER_TEMP/pi-install" --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}"
           echo "$RUNNER_TEMP/pi-install/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Post one-time PR summary
+        if: steps.gate.outputs.should_review == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          AI_REVIEW_CONFIG: ${{ runner.temp }}/ai-review/ai-review.yml
+          AI_REVIEW_PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
+          AI_REVIEW_AUTHOR: ${{ steps.gate.outputs.author }}
+          AI_REVIEW_BASE_REF: ${{ steps.gate.outputs.base_ref }}
+          AI_REVIEW_BASE_SHA: ${{ steps.gate.outputs.base_sha }}
+          AI_REVIEW_HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+          AI_REVIEW_HEAD_REF: ${{ steps.gate.outputs.head_ref }}
+          AI_REVIEW_MODE: ${{ steps.gate.outputs.mode }}
+          PI_CODING_AGENT_DIR: ${{ runner.temp }}/pi-agent
+          PI_CODING_AGENT_SESSION_DIR: ${{ runner.temp }}/pi-sessions
+          PI_SKIP_VERSION_CHECK: "1"
+          PI_TELEMETRY: "0"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if python3 "$RUNNER_TEMP/ai-review/ai_pr_review.py" --help 2>&1 | grep -q 'summary'; then
+            python3 "$RUNNER_TEMP/ai-review/ai_pr_review.py" summary
+          else
+            echo "Trusted AI review driver does not support one-time summaries yet; skipping."
+          fi
 
       - name: Run AI PR review
         if: steps.gate.outputs.should_review == 'true'
@@ -295,136 +160,3 @@ jobs:
           PI_TELEMETRY: "0"
         shell: bash
         run: python3 "$RUNNER_TEMP/ai-review/ai_pr_review.py" review
-
-      - name: Normalize AI review comment
-        if: steps.gate.outputs.should_review == 'true'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.gate.outputs.pr_number }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 <<'PY'
-          import json
-          import os
-          import subprocess
-          import urllib.request
-
-          marker = "<!-- ai-pr-review -->"
-          repo = os.environ["GITHUB_REPOSITORY"]
-          token = os.environ["GITHUB_TOKEN"]
-          pr_number = os.environ["PR_NUMBER"]
-          head_subject = subprocess.check_output(
-              ["git", "log", "-1", "--format=%s", "HEAD"], text=True
-          ).strip()
-
-          def request(method, path, payload=None):
-              url = f"https://api.github.com/repos/{repo}/{path.lstrip('/')}"
-              data = None if payload is None else json.dumps(payload).encode("utf-8")
-              req = urllib.request.Request(url, data=data, method=method)
-              req.add_header("Accept", "application/vnd.github+json")
-              req.add_header("Authorization", f"Bearer {token}")
-              req.add_header("Content-Type", "application/json")
-              req.add_header("User-Agent", "hz-ai-pr-review-normalizer")
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  body = response.read()
-                  return None if not body else json.loads(body.decode("utf-8"))
-
-          def normalize_line(line):
-              if line.startswith("### "):
-                  return line
-              if line in {"PR Summary", "Review Result", "Blocker", "High", "Medium", "Low"}:
-                  return f"### {line}"
-              if line.startswith(("Overall confidence:", "Blocker:", "High:", "Medium:", "Low hidden:", "Rejected during verification:", "Inline GitHub review comments:")):
-                  return f"- {line}"
-              return line
-
-          def strip_existing_details(lines):
-              stripped = []
-              in_details = False
-              for line in lines:
-                  if line.strip() == "<details>":
-                      in_details = True
-                      continue
-                  if in_details:
-                      if line.strip() == "</details>":
-                          in_details = False
-                      continue
-                  stripped.append(line)
-              return stripped
-
-          def copyable_findings(lines):
-              copy_lines = []
-              current = None
-              current_written = False
-              for line in lines:
-                  if line in {"### Blocker", "### High", "### Medium", "### Low"}:
-                      current = line[4:]
-                      current_written = False
-                      continue
-                  if line.startswith("### ") or line == "---":
-                      current = None
-                  if current is None:
-                      continue
-                  if not line.strip():
-                      continue
-                  if not current_written:
-                      if copy_lines:
-                          copy_lines.append("")
-                      copy_lines.append(current)
-                      current_written = True
-                  clean = line.replace("`", "").replace(" — ", " - ").replace("```", "'''")
-                  copy_lines.append(clean)
-              if not copy_lines:
-                  return []
-              return [
-                  "",
-                  "<details>",
-                  "<summary>Copy findings</summary>",
-                  "",
-                  "```text",
-                  *copy_lines,
-                  "```",
-                  "",
-                  "</details>",
-                  "",
-              ]
-
-          page = 1
-          while True:
-              comments = request("GET", f"issues/{pr_number}/comments?per_page=100&page={page}")
-              if not comments:
-                  break
-              for comment in comments:
-                  body = str(comment.get("body", ""))
-                  if marker not in body:
-                      continue
-                  lines = strip_existing_details(body.splitlines())
-                  content = []
-                  for line in lines:
-                      if line == marker or line == "## AI PR Review":
-                          continue
-                      if line.startswith("```"):
-                          continue
-                      if line.startswith(("Mode:", "Runtime:", "Models:")):
-                          continue
-                      if line.startswith("Reviewed diff:"):
-                          content.append(f"Reviewed diff: {head_subject}")
-                      else:
-                          content.append(normalize_line(line))
-                  while content and not content[0].strip():
-                      content.pop(0)
-                  while content and not content[-1].strip():
-                      content.pop()
-                  if all(not line.startswith("Reviewed diff:") for line in content):
-                      insert_at = 1 if content else 0
-                      content.insert(insert_at, f"Reviewed diff: {head_subject}")
-                  content.extend(copyable_findings(content))
-                  normalized = "\n".join(
-                      [marker, "", "## AI PR Review", "", *content, ""]
-                  )
-                  request("PATCH", f"issues/comments/{comment['id']}", {"body": normalized})
-                  raise SystemExit(0)
-              page += 1
-          PY

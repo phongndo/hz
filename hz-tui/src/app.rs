@@ -2542,6 +2542,7 @@ impl DiffApp {
         }
 
         self.layout = layout;
+        self.manual_hunk_focus = None;
         let visible_files =
             filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
         self.model = UiModel::new_filtered(

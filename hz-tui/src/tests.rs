@@ -151,6 +151,28 @@ fn hunk_focus_moves_between_hunks_when_diff_fits_viewport() {
 }
 
 #[test]
+fn layout_toggle_resets_manual_hunk_focus_when_diff_fits_viewport() {
+    let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[1, 2, 3]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(20);
+
+    assert_eq!(app.max_scroll(), 0);
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 0)));
+
+    app.next_hunk();
+    assert_eq!(app.scroll, 0);
+    assert_eq!(app.manual_hunk_focus, Some((0, 1)));
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 1)));
+
+    app.toggle_layout();
+
+    assert_eq!(app.layout, DiffLayoutMode::Split);
+    assert_eq!(app.scroll, 0);
+    assert_eq!(app.manual_hunk_focus, None);
+    assert_eq!(app.focused_hunk_for_viewport(20), Some((0, 0)));
+}
+
+#[test]
 fn j_and_k_move_hunk_focus_when_diff_fits_viewport() {
     let changeset = changeset_with_hunks_at(PathBuf::from("/repo"), &[1, 2, 3]);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
