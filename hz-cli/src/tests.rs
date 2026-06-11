@@ -1636,8 +1636,23 @@ fn repo_lifecycle_hooks_require_explicit_create_or_remove_flags() {
         command => panic!("expected remove command, got {command:?}"),
     }
 
-    assert!(Cli::try_parse_from(["hz", "new", "--setup", "--no-setup", "handle"]).is_err());
-    assert!(Cli::try_parse_from(["hz", "rm", "--cleanup", "--no-cleanup", "handle"]).is_err());
+    let cli = Cli::try_parse_from(["hz", "new", "--setup", "--no-setup", "handle"]).unwrap();
+    match cli.command {
+        Some(Command::New(args)) => {
+            assert!(args.setup);
+            assert!(args.no_setup);
+        }
+        command => panic!("expected new command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "rm", "--cleanup", "--no-cleanup", "handle"]).unwrap();
+    match cli.command {
+        Some(Command::Remove(args)) => {
+            assert!(args.cleanup);
+            assert!(args.no_cleanup);
+        }
+        command => panic!("expected remove command, got {command:?}"),
+    }
 }
 
 #[test]

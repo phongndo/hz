@@ -12,7 +12,6 @@ use std::{
 use hz_core::{HzError, HzResult};
 
 const STREAM_BUFFER_BYTES: usize = 1024 * 1024;
-const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DiffScope {
@@ -785,8 +784,28 @@ fn worktree_base_revision(repo: &Path) -> HzResult<String> {
     if has_head(repo)? {
         Ok("HEAD".to_owned())
     } else {
-        Ok(EMPTY_TREE.to_owned())
+        empty_tree_revision(repo)
     }
+}
+
+fn empty_tree_revision(repo: &Path) -> HzResult<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["hash-object", "-t", "tree", "--stdin"])
+        .stdin(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        return Err(git_error("failed to derive empty tree revision", &output));
+    }
+
+    let revision = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if revision.is_empty() {
+        return Err(HzError::Usage(
+            "git returned an empty tree revision with no object id".to_owned(),
+        ));
+    }
+    Ok(revision)
 }
 
 fn has_head(repo: &Path) -> HzResult<bool> {
@@ -2065,6 +2084,36 @@ mod tests {
             ..DiffOptions::default()
         })
         .expect("unborn HEAD diff should render");
+
+        assert!(output.contains("diff --git a/new.txt b/new.txt"));
+        assert!(output.contains("new file mode"));
+        assert!(output.contains("+new"));
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn render_unborn_sha256_head_worktree_diff_against_empty_tree() {
+        let test_dir = temp_test_dir("unborn-sha256-head-diff");
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        fs::create_dir_all(&repo).expect("repo directory should be created");
+        let init = Command::new("git")
+            .current_dir(&repo)
+            .args(["init", "-q", "--object-format=sha256"])
+            .output()
+            .expect("git init should run");
+        if !init.status.success() {
+            fs::remove_dir_all(test_dir).expect("test directory should be removed");
+            return;
+        }
+
+        fs::write(repo.join("new.txt"), "new\n").expect("new file should be written");
+
+        let output = render(DiffOptions {
+            repo: Some(repo.clone()),
+            ..DiffOptions::default()
+        })
+        .expect("unborn SHA-256 HEAD diff should render");
 
         assert!(output.contains("diff --git a/new.txt b/new.txt"));
         assert!(output.contains("new file mode"));

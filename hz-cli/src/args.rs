@@ -193,9 +193,9 @@ pub(crate) struct NewWorktreeArgs {
     pub(crate) json: bool,
     #[arg(short = 'd', long)]
     pub(crate) debug: bool,
-    #[arg(long, conflicts_with = "no_setup")]
+    #[arg(long)]
     pub(crate) setup: bool,
-    #[arg(long, conflicts_with = "setup")]
+    #[arg(long)]
     pub(crate) no_setup: bool,
     #[arg(long, hide = true)]
     pub(crate) path_only: bool,
@@ -232,9 +232,9 @@ pub(crate) struct RemoveWorktreeArgs {
     pub(crate) force: bool,
     #[arg(short = 'd', long)]
     pub(crate) debug: bool,
-    #[arg(long, conflicts_with = "no_cleanup")]
+    #[arg(long)]
     pub(crate) cleanup: bool,
-    #[arg(long, conflicts_with = "cleanup")]
+    #[arg(long)]
     pub(crate) no_cleanup: bool,
 }
 

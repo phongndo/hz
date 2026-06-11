@@ -37,6 +37,36 @@ fn diff_renders_unborn_head_worktree() {
 }
 
 #[test]
+fn diff_renders_unborn_sha256_head_worktree() {
+    let test_dir = temp_test_dir("unborn-sha256-head");
+    let repo = test_dir.join("repo");
+    fs::create_dir_all(&repo).expect("repo should be created");
+    if !try_git(&repo, &["init", "-q", "--object-format=sha256"]) {
+        fs::remove_dir_all(test_dir).expect("test dir should be removed");
+        return;
+    }
+    fs::write(repo.join("new.txt"), "new\n").expect("file should be written");
+
+    let output = Command::new(hz())
+        .args(["diff", "--no-watch", "--no-syntax", "-r"])
+        .arg(&repo)
+        .output()
+        .expect("hz diff should run");
+
+    assert!(
+        output.status.success(),
+        "hz diff failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("diff should be utf-8");
+    assert!(stdout.contains("diff --git a/new.txt b/new.txt"));
+    assert!(stdout.contains("new file mode"));
+    assert!(stdout.contains("+new"));
+
+    fs::remove_dir_all(test_dir).expect("test dir should be removed");
+}
+
+#[test]
 fn diff_stat_escapes_terminal_control_characters_in_paths() {
     let test_dir = temp_test_dir("stat-escape");
     let repo = test_dir.join("repo");
@@ -81,14 +111,22 @@ fn temp_test_dir(name: &str) -> PathBuf {
 }
 
 fn git(repo: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .current_dir(repo)
-        .args(args)
-        .output()
-        .expect("git should run");
+    let output = git_output(repo, args);
     assert!(
         output.status.success(),
         "git failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn try_git(repo: &Path, args: &[&str]) -> bool {
+    git_output(repo, args).status.success()
+}
+
+fn git_output(repo: &Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .expect("git should run")
 }

@@ -2687,7 +2687,10 @@ impl DiffApp {
     ) {
         let options_changed = self.options != options;
         if !options_changed && self.base_changeset == changeset {
-            self.live_reload_pending = false;
+            if self.live_reload_pending {
+                self.live_reload_pending = false;
+                self.dirty = true;
+            }
             if let Some(notice) = notice {
                 self.set_notice(notice);
             }

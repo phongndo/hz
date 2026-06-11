@@ -1438,6 +1438,7 @@ fn live_reload_started_state_is_visible_until_loaded() {
 
     assert!(app.live_reload_pending);
     assert!(line_text(&statusline_header_line(&app, 120)).contains("refreshing diff"));
+    app.dirty = false;
 
     reload_tx
         .send(LiveDiffReload::Loaded(Ok(changeset)))
@@ -1445,6 +1446,7 @@ fn live_reload_started_state_is_visible_until_loaded() {
     drain_live_reloads(&mut app, Some(&reload_rx));
 
     assert!(!app.live_reload_pending);
+    assert!(app.dirty);
 }
 
 #[test]
