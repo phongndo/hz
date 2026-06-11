@@ -6,6 +6,7 @@ pub type HzResult<T> = Result<T, HzError>;
 pub enum HzError {
     Io(io::Error),
     Json(serde_json::Error),
+    UnknownWorktree { target: String },
     Usage(String),
 }
 
@@ -14,6 +15,7 @@ impl fmt::Display for HzError {
         match self {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Json(error) => write!(formatter, "{error}"),
+            Self::UnknownWorktree { target } => write!(formatter, "unknown worktree: {target}"),
             Self::Usage(message) => write!(formatter, "{message}"),
         }
     }

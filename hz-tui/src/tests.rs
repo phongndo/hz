@@ -23,7 +23,9 @@ use crate::render::{
 };
 use crate::{app::*, controls::*, editor::*, live_diff::*, model::*, syntax::*, theme::*};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, FileStatus};
+use hz_diff::{
+    Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, FileStatus, PatchSource,
+};
 use hz_syntax::{
     ColorOverrides, DiffContextExpansion, DiffSettings, HighlightedLine, SyntaxClass,
     SyntaxLanguageSet, SyntaxLimits, SyntaxThemeConfig, SyntaxThemeSource,
@@ -898,6 +900,35 @@ fn editor_command_helpers_choose_line_arguments() {
 
     assert!(editor_uses_goto_arg("/usr/local/bin/code"));
     assert!(!editor_uses_goto_arg("vim"));
+
+    let target = EditorTarget {
+        path: PathBuf::from("/repo/file.rs"),
+        line: 12,
+    };
+    assert_eq!(
+        editor_args(&["code".to_owned()], &target),
+        vec![
+            "--wait".to_owned(),
+            "--goto".to_owned(),
+            "/repo/file.rs:12".to_owned(),
+        ]
+    );
+    assert_eq!(
+        editor_args(&["code".to_owned(), "--wait".to_owned()], &target),
+        vec![
+            "--wait".to_owned(),
+            "--goto".to_owned(),
+            "/repo/file.rs:12".to_owned(),
+        ]
+    );
+    assert_eq!(
+        editor_args(&["vim".to_owned(), "-f".to_owned()], &target),
+        vec![
+            "-f".to_owned(),
+            "+12".to_owned(),
+            "/repo/file.rs".to_owned(),
+        ]
+    );
 }
 
 #[test]
@@ -1309,6 +1340,34 @@ fn responsive_layout_clamps_horizontal_scroll_without_layout_change() {
 }
 
 #[test]
+fn responsive_layout_preserves_manual_unified_choice_on_wide_resize() {
+    let changeset = changeset_with_context_lines(1);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Split);
+
+    app.toggle_layout();
+    assert_eq!(app.layout, DiffLayoutMode::Unified);
+
+    app.apply_responsive_layout(MIN_SPLIT_WIDTH + 40);
+
+    assert_eq!(app.layout, DiffLayoutMode::Unified);
+}
+
+#[test]
+fn responsive_layout_remembers_manual_split_after_narrow_resize() {
+    let changeset = changeset_with_context_lines(1);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+    app.toggle_layout();
+    assert_eq!(app.layout, DiffLayoutMode::Split);
+
+    app.apply_responsive_layout(MIN_SPLIT_WIDTH - 1);
+    assert_eq!(app.layout, DiffLayoutMode::Unified);
+
+    app.apply_responsive_layout(MIN_SPLIT_WIDTH + 40);
+    assert_eq!(app.layout, DiffLayoutMode::Split);
+}
+
+#[test]
 fn b_key_toggles_file_sidebar() {
     let changeset = changeset_with_context_lines(1);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
@@ -1360,6 +1419,78 @@ fn b_key_clears_file_sidebar_resize_state() {
     .expect("drag should no longer resize after sidebar closes");
 
     assert_eq!(app.file_sidebar_width, Some(30));
+}
+
+#[test]
+fn live_reload_started_state_is_visible_until_loaded() {
+    let changeset = changeset_with_files(&["src/lib.rs"]);
+    let mut app = DiffApp::new(
+        DiffOptions::default(),
+        changeset.clone(),
+        DiffLayoutMode::Unified,
+    );
+    let (reload_tx, reload_rx) = mpsc::channel();
+
+    reload_tx
+        .send(LiveDiffReload::Started)
+        .expect("started reload should send");
+    drain_live_reloads(&mut app, Some(&reload_rx));
+
+    assert!(app.live_reload_pending);
+    assert!(line_text(&statusline_header_line(&app, 120)).contains("refreshing diff"));
+
+    reload_tx
+        .send(LiveDiffReload::Loaded(Ok(changeset)))
+        .expect("loaded reload should send");
+    drain_live_reloads(&mut app, Some(&reload_rx));
+
+    assert!(!app.live_reload_pending);
+}
+
+#[test]
+fn explicit_diff_load_returns_before_replacing_changeset() {
+    let changeset = changeset_with_files(&["src/lib.rs"]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    let patch = Arc::<[u8]>::from(
+        b"diff --git a/other.rs b/other.rs\n--- a/other.rs\n+++ b/other.rs\n@@ -1 +1 @@\n-old\n+new\n"
+            .as_slice(),
+    );
+    let options = DiffOptions {
+        source: DiffSource::Patch(PatchSource::Text {
+            label: "test patch".to_owned(),
+            patch,
+        }),
+        include_untracked: false,
+        ..DiffOptions::default()
+    };
+
+    app.start_diff_load(
+        options,
+        "loading test patch",
+        "test patch",
+        "diff unavailable",
+    );
+
+    assert!(app.pending_diff_load.is_some());
+    assert_eq!(app.changeset.files[0].display_path(), "src/lib.rs");
+
+    for _ in 0..100 {
+        app.drain_pending_diff_load();
+        if app.pending_diff_load.is_none() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    assert!(app.pending_diff_load.is_none());
+    assert_eq!(app.changeset.files[0].display_path(), "other.rs");
+    assert_eq!(app.options.source, DiffSource::Patch(PatchSource::Text {
+        label: "test patch".to_owned(),
+        patch: Arc::<[u8]>::from(
+            b"diff --git a/other.rs b/other.rs\n--- a/other.rs\n+++ b/other.rs\n@@ -1 +1 @@\n-old\n+new\n"
+                .as_slice(),
+        ),
+    }));
 }
 
 #[test]

@@ -68,8 +68,9 @@ pub(crate) fn find_entry(
     repo: &Path,
     target: &str,
 ) -> HzResult<WorktreeEntry> {
-    find_target_worktree(registry, repo, target)?
-        .ok_or_else(|| HzError::Usage(format!("unknown worktree: {target}")))
+    find_target_worktree(registry, repo, target)?.ok_or_else(|| HzError::UnknownWorktree {
+        target: target.to_owned(),
+    })
 }
 
 pub(crate) fn add_git_worktrees(
