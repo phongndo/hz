@@ -123,6 +123,50 @@ fn lifecycle_hooks_run_only_when_explicitly_requested() {
     fs::remove_dir_all(test_dir).expect("test dir should be removed");
 }
 
+#[test]
+fn cleanup_runs_for_user_managed_git_worktree_when_requested() {
+    let test_dir = temp_test_dir("user-managed-cleanup");
+    let home = test_dir.join("home");
+    let repo = test_dir.join("repo");
+    let worktree = repo.join("agent-worktrees/external-cleanup");
+    let lifecycle_log = repo.join("lifecycle.log");
+    fs::create_dir_all(&home).expect("home should be created");
+    fs::create_dir_all(&repo).expect("repo should be created");
+    initialize_repo_with_lifecycle(&repo);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "external-cleanup",
+            worktree.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+
+    run_hz(
+        &home,
+        &[
+            "rm",
+            "external-cleanup",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--force",
+            "--cleanup",
+        ],
+    );
+
+    assert_eq!(
+        fs::read_to_string(&lifecycle_log).expect("lifecycle log should exist"),
+        "external-cleanup:cleanup\n"
+    );
+    assert!(!worktree.exists(), "git worktree should be removed");
+
+    fs::remove_dir_all(test_dir).expect("test dir should be removed");
+}
+
 fn initialize_repo_with_lifecycle(repo: &Path) {
     git(repo, &["init", "-q"]);
     git(repo, &["config", "user.email", "test@example.com"]);
@@ -130,7 +174,7 @@ fn initialize_repo_with_lifecycle(repo: &Path) {
     fs::create_dir_all(repo.join(".hz/environment")).expect("lifecycle dir should be created");
     fs::write(
         repo.join(".hz/hz.toml"),
-        "[lifecycle]\nsetup = [\".hz/environment/setup\"]\ncleanup = [\".hz/environment/cleanup\"]\n",
+        "[worktree]\nuser_managed_roots = [\"agent-worktrees\"]\n\n[lifecycle]\nsetup = [\".hz/environment/setup\"]\ncleanup = [\".hz/environment/cleanup\"]\n",
     )
     .expect("config should be written");
     write_hook(repo, "setup");
