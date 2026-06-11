@@ -2,10 +2,14 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     ops::Range,
-    path::Path,
-    sync::{Arc, mpsc::Receiver},
+    path::{Path, PathBuf},
+    sync::{Arc, mpsc, mpsc::Receiver},
+    thread,
     time::{Duration, Instant, SystemTime},
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -52,6 +56,8 @@ use crate::{
 };
 
 const MOUSE_HUNK_FOCUS_SCROLL_TICKS: isize = 3;
+const EDITOR_RELOAD_POLL: Duration = Duration::from_millis(8);
+const POST_EDITOR_QUIT_KEY_IGNORE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HunkFocusScrollBehavior {
@@ -68,14 +74,38 @@ enum HunkFocusModelBehavior {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EditorReloadBehavior {
     None,
-    Live,
+    ScopedAsync,
     Sync,
+}
+
+pub(crate) struct EditorReloadWorker {
+    generation: u64,
+    rx: Receiver<EditorScopedReload>,
+}
+
+impl std::fmt::Debug for EditorReloadWorker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("EditorReloadWorker").finish()
+    }
+}
+
+pub(crate) struct EditorScopedReload {
+    path: PathBuf,
+    changeset: HzResult<Changeset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EditorReloadRequest {
+    pub(crate) path: PathBuf,
+    pub(crate) pathspecs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FileFingerprint {
     len: u64,
     modified: Option<SystemTime>,
+    #[cfg(unix)]
+    changed: (i64, i64, u64),
 }
 
 impl FileFingerprint {
@@ -84,6 +114,8 @@ impl FileFingerprint {
         Some(Self {
             len: metadata.len(),
             modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            changed: (metadata.ctime(), metadata.ctime_nsec(), metadata.ino()),
         })
     }
 }
@@ -119,14 +151,18 @@ pub(crate) fn run_loop(
             terminal.draw(|frame| draw(frame, app))?;
             app.dirty = false;
         }
+        app.start_pending_editor_reload();
+        if app.drain_editor_reload() {
+            continue;
+        }
 
-        if !event::poll(EVENT_POLL)? {
+        if !event::poll(app.event_poll())? {
             continue;
         }
 
         let mut should_quit = false;
         for _ in 0..MAX_READY_EVENTS_PER_FRAME {
-            if handle_event(app, event::read()?)? {
+            if handle_event(app, event::read()?, live_diff)? {
                 should_quit = true;
                 break;
             }
@@ -196,8 +232,17 @@ pub(crate) fn drain_live_reloads(
     }
 }
 
-pub(crate) fn handle_event(app: &mut DiffApp, event: Event) -> HzResult<bool> {
+pub(crate) fn handle_event(
+    app: &mut DiffApp,
+    event: Event,
+    live_diff: &mut Option<LiveDiff>,
+) -> HzResult<bool> {
     match event {
+        Event::Key(key) if app.ignore_post_editor_quit_key(key, Instant::now()) => Ok(false),
+        Event::Key(key) if is_ctrl_g_key(key) && app.editor_shortcut_available() => {
+            app.open_focused_hunk_in_editor_with_live_diff(live_diff);
+            Ok(false)
+        }
         Event::Key(key) if app.handle_key(key)? => Ok(true),
         Event::Mouse(mouse) => {
             app.handle_mouse(mouse)?;
@@ -209,6 +254,16 @@ pub(crate) fn handle_event(app: &mut DiffApp, event: Event) -> HzResult<bool> {
         }
         _ => Ok(false),
     }
+}
+
+pub(crate) fn is_ctrl_g_key(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g')
+}
+
+pub(crate) fn is_quit_key(key: KeyEvent) -> bool {
+    key.code == KeyCode::Esc
+        || is_plain_char_key(key, 'q')
+        || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
 }
 
 pub(crate) fn is_plain_char_key(key: KeyEvent, character: char) -> bool {
@@ -376,7 +431,9 @@ pub(crate) struct DiffApp {
     pub(crate) current_head: Option<String>,
     pub(crate) comparison_branches: Vec<String>,
     pub(crate) live_diff_failed_options: Option<DiffOptions>,
-    pub(crate) live_updates_enabled: bool,
+    pub(crate) editor_reload: Option<EditorReloadWorker>,
+    pub(crate) pending_editor_reload: Option<EditorReloadRequest>,
+    pub(crate) post_editor_quit_key_ignore_until: Option<Instant>,
     pub(crate) mouse_scroll: MouseScroll,
     pub(crate) notice: Option<Notice>,
     pub(crate) theme: DiffTheme,
@@ -519,7 +576,9 @@ impl DiffApp {
             current_head,
             comparison_branches,
             live_diff_failed_options: None,
-            live_updates_enabled: false,
+            editor_reload: None,
+            pending_editor_reload: None,
+            post_editor_quit_key_ignore_until: None,
             mouse_scroll: MouseScroll::default(),
             notice,
             theme,
@@ -669,8 +728,28 @@ impl DiffApp {
         Ok(false)
     }
 
-    pub(crate) fn set_live_updates_enabled(&mut self, enabled: bool) {
-        self.live_updates_enabled = enabled;
+    pub(crate) fn editor_shortcut_available(&self) -> bool {
+        self.filter_input.is_none() && !self.help_menu_open
+    }
+
+    pub(crate) fn event_poll(&self) -> Duration {
+        if self.editor_reload.is_some() || self.pending_editor_reload.is_some() {
+            EDITOR_RELOAD_POLL
+        } else {
+            EVENT_POLL
+        }
+    }
+
+    pub(crate) fn ignore_post_editor_quit_key(&mut self, key: KeyEvent, now: Instant) -> bool {
+        let Some(ignore_until) = self.post_editor_quit_key_ignore_until else {
+            return false;
+        };
+        if now >= ignore_until {
+            self.post_editor_quit_key_ignore_until = None;
+            return false;
+        }
+
+        is_quit_key(key)
     }
 
     pub(crate) fn toggle_help_menu(&mut self) {
@@ -1778,6 +1857,15 @@ impl DiffApp {
         })
     }
 
+    pub(crate) fn focused_hunk_editor_reload_request(&self) -> Option<EditorReloadRequest> {
+        if matches!(self.options.source, DiffSource::Patch(_)) {
+            return None;
+        }
+
+        let (file, _) = self.focused_hunk_for_viewport(self.viewport_rows)?;
+        editor_reload_request_for_file(self.changeset.files.get(file)?)
+    }
+
     pub(crate) fn focused_hunk_editor_line(&self, file: usize, hunk: usize) -> Option<usize> {
         let visible_start = self.scroll;
         let visible_end = visible_start
@@ -1830,6 +1918,17 @@ impl DiffApp {
     }
 
     pub(crate) fn open_focused_hunk_in_editor(&mut self) {
+        self.open_focused_hunk_in_editor_inner(None);
+    }
+
+    pub(crate) fn open_focused_hunk_in_editor_with_live_diff(
+        &mut self,
+        live_diff: &mut Option<LiveDiff>,
+    ) {
+        self.open_focused_hunk_in_editor_inner(Some(live_diff));
+    }
+
+    fn open_focused_hunk_in_editor_inner(&mut self, mut live_diff: Option<&mut Option<LiveDiff>>) {
         let Some(target) = self.focused_hunk_editor_target() else {
             self.set_notice("no editable focused hunk");
             return;
@@ -1842,14 +1941,40 @@ impl DiffApp {
         self.diff_menu_open = false;
         self.close_branch_menu();
         self.terminal_clear_requested = true;
+        let mut paused_live_diff = false;
+        if matches!(self.options.source, DiffSource::Worktree)
+            && let Some(live_diff) = live_diff.as_mut().and_then(|live_diff| live_diff.as_mut())
+        {
+            live_diff.set_paused(true);
+            paused_live_diff = true;
+        }
+        let scoped_reload = self.focused_hunk_editor_reload_request().or_else(|| {
+            repo_relative_path(&self.changeset.repo, &target.path).map(|path| {
+                let pathspecs = vec![path.clone()];
+                EditorReloadRequest { path, pathspecs }
+            })
+        });
         let before = FileFingerprint::read(&target.path);
-        match open_editor(&editor, &target) {
+        let status_result = open_editor(&editor, &target);
+        self.post_editor_quit_key_ignore_until = Some(Instant::now() + POST_EDITOR_QUIT_KEY_IGNORE);
+        if paused_live_diff
+            && let Some(live_diff) = live_diff.as_mut().and_then(|live_diff| live_diff.as_mut())
+        {
+            live_diff.set_paused(false);
+        }
+
+        match status_result {
             Ok(status) if status.success() => {
                 let changed = file_changed_since(&target.path, before);
-                match self.editor_reload_behavior(changed) {
+                match self.editor_reload_behavior(
+                    changed,
+                    scoped_reload.as_ref().map(|request| request.path.as_path()),
+                ) {
                     EditorReloadBehavior::None => self.set_notice("editor closed"),
-                    EditorReloadBehavior::Live => {
-                        self.set_notice("editor closed; reloading");
+                    EditorReloadBehavior::ScopedAsync => {
+                        let request = scoped_reload.expect("scoped reload requires a request");
+                        self.pending_editor_reload = Some(request);
+                        self.set_notice("editor closed; refreshing edited file");
                     }
                     EditorReloadBehavior::Sync => match self.reload() {
                         Ok(()) => self.set_notice("editor closed"),
@@ -1864,18 +1989,77 @@ impl DiffApp {
         }
     }
 
-    pub(crate) fn editor_reload_behavior(&self, target_changed: bool) -> EditorReloadBehavior {
+    pub(crate) fn editor_reload_behavior(
+        &self,
+        target_changed: bool,
+        scoped_path: Option<&Path>,
+    ) -> EditorReloadBehavior {
         if !target_changed || !matches!(self.options.source, DiffSource::Worktree) {
             return EditorReloadBehavior::None;
         }
 
-        if self.live_updates_enabled
-            && self.live_diff_failed_options.as_ref() != Some(&self.options)
-        {
-            return EditorReloadBehavior::Live;
+        if scoped_path.is_some() {
+            return EditorReloadBehavior::ScopedAsync;
         }
 
         EditorReloadBehavior::Sync
+    }
+
+    pub(crate) fn start_editor_scoped_reload(&mut self, request: EditorReloadRequest) {
+        let options = self.options.clone();
+        let path = request.path;
+        let pathspecs = request.pathspecs;
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let changeset = hz_diff::load_review_ref_paths(&options, &pathspecs);
+            let _ = tx.send(EditorScopedReload { path, changeset });
+        });
+        self.editor_reload = Some(EditorReloadWorker {
+            generation: self.generation,
+            rx,
+        });
+    }
+
+    pub(crate) fn start_pending_editor_reload(&mut self) {
+        let Some(request) = self.pending_editor_reload.take() else {
+            return;
+        };
+
+        self.start_editor_scoped_reload(request);
+    }
+
+    pub(crate) fn drain_editor_reload(&mut self) -> bool {
+        let Some(worker) = self.editor_reload.take() else {
+            return false;
+        };
+
+        match worker.rx.try_recv() {
+            Ok(reload) => {
+                if worker.generation != self.generation {
+                    return false;
+                }
+
+                match reload.changeset {
+                    Ok(changeset) => {
+                        self.replace_path_changeset(
+                            &reload.path,
+                            changeset,
+                            Some("edited file reloaded"),
+                        );
+                    }
+                    Err(error) => self.set_notice(format!("edited file reload failed: {error}")),
+                }
+                true
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.editor_reload = Some(worker);
+                false
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.set_notice("edited file reload failed");
+                true
+            }
+        }
     }
 
     pub(crate) fn viewport_focus_row(&self) -> usize {
@@ -2653,6 +2837,53 @@ impl DiffApp {
         self.replace_loaded_diff(self.options.clone(), changeset, notice);
     }
 
+    pub(crate) fn replace_path_changeset(
+        &mut self,
+        path: &Path,
+        path_changeset: Changeset,
+        notice: Option<&str>,
+    ) {
+        let selected_path = self
+            .changeset
+            .files
+            .get(self.selected_file)
+            .map(|file| file.display_path().to_owned());
+        let relative_scroll = self
+            .model
+            .file_start_row(self.selected_file)
+            .map(|start| self.scroll.saturating_sub(start))
+            .unwrap_or_default();
+
+        splice_diff_files_for_path(
+            &mut self.changeset.files,
+            path,
+            path_changeset.files.clone(),
+        );
+        splice_diff_files_for_path(&mut self.base_changeset.files, path, path_changeset.files);
+        self.total_stats = self.changeset.stats();
+        self.context_expansions.clear();
+        self.context_cache.clear();
+        self.generation = self.generation.wrapping_add(1);
+        self.inline_cache.clear();
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.clear(self.generation);
+        }
+        let visible_files =
+            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
+        self.replace_visible_files(
+            visible_files,
+            selected_path,
+            relative_scroll,
+            false,
+            HunkFocusModelBehavior::Clear,
+        );
+        if let Some(notice) = notice {
+            self.set_notice(notice);
+        } else {
+            self.dirty = true;
+        }
+    }
+
     pub(crate) fn replace_loaded_diff(
         &mut self,
         options: DiffOptions,
@@ -2847,6 +3078,69 @@ pub(crate) fn changeset_max_line_width_for_files(changeset: &Changeset, files: &
         .map(|line| line.text.width())
         .max()
         .unwrap_or_default()
+}
+
+pub(crate) fn repo_relative_path(repo: &Path, path: &Path) -> Option<PathBuf> {
+    path.strip_prefix(repo).ok().map(Path::to_path_buf)
+}
+
+pub(crate) fn editor_reload_request_for_file(
+    file: &hz_diff::DiffFile,
+) -> Option<EditorReloadRequest> {
+    let path = PathBuf::from(file.new_path.as_deref()?);
+    let mut pathspecs = Vec::new();
+    push_unique_pathspec(&mut pathspecs, file.old_path.as_deref());
+    push_unique_pathspec(&mut pathspecs, file.new_path.as_deref());
+
+    Some(EditorReloadRequest { path, pathspecs })
+}
+
+fn push_unique_pathspec(pathspecs: &mut Vec<PathBuf>, path: Option<&str>) {
+    let Some(path) = path else {
+        return;
+    };
+
+    let path = PathBuf::from(path);
+    if !pathspecs.iter().any(|known| known == &path) {
+        pathspecs.push(path);
+    }
+}
+
+pub(crate) fn splice_diff_files_for_path(
+    files: &mut Vec<hz_diff::DiffFile>,
+    path: &Path,
+    mut replacement: Vec<hz_diff::DiffFile>,
+) {
+    let mut next = Vec::with_capacity(files.len().saturating_add(replacement.len()));
+    let mut inserted = false;
+
+    for file in files.drain(..) {
+        if diff_file_matches_path(&file, path) {
+            if !inserted {
+                next.append(&mut replacement);
+                inserted = true;
+            }
+            continue;
+        }
+
+        next.push(file);
+    }
+
+    if !inserted {
+        next.append(&mut replacement);
+    }
+
+    *files = next;
+}
+
+pub(crate) fn diff_file_matches_path(file: &hz_diff::DiffFile, path: &Path) -> bool {
+    let path = diff_path_string(path);
+    file.old_path.as_deref() == Some(path.as_str())
+        || file.new_path.as_deref() == Some(path.as_str())
+}
+
+pub(crate) fn diff_path_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 pub(crate) fn diff_content_width(layout: DiffLayoutMode, width: usize) -> usize {

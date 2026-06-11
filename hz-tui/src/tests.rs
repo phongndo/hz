@@ -917,24 +917,67 @@ fn ctrl_g_without_editable_target_does_not_scroll_to_top() {
 }
 
 #[test]
+fn post_editor_quit_key_guard_ignores_only_transient_quit_keys() {
+    let changeset = changeset_with_hunk_at(PathBuf::from("/repo"), 20);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    let now = Instant::now();
+    app.post_editor_quit_key_ignore_until = Some(now + Duration::from_millis(250));
+
+    assert!(
+        app.ignore_post_editor_quit_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), now)
+    );
+    assert!(app.ignore_post_editor_quit_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), now));
+    assert!(!app.ignore_post_editor_quit_key(
+        KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        now
+    ));
+    assert!(!app.ignore_post_editor_quit_key(
+        KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+        now + Duration::from_millis(251)
+    ));
+}
+
+#[test]
 fn editor_reload_behavior_skips_unchanged_and_ref_diffs() {
     let changeset = changeset_with_hunk_at(PathBuf::from("/repo"), 20);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
 
     assert_eq!(
-        app.editor_reload_behavior(false),
+        app.editor_reload_behavior(false, Some(Path::new("src/file.rs"))),
         EditorReloadBehavior::None
     );
-    assert_eq!(app.editor_reload_behavior(true), EditorReloadBehavior::Sync);
-
-    app.set_live_updates_enabled(true);
-    assert_eq!(app.editor_reload_behavior(true), EditorReloadBehavior::Live);
-
-    app.live_diff_failed_options = Some(app.options.clone());
-    assert_eq!(app.editor_reload_behavior(true), EditorReloadBehavior::Sync);
+    assert_eq!(
+        app.editor_reload_behavior(true, Some(Path::new("src/file.rs"))),
+        EditorReloadBehavior::ScopedAsync
+    );
+    assert_eq!(
+        app.editor_reload_behavior(true, None),
+        EditorReloadBehavior::Sync
+    );
 
     app.options.source = DiffSource::Base("main".to_owned());
-    assert_eq!(app.editor_reload_behavior(true), EditorReloadBehavior::None);
+    assert_eq!(
+        app.editor_reload_behavior(true, Some(Path::new("src/file.rs"))),
+        EditorReloadBehavior::None
+    );
+}
+
+#[test]
+fn focused_editor_reload_request_preserves_rename_pair() {
+    let mut changeset = changeset_with_hunk_at(PathBuf::from("/repo"), 20);
+    changeset.files[0].old_path = Some("old.rs".to_owned());
+    changeset.files[0].new_path = Some("new.rs".to_owned());
+    changeset.files[0].status = FileStatus::Renamed;
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(5);
+
+    let request = app.focused_hunk_editor_reload_request().unwrap();
+
+    assert_eq!(request.path, PathBuf::from("new.rs"));
+    assert_eq!(
+        request.pathspecs,
+        vec![PathBuf::from("old.rs"), PathBuf::from("new.rs")]
+    );
 }
 
 #[test]
@@ -953,6 +996,32 @@ fn file_changed_since_compares_target_fingerprint() {
     let missing = dir.join("missing.txt");
     assert!(!file_changed_since(&missing, None));
     assert!(file_changed_since(&missing, before));
+}
+
+#[test]
+fn path_changeset_replaces_only_edited_file() {
+    let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+    let replacement = changeset_with_files(&["b.rs"]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+    app.replace_path_changeset(Path::new("b.rs"), replacement, None);
+
+    assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs", "c.rs"]);
+    assert_eq!(app.changeset.files[0].hunks[0].lines[0].text, "line 0");
+    assert_eq!(app.changeset.files[1].hunks[0].lines[0].text, "line 0");
+    assert_eq!(app.changeset.files[2].hunks[0].lines[0].text, "line 2");
+}
+
+#[test]
+fn path_changeset_removes_file_when_diff_disappears() {
+    let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+    let mut replacement = changeset_with_files(&[]);
+    replacement.repo = PathBuf::from("/repo");
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+    app.replace_path_changeset(Path::new("b.rs"), replacement, None);
+
+    assert_eq!(visible_paths(&app), vec!["a.rs", "c.rs"]);
 }
 
 #[test]

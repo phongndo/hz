@@ -52,7 +52,6 @@ pub fn run_diff_with_live_updates_and_syntax(
         SyntaxStartupMode::Disabled
     };
     let mut app = DiffApp::new_with_syntax(options, changeset, layout, syntax_mode);
-    app.set_live_updates_enabled(live_updates);
     let mut live_diff = None;
     sync_live_diff(&mut live_diff, &mut app, live_updates);
 
