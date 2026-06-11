@@ -1,8 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs,
     ops::Range,
+    path::Path,
     sync::{Arc, mpsc::Receiver},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crossterm::event::{
@@ -61,6 +63,38 @@ enum HunkFocusScrollBehavior {
 enum HunkFocusModelBehavior {
     PreserveIfValid,
     Clear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorReloadBehavior {
+    None,
+    Live,
+    Sync,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileFingerprint {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl FileFingerprint {
+    pub(crate) fn read(path: &Path) -> Option<Self> {
+        let metadata = fs::metadata(path).ok()?;
+        Some(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+pub(crate) fn file_changed_since(path: &Path, before: Option<FileFingerprint>) -> bool {
+    let after = FileFingerprint::read(path);
+    match (before, after) {
+        (Some(before), Some(after)) => before != after,
+        (None, None) => false,
+        _ => true,
+    }
 }
 
 pub(crate) fn run_loop(
@@ -342,6 +376,7 @@ pub(crate) struct DiffApp {
     pub(crate) current_head: Option<String>,
     pub(crate) comparison_branches: Vec<String>,
     pub(crate) live_diff_failed_options: Option<DiffOptions>,
+    pub(crate) live_updates_enabled: bool,
     pub(crate) mouse_scroll: MouseScroll,
     pub(crate) notice: Option<Notice>,
     pub(crate) theme: DiffTheme,
@@ -484,6 +519,7 @@ impl DiffApp {
             current_head,
             comparison_branches,
             live_diff_failed_options: None,
+            live_updates_enabled: false,
             mouse_scroll: MouseScroll::default(),
             notice,
             theme,
@@ -631,6 +667,10 @@ impl DiffApp {
         }
 
         Ok(false)
+    }
+
+    pub(crate) fn set_live_updates_enabled(&mut self, enabled: bool) {
+        self.live_updates_enabled = enabled;
     }
 
     pub(crate) fn toggle_help_menu(&mut self) {
@@ -1802,14 +1842,40 @@ impl DiffApp {
         self.diff_menu_open = false;
         self.close_branch_menu();
         self.terminal_clear_requested = true;
+        let before = FileFingerprint::read(&target.path);
         match open_editor(&editor, &target) {
-            Ok(status) if status.success() => match self.reload() {
-                Ok(()) => self.set_notice("editor closed"),
-                Err(error) => self.set_notice(format!("editor closed; reload failed: {error}")),
-            },
+            Ok(status) if status.success() => {
+                let changed = file_changed_since(&target.path, before);
+                match self.editor_reload_behavior(changed) {
+                    EditorReloadBehavior::None => self.set_notice("editor closed"),
+                    EditorReloadBehavior::Live => {
+                        self.set_notice("editor closed; reloading");
+                    }
+                    EditorReloadBehavior::Sync => match self.reload() {
+                        Ok(()) => self.set_notice("editor closed"),
+                        Err(error) => {
+                            self.set_notice(format!("editor closed; reload failed: {error}"));
+                        }
+                    },
+                }
+            }
             Ok(status) => self.set_notice(format!("editor exited with {status}")),
             Err(error) => self.set_notice(format!("editor failed: {error}")),
         }
+    }
+
+    pub(crate) fn editor_reload_behavior(&self, target_changed: bool) -> EditorReloadBehavior {
+        if !target_changed || !matches!(self.options.source, DiffSource::Worktree) {
+            return EditorReloadBehavior::None;
+        }
+
+        if self.live_updates_enabled
+            && self.live_diff_failed_options.as_ref() != Some(&self.options)
+        {
+            return EditorReloadBehavior::Live;
+        }
+
+        EditorReloadBehavior::Sync
     }
 
     pub(crate) fn viewport_focus_row(&self) -> usize {

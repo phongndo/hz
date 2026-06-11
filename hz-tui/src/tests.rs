@@ -917,6 +917,45 @@ fn ctrl_g_without_editable_target_does_not_scroll_to_top() {
 }
 
 #[test]
+fn editor_reload_behavior_skips_unchanged_and_ref_diffs() {
+    let changeset = changeset_with_hunk_at(PathBuf::from("/repo"), 20);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+    assert_eq!(
+        app.editor_reload_behavior(false),
+        EditorReloadBehavior::None
+    );
+    assert_eq!(app.editor_reload_behavior(true), EditorReloadBehavior::Sync);
+
+    app.set_live_updates_enabled(true);
+    assert_eq!(app.editor_reload_behavior(true), EditorReloadBehavior::Live);
+
+    app.live_diff_failed_options = Some(app.options.clone());
+    assert_eq!(app.editor_reload_behavior(true), EditorReloadBehavior::Sync);
+
+    app.options.source = DiffSource::Base("main".to_owned());
+    assert_eq!(app.editor_reload_behavior(true), EditorReloadBehavior::None);
+}
+
+#[test]
+fn file_changed_since_compares_target_fingerprint() {
+    let dir = temp_test_dir("file-changed-since");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("file.txt");
+    fs::write(&path, "a").unwrap();
+
+    let before = FileFingerprint::read(&path);
+    assert!(!file_changed_since(&path, before));
+
+    fs::write(&path, "abcd").unwrap();
+    assert!(file_changed_since(&path, before));
+
+    let missing = dir.join("missing.txt");
+    assert!(!file_changed_since(&missing, None));
+    assert!(file_changed_since(&missing, before));
+}
+
+#[test]
 fn ui_model_inserts_file_separator_between_files() {
     let changeset = changeset_with_files(&["a.rs", "b.rs"]);
     let model = UiModel::new(&changeset, DiffLayoutMode::Unified, &HashMap::new());
