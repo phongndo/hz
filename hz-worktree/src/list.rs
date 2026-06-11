@@ -145,8 +145,9 @@ pub fn find_many(input: FindWorktrees) -> HzResult<Vec<WorktreeEntry>> {
         .targets
         .iter()
         .map(|target| {
-            find_target_entry(&entries, &repo, target)
-                .ok_or_else(|| HzError::Usage(format!("unknown worktree: {target}")))
+            find_target_entry(&entries, &repo, target).ok_or_else(|| HzError::UnknownWorktree {
+                target: target.clone(),
+            })
         })
         .collect()
 }

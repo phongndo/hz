@@ -126,6 +126,17 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets --all-features --locked
 
+      - name: Benchmark smoke
+        run: |
+          cargo run -p hz-bench --locked -- fixtures \
+            --out "$RUNNER_TEMP/hz-bench" \
+            --scenario many-small-files \
+            --force
+          cargo run -p hz-bench --locked -- measure \
+            --fixtures "$RUNNER_TEMP/hz-bench" \
+            --scenario many-small-files \
+            --json
+
       - name: Build
         run: cargo build --workspace --all-targets --all-features --locked
 

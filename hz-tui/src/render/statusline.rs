@@ -310,7 +310,15 @@ pub(crate) fn push_statusline_left_spans(
         .notice
         .as_ref()
         .map(|notice| notice.text.as_str())
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            if app.pending_diff_load.is_some() {
+                "loading diff"
+            } else if app.live_reload_pending {
+                "refreshing diff"
+            } else {
+                ""
+            }
+        });
     if !notice.is_empty() {
         push_fitted_statusline_span(
             spans,

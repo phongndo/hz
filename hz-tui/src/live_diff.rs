@@ -78,6 +78,7 @@ pub(crate) enum LiveDiffCommand {
 
 #[derive(Debug)]
 pub(crate) enum LiveDiffReload {
+    Started,
     Loaded(HzResult<Changeset>),
 }
 
@@ -242,6 +243,9 @@ pub(crate) fn spawn_live_diff_worker(
                 break;
             }
 
+            if reload_tx.send(LiveDiffReload::Started).is_err() {
+                break;
+            }
             let changeset = hz_diff::load_review_ref(&options);
             if reload_tx.send(LiveDiffReload::Loaded(changeset)).is_err() {
                 break;

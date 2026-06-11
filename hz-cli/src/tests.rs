@@ -1003,6 +1003,7 @@ fn creation_and_diff_accept_short_flags() {
             assert_eq!(args.max_branch_worktrees, Some(6));
             assert!(args.json);
             assert!(args.debug);
+            assert!(!args.setup);
             assert!(args.no_setup);
         }
         command => panic!("expected new command, got {command:?}"),
@@ -1610,6 +1611,51 @@ fn force_skips_unmanaged_removal_confirmation() {
 }
 
 #[test]
+fn repo_lifecycle_hooks_require_explicit_create_or_remove_flags() {
+    let cli = Cli::try_parse_from(["hz", "new", "handle"]).unwrap();
+    match cli.command {
+        Some(Command::New(args)) => {
+            assert!(!args.setup);
+            assert!(!args.no_setup);
+        }
+        command => panic!("expected new command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "new", "--setup", "handle"]).unwrap();
+    match cli.command {
+        Some(Command::New(args)) => assert!(args.setup),
+        command => panic!("expected new command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "rm", "--cleanup", "handle"]).unwrap();
+    match cli.command {
+        Some(Command::Remove(args)) => {
+            assert!(args.cleanup);
+            assert!(!args.no_cleanup);
+        }
+        command => panic!("expected remove command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "new", "--setup", "--no-setup", "handle"]).unwrap();
+    match cli.command {
+        Some(Command::New(args)) => {
+            assert!(args.setup);
+            assert!(args.no_setup);
+        }
+        command => panic!("expected new command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "rm", "--cleanup", "--no-cleanup", "handle"]).unwrap();
+    match cli.command {
+        Some(Command::Remove(args)) => {
+            assert!(args.cleanup);
+            assert!(args.no_cleanup);
+        }
+        command => panic!("expected remove command, got {command:?}"),
+    }
+}
+
+#[test]
 fn managed_removal_skips_confirmation() {
     let args = remove_args(false, false);
     let worktree = test_entry(hz_command::WorktreeSource::Managed);
@@ -2069,6 +2115,7 @@ fn remove_args(json: bool, force: bool) -> RemoveWorktreeArgs {
         json,
         force,
         debug: false,
+        cleanup: false,
         no_cleanup: false,
     }
 }

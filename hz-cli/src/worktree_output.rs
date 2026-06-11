@@ -20,7 +20,7 @@ use crate::{
 
 pub(crate) fn create_worktree(args: NewWorktreeArgs) -> CliResult<()> {
     let debug = args.debug;
-    let run_setup = !args.no_setup;
+    let run_setup = args.setup && !args.no_setup;
     let created = hz_command::create_worktree_with_lifecycle(
         hz_command::CreateWorktree {
             name: args.name,

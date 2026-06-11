@@ -16,10 +16,9 @@ pub fn remove(input: RemoveWorktree) -> HzResult<WorktreeEntry> {
         return remove_registered_entry_with_force_from_registry(&mut registry, entry, false);
     }
 
-    Err(HzError::Usage(format!(
-        "unknown worktree: {}",
-        input.target
-    )))
+    Err(HzError::UnknownWorktree {
+        target: input.target,
+    })
 }
 
 pub fn remove_found(entry: WorktreeEntry) -> HzResult<WorktreeEntry> {
@@ -64,7 +63,9 @@ pub(crate) fn remove_registered_entry_with_force_from_registry(
                 && registered.id == entry.id
                 && same_path(&registered.path, &entry.path)
         })
-        .ok_or_else(|| HzError::Usage(format!("unknown worktree: {}", entry.handle)))?;
+        .ok_or_else(|| HzError::UnknownWorktree {
+            target: entry.handle.clone(),
+        })?;
     let entry = registry.entries[index].clone();
 
     let mut next_registry = registry.clone();

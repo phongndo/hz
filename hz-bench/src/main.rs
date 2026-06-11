@@ -388,6 +388,10 @@ struct TuiMeasureReport {
     file_count: usize,
     hunk_count: usize,
     open_micros: u128,
+    file_filter_micros: u128,
+    hunk_navigation_steps: usize,
+    hunk_navigation_total_micros: u128,
+    hunk_navigation_max_micros: u128,
     initial_render_micros: u128,
     cold_scroll_steps: usize,
     cold_scroll_total_micros: u128,
@@ -536,6 +540,10 @@ fn tui_report(report: hz_tui::DiffBenchmarkReport) -> TuiMeasureReport {
         file_count: report.file_count,
         hunk_count: report.hunk_count,
         open_micros: report.open_micros,
+        file_filter_micros: report.file_filter_micros,
+        hunk_navigation_steps: report.hunk_navigation_steps,
+        hunk_navigation_total_micros: report.hunk_navigation_total_micros,
+        hunk_navigation_max_micros: report.hunk_navigation_max_micros,
         initial_render_micros: report.initial_render_micros,
         cold_scroll_steps: report.cold_scroll_steps,
         cold_scroll_total_micros: report.cold_scroll_total_micros,
@@ -613,12 +621,14 @@ fn current_rss_bytes() -> Option<u64> {
 
 fn print_measure_report(report: &MeasureSuiteReport) {
     println!(
-        "{:<24} {:<7} {:>7} {:>8} {:>8} {:>9} {:>9} {:>8} {:>8} {:>8} {:>9} {:>8}",
+        "{:<24} {:<7} {:>7} {:>8} {:>8} {:>9} {:>8} {:>9} {:>9} {:>8} {:>8} {:>8} {:>9} {:>8}",
         "scenario",
         "mode",
         "rows",
         "loadµs",
         "openµs",
+        "filterµs",
+        "hunkµs",
         "coldµs",
         "warmµs",
         "hit%",
@@ -629,12 +639,14 @@ fn print_measure_report(report: &MeasureSuiteReport) {
     );
     for run in &report.runs {
         println!(
-            "{:<24} {:<7} {:>7} {:>8} {:>8} {:>9} {:>9} {:>8} {:>8} {:>8} {:>9} {:>8}",
+            "{:<24} {:<7} {:>7} {:>8} {:>8} {:>9} {:>8} {:>9} {:>9} {:>8} {:>8} {:>8} {:>9} {:>8}",
             run.scenario,
             run.mode,
             run.tui.row_count,
             run.load_micros,
             run.tui.open_micros,
+            run.tui.file_filter_micros,
+            run.tui.hunk_navigation_total_micros,
             run.tui.cold_scroll_avg_micros,
             run.tui.warm_scroll_avg_micros,
             percent(run.tui.warm_cache_hit_rate),

@@ -257,18 +257,16 @@ impl DiffViewModel {
     }
 
     pub fn next_hunk_row(&self, row: usize) -> Option<usize> {
-        self.hunk_start_rows
-            .iter()
-            .copied()
-            .find(|start| *start > row)
+        let index = self.hunk_start_rows.partition_point(|start| *start <= row);
+        self.hunk_start_rows.get(index).copied()
     }
 
     pub fn previous_hunk_row(&self, row: usize) -> Option<usize> {
-        self.hunk_start_rows
-            .iter()
-            .rev()
+        let index = self.hunk_start_rows.partition_point(|start| *start < row);
+        index
+            .checked_sub(1)
+            .and_then(|index| self.hunk_start_rows.get(index))
             .copied()
-            .find(|start| *start < row)
     }
 }
 
@@ -316,7 +314,7 @@ fn diff_patch_bytes(options: &DiffOptions) -> HzResult<(PathBuf, Cow<'_, [u8]>)>
 
     let repo = hz_git::repository_root(options.repo.as_deref())?;
     validate_options(options)?;
-    let args = git_diff_args(options);
+    let args = git_diff_args(options, &repo)?;
     let patch = if should_include_untracked(options) {
         git_diff_bytes_with_untracked(&repo, &args)?
     } else {
@@ -359,7 +357,7 @@ pub fn render_to_writer_ref(options: &DiffOptions, mut writer: impl Write) -> Hz
 
     let repo = hz_git::repository_root(options.repo.as_deref())?;
     validate_options(options)?;
-    let args = git_diff_args(options);
+    let args = git_diff_args(options, &repo)?;
     if should_include_untracked(options) {
         git_diff_to_writer_with_untracked(&repo, &args, writer)
     } else {
@@ -413,7 +411,7 @@ pub fn render_stat(changeset: &Changeset) -> String {
             "{:>6} {:>6} {}\n",
             file.additions,
             file.deletions,
-            file.display_path()
+            terminal_safe_text(file.display_path())
         ));
     }
     let stats = changeset.stats();
@@ -459,7 +457,7 @@ fn render_patch_stats(stats: &PatchStats) -> String {
             "{:>6} {:>6} {}\n",
             file.additions,
             file.deletions,
-            file.display_path()
+            terminal_safe_text(file.display_path())
         ));
     }
     output.push_str(&format!(
@@ -473,6 +471,22 @@ fn render_patch_stats(stats: &PatchStats) -> String {
     output
 }
 
+fn terminal_safe_text(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(char::is_control) {
+        return Cow::Borrowed(text);
+    }
+
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character.is_control() {
+            escaped.extend(character.escape_default());
+        } else {
+            escaped.push(character);
+        }
+    }
+    Cow::Owned(escaped)
+}
+
 fn patch_stats(options: &DiffOptions) -> HzResult<PatchStats> {
     if let DiffSource::Patch(source) = &options.source {
         validate_options(options)?;
@@ -481,7 +495,7 @@ fn patch_stats(options: &DiffOptions) -> HzResult<PatchStats> {
 
     let repo = hz_git::repository_root(options.repo.as_deref())?;
     validate_options(options)?;
-    let args = git_diff_numstat_args(options);
+    let args = git_diff_numstat_args(options, &repo)?;
     if should_include_untracked(options) {
         git_numstat_stats_with_untracked(&repo, &args)
     } else {
@@ -610,13 +624,13 @@ impl PatchFileStatBuilder {
                 self.new_path = None;
             }
         } else if let Some(path) = line.strip_prefix("rename from ") {
-            self.old_path = Some(path.to_owned());
+            self.old_path = Some(git_metadata_path(path));
         } else if let Some(path) = line.strip_prefix("rename to ") {
-            self.new_path = Some(path.to_owned());
+            self.new_path = Some(git_metadata_path(path));
         } else if let Some(path) = line.strip_prefix("copy from ") {
-            self.old_path = Some(path.to_owned());
+            self.old_path = Some(git_metadata_path(path));
         } else if let Some(path) = line.strip_prefix("copy to ") {
-            self.new_path = Some(path.to_owned());
+            self.new_path = Some(git_metadata_path(path));
         }
     }
 
@@ -691,7 +705,7 @@ fn validate_options(options: &DiffOptions) -> HzResult<()> {
     Ok(())
 }
 
-fn git_diff_args(options: &DiffOptions) -> Vec<String> {
+fn git_diff_args(options: &DiffOptions, repo: &Path) -> HzResult<Vec<String>> {
     let mut args = vec![
         "diff".to_owned(),
         "--binary".to_owned(),
@@ -704,7 +718,7 @@ fn git_diff_args(options: &DiffOptions) -> Vec<String> {
         DiffSource::Worktree => match options.scope {
             DiffScope::All => {
                 args.push("--end-of-options".to_owned());
-                args.push("HEAD".to_owned());
+                args.push(worktree_base_revision(repo)?);
             }
             DiffScope::Staged => args.push("--cached".to_owned()),
             DiffScope::Unstaged => {}
@@ -725,10 +739,10 @@ fn git_diff_args(options: &DiffOptions) -> Vec<String> {
         DiffSource::Patch(_) => {}
     }
 
-    args
+    Ok(args)
 }
 
-fn git_diff_numstat_args(options: &DiffOptions) -> Vec<String> {
+fn git_diff_numstat_args(options: &DiffOptions, repo: &Path) -> HzResult<Vec<String>> {
     let mut args = vec![
         "diff".to_owned(),
         "--numstat".to_owned(),
@@ -742,7 +756,7 @@ fn git_diff_numstat_args(options: &DiffOptions) -> Vec<String> {
         DiffSource::Worktree => match options.scope {
             DiffScope::All => {
                 args.push("--end-of-options".to_owned());
-                args.push("HEAD".to_owned());
+                args.push(worktree_base_revision(repo)?);
             }
             DiffScope::Staged => args.push("--cached".to_owned()),
             DiffScope::Unstaged => {}
@@ -763,7 +777,44 @@ fn git_diff_numstat_args(options: &DiffOptions) -> Vec<String> {
         DiffSource::Patch(_) => {}
     }
 
-    args
+    Ok(args)
+}
+
+fn worktree_base_revision(repo: &Path) -> HzResult<String> {
+    if has_head(repo)? {
+        Ok("HEAD".to_owned())
+    } else {
+        empty_tree_revision(repo)
+    }
+}
+
+fn empty_tree_revision(repo: &Path) -> HzResult<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["hash-object", "-t", "tree", "--stdin"])
+        .stdin(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        return Err(git_error("failed to derive empty tree revision", &output));
+    }
+
+    let revision = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if revision.is_empty() {
+        return Err(HzError::Usage(
+            "git returned an empty tree revision with no object id".to_owned(),
+        ));
+    }
+    Ok(revision)
+}
+
+fn has_head(repo: &Path) -> HzResult<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .output()?;
+    Ok(output.status.success())
 }
 
 fn should_include_untracked(options: &DiffOptions) -> bool {
@@ -1052,8 +1103,11 @@ fn create_temp_index(repo: &Path) -> HzResult<TempIndex> {
             if source.exists() {
                 let mut source_file = fs::File::open(&source)?;
                 std::io::copy(&mut source_file, &mut temp)?;
+                temp.flush()?;
+            } else {
+                temp.flush()?;
+                initialize_empty_index(repo, &path)?;
             }
-            temp.flush()?;
             Ok(())
         })();
 
@@ -1068,6 +1122,22 @@ fn create_temp_index(repo: &Path) -> HzResult<TempIndex> {
     Err(HzError::Usage(
         "failed to create a unique temporary git index".to_owned(),
     ))
+}
+
+fn initialize_empty_index(repo: &Path, index: &Path) -> HzResult<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .env("GIT_INDEX_FILE", index)
+        .args(["read-tree", "--empty"])
+        .output()?;
+    if !output.status.success() {
+        return Err(git_error(
+            "failed to initialize temporary git index",
+            &output,
+        ));
+    }
+    Ok(())
 }
 
 fn git_path(repo: &Path, path: &str) -> HzResult<PathBuf> {
@@ -1166,17 +1236,18 @@ pub fn parse_patch(patch: &str) -> Vec<DiffFile> {
     let mut files = Vec::new();
     let mut current: Option<DiffFileBuilder> = None;
     let mut current_hunk: Option<DiffHunkBuilder> = None;
-    let mut lines = patch.lines().peekable();
+    let mut lines = patch_lines(patch).peekable();
 
     while let Some(line) = lines.next() {
-        if line.starts_with("diff --git ") {
+        let header_line = patch_header_line(line);
+        if header_line.starts_with("diff --git ") {
             finish_hunk(&mut current, &mut current_hunk);
             finish_file(&mut files, &mut current);
-            current = Some(DiffFileBuilder::from_diff_git(line));
+            current = Some(DiffFileBuilder::from_diff_git(header_line));
             continue;
         }
 
-        if line.starts_with("--- ")
+        if header_line.starts_with("--- ")
             && (current.is_none()
                 || current_hunk
                     .as_ref()
@@ -1184,13 +1255,17 @@ pub fn parse_patch(patch: &str) -> Vec<DiffFile> {
             && let Some(new_header) = lines
                 .peek()
                 .copied()
+                .map(patch_header_line)
                 .filter(|line| line.starts_with("+++ "))
         {
             finish_hunk(&mut current, &mut current_hunk);
             finish_file(&mut files, &mut current);
             let new_header = new_header.to_owned();
             let _ = lines.next();
-            current = Some(DiffFileBuilder::from_unified_headers(line, &new_header));
+            current = Some(DiffFileBuilder::from_unified_headers(
+                header_line,
+                &new_header,
+            ));
             continue;
         }
 
@@ -1198,9 +1273,9 @@ pub fn parse_patch(patch: &str) -> Vec<DiffFile> {
             continue;
         };
 
-        if line.starts_with("@@ ") {
+        if header_line.starts_with("@@ ") {
             finish_hunk(&mut current, &mut current_hunk);
-            current_hunk = Some(DiffHunkBuilder::from_header(line));
+            current_hunk = Some(DiffHunkBuilder::from_header(header_line));
             continue;
         }
 
@@ -1209,12 +1284,22 @@ pub fn parse_patch(patch: &str) -> Vec<DiffFile> {
             continue;
         }
 
-        file.apply_header(line);
+        file.apply_header(header_line);
     }
 
     finish_hunk(&mut current, &mut current_hunk);
     finish_file(&mut files, &mut current);
     files
+}
+
+fn patch_lines(patch: &str) -> impl Iterator<Item = &str> {
+    patch
+        .split_inclusive('\n')
+        .map(|line| line.strip_suffix('\n').unwrap_or(line))
+}
+
+fn patch_header_line(line: &str) -> &str {
+    line.strip_suffix('\r').unwrap_or(line)
 }
 
 fn finish_hunk(file: &mut Option<DiffFileBuilder>, hunk: &mut Option<DiffHunkBuilder>) {
@@ -1279,16 +1364,16 @@ impl DiffFileBuilder {
             self.status = FileStatus::Deleted;
         } else if line.starts_with("rename from ") {
             self.status = FileStatus::Renamed;
-            self.old_path = Some(line.trim_start_matches("rename from ").to_owned());
+            self.old_path = Some(git_metadata_path(line.trim_start_matches("rename from ")));
         } else if line.starts_with("rename to ") {
             self.status = FileStatus::Renamed;
-            self.new_path = Some(line.trim_start_matches("rename to ").to_owned());
+            self.new_path = Some(git_metadata_path(line.trim_start_matches("rename to ")));
         } else if line.starts_with("copy from ") {
             self.status = FileStatus::Copied;
-            self.old_path = Some(line.trim_start_matches("copy from ").to_owned());
+            self.old_path = Some(git_metadata_path(line.trim_start_matches("copy from ")));
         } else if line.starts_with("copy to ") {
             self.status = FileStatus::Copied;
-            self.new_path = Some(line.trim_start_matches("copy to ").to_owned());
+            self.new_path = Some(git_metadata_path(line.trim_start_matches("copy to ")));
         } else if line.starts_with("old mode ") || line.starts_with("new mode ") {
             if !matches!(self.status, FileStatus::Renamed | FileStatus::Copied) {
                 self.status = FileStatus::TypeChanged;
@@ -1378,6 +1463,17 @@ fn unified_header_path(path: &str) -> Cow<'_, str> {
     }
 
     Cow::Borrowed(path.split_once('\t').map_or(path, |(path, _)| path))
+}
+
+fn git_metadata_path(path: &str) -> String {
+    if path.starts_with('"')
+        && let Some((path, trailing)) = parse_quoted_git_path_token(path)
+        && trailing.trim().is_empty()
+    {
+        return path;
+    }
+
+    path.to_owned()
 }
 
 fn parse_quoted_git_path_token(input: &str) -> Option<(String, &str)> {
@@ -1736,6 +1832,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_patch_preserves_crlf_payloads() {
+        let patch =
+            "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\r\n+old\n";
+
+        let files = parse_patch(patch);
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].hunks[0].lines[0].text, "old\r");
+        assert_eq!(files[0].hunks[0].lines[1].text, "old");
+    }
+
+    #[test]
+    fn parse_patch_dequotes_rename_and_copy_metadata_paths() {
+        let renamed = parse_patch(
+            "diff --git \"a/old\\tname.txt\" \"b/new\\tname.txt\"\nsimilarity index 100%\nrename from \"old\\tname.txt\"\nrename to \"new\\tname.txt\"\n",
+        );
+        assert_eq!(renamed[0].old_path.as_deref(), Some("old\tname.txt"));
+        assert_eq!(renamed[0].new_path.as_deref(), Some("new\tname.txt"));
+
+        let copied = parse_patch(
+            "diff --git \"a/src\\\"file.txt\" \"b/copy\\\"file.txt\"\nsimilarity index 100%\ncopy from \"src\\\"file.txt\"\ncopy to \"copy\\\"file.txt\"\n",
+        );
+        assert_eq!(copied[0].old_path.as_deref(), Some("src\"file.txt"));
+        assert_eq!(copied[0].new_path.as_deref(), Some("copy\"file.txt"));
+    }
+
+    #[test]
+    fn stat_rendering_escapes_terminal_control_characters_in_paths() {
+        let patch = Arc::<[u8]>::from(
+            b"diff --git \"a/evil\\033]52;c;AAAA\\007.txt\" \"b/evil\\033]52;c;AAAA\\007.txt\"\n--- \"a/evil\\033]52;c;AAAA\\007.txt\"\n+++ \"b/evil\\033]52;c;AAAA\\007.txt\"\n@@ -1 +1 @@\n-old\n+new\n"
+                .as_slice(),
+        );
+        let output = render(DiffOptions {
+            source: DiffSource::Patch(PatchSource::Stdin(patch)),
+            stat: true,
+            ..DiffOptions::default()
+        })
+        .expect("stat output should render");
+
+        assert!(!output.as_bytes().contains(&0x1b));
+        assert!(!output.as_bytes().contains(&0x07));
+        assert!(output.contains("\\u{1b}]52;c;AAAA\\u{7}.txt"));
+    }
+
+    #[test]
     fn parse_patch_preserves_binary_paths_with_spaces() {
         let patch = "diff --git a/my file.bin b/my file.bin\nindex 1111111..2222222 100644\nGIT binary patch\nliteral 1\nKcmZQz1ONa4\n\n";
 
@@ -1924,6 +2065,59 @@ mod tests {
             b"no newline"
         );
 
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn render_unborn_head_worktree_diff_against_empty_tree() {
+        let test_dir = temp_test_dir("unborn-head-diff");
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        fs::create_dir_all(&repo).expect("repo directory should be created");
+        git(["init", "-q"], &repo);
+        git(["config", "user.email", "test@example.com"], &repo);
+        git(["config", "user.name", "Test"], &repo);
+        fs::write(repo.join("new.txt"), "new\n").expect("new file should be written");
+
+        let output = render(DiffOptions {
+            repo: Some(repo.clone()),
+            ..DiffOptions::default()
+        })
+        .expect("unborn HEAD diff should render");
+
+        assert!(output.contains("diff --git a/new.txt b/new.txt"));
+        assert!(output.contains("new file mode"));
+        assert!(output.contains("+new"));
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn render_unborn_sha256_head_worktree_diff_against_empty_tree() {
+        let test_dir = temp_test_dir("unborn-sha256-head-diff");
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        fs::create_dir_all(&repo).expect("repo directory should be created");
+        let init = Command::new("git")
+            .current_dir(&repo)
+            .args(["init", "-q", "--object-format=sha256"])
+            .output()
+            .expect("git init should run");
+        if !init.status.success() {
+            fs::remove_dir_all(test_dir).expect("test directory should be removed");
+            return;
+        }
+
+        fs::write(repo.join("new.txt"), "new\n").expect("new file should be written");
+
+        let output = render(DiffOptions {
+            repo: Some(repo.clone()),
+            ..DiffOptions::default()
+        })
+        .expect("unborn SHA-256 HEAD diff should render");
+
+        assert!(output.contains("diff --git a/new.txt b/new.txt"));
+        assert!(output.contains("new file mode"));
+        assert!(output.contains("+new"));
         fs::remove_dir_all(test_dir).expect("test directory should be removed");
     }
 

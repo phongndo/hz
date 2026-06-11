@@ -1,7 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
     ops::Range,
-    sync::{Arc, mpsc::Receiver},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, TryRecvError},
+    },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -76,6 +80,7 @@ pub(crate) fn run_loop(
             app,
             live_diff.as_ref().map(|live_diff| &live_diff.reload_rx),
         );
+        app.drain_pending_diff_load();
         app.drain_syntax();
         if app.dirty {
             if app.terminal_clear_requested {
@@ -118,6 +123,7 @@ pub(crate) fn sync_live_diff(
     if !live_updates || !live_diff_supported(&app.options) {
         *live_diff = None;
         app.live_diff_failed_options = None;
+        app.live_reload_pending = false;
         return;
     }
 
@@ -134,11 +140,13 @@ pub(crate) fn sync_live_diff(
     match LiveDiff::start(app.options.clone(), &app.changeset.repo) {
         Ok(next_live_diff) => {
             app.live_diff_failed_options = None;
+            app.live_reload_pending = false;
             *live_diff = Some(next_live_diff);
         }
         Err(error) => {
             *live_diff = None;
             app.live_diff_failed_options = Some(app.options.clone());
+            app.live_reload_pending = false;
             app.set_notice(format!("live reload unavailable: {error}"));
         }
     }
@@ -154,8 +162,13 @@ pub(crate) fn drain_live_reloads(
 
     while let Ok(reload) = live_reload_rx.try_recv() {
         match reload {
+            LiveDiffReload::Started => {
+                app.live_reload_pending = true;
+                app.dirty = true;
+            }
             LiveDiffReload::Loaded(Ok(changeset)) => app.replace_changeset(changeset, None),
             LiveDiffReload::Loaded(Err(error)) => {
+                app.live_reload_pending = false;
                 app.set_notice(format!("live reload failed: {error}"));
             }
         }
@@ -290,6 +303,14 @@ pub(crate) struct Notice {
     pub(crate) expires_at: Instant,
 }
 
+#[derive(Debug)]
+pub(crate) struct PendingDiffLoad {
+    pub(crate) options: DiffOptions,
+    pub(crate) success_notice: String,
+    pub(crate) error_prefix: String,
+    pub(crate) rx: Receiver<HzResult<Changeset>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SyntaxStartupMode {
     Config,
@@ -312,6 +333,7 @@ pub(crate) struct DiffApp {
     pub(crate) stats: DiffStats,
     pub(crate) model: UiModel,
     pub(crate) layout: DiffLayoutMode,
+    pub(crate) layout_override: Option<DiffLayoutMode>,
     pub(crate) scroll: usize,
     pub(crate) horizontal_scroll: usize,
     pub(crate) viewport_rows: usize,
@@ -342,6 +364,8 @@ pub(crate) struct DiffApp {
     pub(crate) current_head: Option<String>,
     pub(crate) comparison_branches: Vec<String>,
     pub(crate) live_diff_failed_options: Option<DiffOptions>,
+    pub(crate) live_reload_pending: bool,
+    pub(crate) pending_diff_load: Option<PendingDiffLoad>,
     pub(crate) mouse_scroll: MouseScroll,
     pub(crate) notice: Option<Notice>,
     pub(crate) theme: DiffTheme,
@@ -454,6 +478,7 @@ impl DiffApp {
             stats,
             model,
             layout,
+            layout_override: None,
             scroll: 0,
             horizontal_scroll: 0,
             viewport_rows: 1,
@@ -484,6 +509,8 @@ impl DiffApp {
             current_head,
             comparison_branches,
             live_diff_failed_options: None,
+            live_reload_pending: false,
+            pending_diff_load: None,
             mouse_scroll: MouseScroll::default(),
             notice,
             theme,
@@ -661,6 +688,54 @@ impl DiffApp {
         if expired {
             self.notice = None;
             self.dirty = true;
+        }
+    }
+
+    pub(crate) fn start_diff_load(
+        &mut self,
+        options: DiffOptions,
+        pending_notice: impl Into<String>,
+        success_notice: impl Into<String>,
+        error_prefix: impl Into<String>,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        let load_options = options.clone();
+        thread::spawn(move || {
+            let _ = tx.send(hz_diff::load_review_ref(&load_options));
+        });
+
+        self.pending_diff_load = Some(PendingDiffLoad {
+            options,
+            success_notice: success_notice.into(),
+            error_prefix: error_prefix.into(),
+            rx,
+        });
+        self.set_notice(pending_notice);
+    }
+
+    pub(crate) fn drain_pending_diff_load(&mut self) {
+        let Some(outcome) =
+            self.pending_diff_load
+                .as_ref()
+                .and_then(|pending| match pending.rx.try_recv() {
+                    Ok(result) => Some(Some(result)),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => Some(None),
+                })
+        else {
+            return;
+        };
+        let Some(pending) = self.pending_diff_load.take() else {
+            return;
+        };
+
+        match outcome {
+            Some(Ok(changeset)) => {
+                let notice = pending.success_notice;
+                self.replace_loaded_diff(pending.options, changeset, Some(&notice));
+            }
+            Some(Err(error)) => self.set_notice(format!("{}: {error}", pending.error_prefix)),
+            None => self.set_notice(format!("{}: worker stopped", pending.error_prefix)),
         }
     }
 
@@ -1453,13 +1528,13 @@ impl DiffApp {
             return;
         }
 
-        match hz_diff::load_review_ref(&options) {
-            Ok(changeset) => {
-                let notice = format!("branch {branch}");
-                self.replace_loaded_diff(options, changeset, Some(&notice));
-            }
-            Err(error) => self.set_notice(format!("branch diff unavailable: {error}")),
-        }
+        let notice = format!("branch {branch}");
+        self.start_diff_load(
+            options,
+            format!("loading {notice}"),
+            notice,
+            "branch diff unavailable",
+        );
     }
 
     pub(crate) fn branch_source(&self, base: String, head: String) -> DiffSource {
@@ -1481,10 +1556,13 @@ impl DiffApp {
             return;
         }
 
-        match hz_diff::load_review_ref(&options) {
-            Ok(changeset) => self.replace_loaded_diff(options, changeset, Some(choice.notice())),
-            Err(error) => self.set_notice(format!("diff unavailable: {error}")),
-        }
+        let notice = choice.notice();
+        self.start_diff_load(
+            options,
+            format!("loading {notice}"),
+            notice,
+            "diff unavailable",
+        );
     }
 
     pub(crate) fn options_for_choice(&self, choice: DiffChoice) -> Option<DiffOptions> {
@@ -1804,7 +1882,7 @@ impl DiffApp {
         self.terminal_clear_requested = true;
         match open_editor(&editor, &target) {
             Ok(status) if status.success() => match self.reload() {
-                Ok(()) => self.set_notice("editor closed"),
+                Ok(()) => self.set_notice("editor closed; reloading"),
                 Err(error) => self.set_notice(format!("editor closed; reload failed: {error}")),
             },
             Ok(status) => self.set_notice(format!("editor exited with {status}")),
@@ -2540,12 +2618,22 @@ impl DiffApp {
     }
 
     pub(crate) fn toggle_layout(&mut self) {
-        self.set_layout(self.layout.toggled(), true);
+        let layout = self.layout.toggled();
+        self.layout_override = Some(layout);
+        self.set_layout(layout, true);
     }
 
     pub(crate) fn apply_responsive_layout(&mut self, width: u16) {
         self.viewport_width = (width as usize).max(1);
-        self.set_layout(default_layout_for_width(width), true);
+        let responsive_layout = default_layout_for_width(width);
+        let layout = match self.layout_override {
+            Some(DiffLayoutMode::Split) if responsive_layout == DiffLayoutMode::Unified => {
+                DiffLayoutMode::Unified
+            }
+            Some(layout) => layout,
+            None => responsive_layout,
+        };
+        self.set_layout(layout, true);
         self.set_horizontal_scroll(self.horizontal_scroll);
         self.dirty = true;
     }
@@ -2578,8 +2666,12 @@ impl DiffApp {
     }
 
     pub(crate) fn reload(&mut self) -> HzResult<()> {
-        let changeset = hz_diff::load_review_ref(&self.options)?;
-        self.replace_changeset(changeset, Some("reloaded"));
+        self.start_diff_load(
+            self.options.clone(),
+            "reloading",
+            "reloaded",
+            "reload failed",
+        );
         Ok(())
     }
 
@@ -2595,6 +2687,10 @@ impl DiffApp {
     ) {
         let options_changed = self.options != options;
         if !options_changed && self.base_changeset == changeset {
+            if self.live_reload_pending {
+                self.live_reload_pending = false;
+                self.dirty = true;
+            }
             if let Some(notice) = notice {
                 self.set_notice(notice);
             }
@@ -2615,6 +2711,7 @@ impl DiffApp {
         let previous_branch_base = self.branch_base.clone();
         let previous_branch_head = self.branch_head.clone();
         self.options = options;
+        self.live_reload_pending = false;
         self.current_head = current_head_label(&changeset.repo);
         self.branch_base = branch_base_from_options(&self.options)
             .or(previous_branch_base)

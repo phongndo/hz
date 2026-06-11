@@ -15,7 +15,8 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{
     app::{DiffApp, SyntaxStartupMode, max_scroll_for_viewport, run_loop, sync_live_diff},
-    controls::{DiffLayoutMode, default_layout_for_width},
+    controls::{DiffLayoutMode, default_layout_for_width, filtered_file_indices},
+    model::UiModel,
     render::diff::render_row,
     syntax::SyntaxRuntime,
     theme::{DiffBenchmarkOptions, DiffBenchmarkReport},
@@ -85,6 +86,13 @@ pub fn benchmark_diff_view(
     let row_count = app.model.len();
     let syntax_enabled = app.syntax.is_some();
 
+    let file_filter_start = Instant::now();
+    let _ = filtered_file_indices(&app.changeset, "src", "");
+    let file_filter_micros = file_filter_start.elapsed().as_micros();
+
+    let (hunk_navigation_steps, hunk_navigation_total_micros, hunk_navigation_max_micros) =
+        benchmark_hunk_navigation(&app.model);
+
     app.set_viewport_rows(options.viewport_rows);
 
     let initial_render_start = Instant::now();
@@ -114,6 +122,10 @@ pub fn benchmark_diff_view(
         file_count,
         hunk_count,
         open_micros,
+        file_filter_micros,
+        hunk_navigation_steps,
+        hunk_navigation_total_micros,
+        hunk_navigation_max_micros,
         initial_render_micros,
         cold_scroll_steps: positions.len(),
         cold_scroll_total_micros,
@@ -130,6 +142,24 @@ pub fn benchmark_diff_view(
             .saturating_sub(before_warm_stats.cache_misses),
         syntax: after_warm_stats,
     }
+}
+
+fn benchmark_hunk_navigation(model: &UiModel) -> (usize, u128, u128) {
+    let mut steps = 0usize;
+    let mut total = 0u128;
+    let mut max = 0u128;
+
+    for row in 0..model.len() {
+        let start = Instant::now();
+        let _ = model.next_hunk_row(row);
+        let _ = model.previous_hunk_row(row);
+        let elapsed = start.elapsed().as_nanos();
+        total = total.saturating_add(elapsed);
+        max = max.max(elapsed);
+        steps += 1;
+    }
+
+    (steps, total / 1_000, max / 1_000)
 }
 
 pub(crate) fn sanitize_benchmark_options(
