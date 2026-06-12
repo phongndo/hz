@@ -57,7 +57,7 @@ Passing `--base` always overrides `default_base`.
 `user_managed_roots` adds directories whose Git worktrees at or under them
 should be treated as user-managed by `hz`, even when they are not in the
 registry. This keeps `hz rm` from prompting for those paths and runs the cleanup
-lifecycle for them. The default `~/.hz/worktrees/<repo>/` root is always
+lifecycle for them when `hz rm --cleanup` is used. The default `~/.hz/worktrees/<repo>/` root is always
 included.
 
 Relative roots are resolved from the repository root. `~/` expands to `$HOME`.
@@ -338,5 +338,5 @@ cleanup = [".hz/environment/cleanup"]
 ```
 
 Lifecycle commands are argv arrays. Relative executable paths are resolved from
-the target worktree. `hz new` runs `setup` after creating a worktree, and
-`hz rm` runs `cleanup` before removing one.
+the target worktree. `hz new --setup` runs `setup` after creating a worktree,
+and `hz rm --cleanup` runs `cleanup` before removing one.

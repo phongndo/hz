@@ -55,17 +55,25 @@ pub(crate) fn editor_status(editor: &str, target: &EditorTarget) -> io::Result<E
     };
 
     let mut command = Command::new(&parts[0]);
-    command.args(&parts[1..]);
-    if editor_uses_goto_arg(&parts[0]) {
-        command.arg("--goto");
-        command.arg(format!("{}:{}", target.path.display(), target.line.max(1)));
-    } else {
-        command.arg(format!("+{}", target.line.max(1)));
-        command.arg(&target.path);
-    }
+    command.args(editor_args(&parts, target));
     attach_terminal_stdio(&mut command)?;
 
     command.status()
+}
+
+pub(crate) fn editor_args(parts: &[String], target: &EditorTarget) -> Vec<String> {
+    let mut args = parts.get(1..).unwrap_or_default().to_vec();
+    if editor_uses_goto_arg(parts.first().map(String::as_str).unwrap_or_default()) {
+        if !args.iter().any(|arg| arg == "--wait" || arg == "-w") {
+            args.push("--wait".to_owned());
+        }
+        args.push("--goto".to_owned());
+        args.push(format!("{}:{}", target.path.display(), target.line.max(1)));
+    } else {
+        args.push(format!("+{}", target.line.max(1)));
+        args.push(target.path.display().to_string());
+    }
+    args
 }
 
 pub(crate) fn split_editor_command(editor: &str) -> Option<Vec<String>> {

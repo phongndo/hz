@@ -6,7 +6,7 @@ use crate::{
 
 use hz_core::HzError;
 
-use std::fs;
+use std::{env, fs, path::PathBuf};
 
 pub(crate) fn daemon(args: DaemonArgs) -> CliResult<()> {
     match args.command {
@@ -29,10 +29,11 @@ pub(crate) fn daemon(args: DaemonArgs) -> CliResult<()> {
             None => write_stdout(format_args!("hz daemon stopped\n"))?,
         },
         DaemonCommand::Run(args) => {
+            let cwd = resolve_agent_cwd(args.cwd)?;
             let session = hz_daemon::spawn_agent(hz_agent::SpawnAgent {
                 kind: agent_kind(args.cli),
                 name: args.name,
-                cwd: args.cwd,
+                cwd: Some(cwd),
                 args: args.args,
             })?;
             write_stdout(format_args!(
@@ -103,5 +104,35 @@ fn status_label(status: &hz_agent::AgentStatus) -> String {
             .unwrap_or_else(|| "exited".to_owned()),
         hz_agent::AgentStatus::Stopped => "stopped".to_owned(),
         hz_agent::AgentStatus::Unknown => "unknown".to_owned(),
+    }
+}
+
+fn resolve_agent_cwd(cwd: Option<PathBuf>) -> CliResult<PathBuf> {
+    let current_dir = env::current_dir()?;
+    Ok(match cwd {
+        Some(cwd) if cwd.is_absolute() => cwd,
+        Some(cwd) => current_dir.join(cwd),
+        None => current_dir,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_run_cwd_defaults_to_client_current_dir() {
+        assert_eq!(
+            resolve_agent_cwd(None).unwrap(),
+            env::current_dir().unwrap()
+        );
+    }
+
+    #[test]
+    fn daemon_run_cwd_resolves_relative_to_client_current_dir() {
+        let cwd = resolve_agent_cwd(Some(PathBuf::from("relative"))).unwrap();
+
+        assert!(cwd.is_absolute());
+        assert_eq!(cwd, env::current_dir().unwrap().join("relative"));
     }
 }

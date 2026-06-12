@@ -29,7 +29,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the product direction.
   your current directory.
 - Applies uncommitted changes between linked worktrees without forcing a commit.
 - Moves branch ownership between worktrees when both sides are clean.
-- Runs repo-local setup and cleanup hooks for reproducible agent workspaces.
+- Runs repo-local setup and cleanup hooks on explicit opt-in commands for reproducible agent workspaces.
 - Reviews worktree or patch diffs in a terminal UI, with plain output for pipes.
 - Opens a placeholder dashboard TUI with `hz`, backed by a lightweight local
   attach/detach daemon.
@@ -367,15 +367,16 @@ cleanup = [".hz/environment/cleanup"]
 
 `.hz/environment/setup` and `.hz/environment/cleanup` are executable script
 files. Edit them to contain the repo setup and cleanup commands an agent
-worktree should run. `hz new` runs the configured setup command after creating a
-worktree, and `hz rm` runs the configured cleanup command before removing one.
-Use `--no-setup` or `--no-cleanup` to bypass a hook for one command. Use
-`hz setup [target]` or `hz cleanup [target]` to run a hook manually. Hook stdout
+worktree should run. `hz new --setup` runs the configured setup command after
+creating a worktree, and `hz rm --cleanup` runs the configured cleanup command
+before removing one. Use `--no-setup` or `--no-cleanup` to explicitly suppress a
+hook when using aliases or wrapper scripts. Use `hz setup [target]` or
+`hz cleanup [target]` to run a hook manually. Hook stdout
 is forwarded to stderr so `--json` and `--path-only` output stays
 machine-readable.
 
 Lifecycle config is read from the target worktree. Commit `.hz/hz.toml` and any
-referenced scripts before relying on `hz new` to run setup in newly created
+referenced scripts before opting in to `hz new --setup` for newly created
 worktrees.
 
 ### Config and display

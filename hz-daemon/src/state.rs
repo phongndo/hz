@@ -158,6 +158,8 @@ fn valid_session(session: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hz_agent::{AgentKind, AgentSession, AgentStatus};
+    use std::{collections::BTreeMap, path::PathBuf};
 
     #[test]
     fn daemon_state_tracks_attach_and_detach() {
@@ -194,5 +196,46 @@ mod tests {
         assert!(valid_session("session-1.ok_2"));
         assert!(!valid_session("bad/session"));
         assert!(!valid_session(""));
+    }
+
+    #[test]
+    fn stop_agent_does_not_signal_non_running_session() {
+        let id = "pi-123".to_owned();
+        let status = AgentStatus::Exited { code: Some(0) };
+        let mut state = daemon_state_with_agent(agent_session(&id, status.clone()));
+
+        let session = state.stop_agent(id).unwrap();
+
+        assert_eq!(session.status, status);
+    }
+
+    fn daemon_state_with_agent(session: AgentSession) -> DaemonState {
+        let mut agents = BTreeMap::new();
+        agents.insert(session.id.clone(), session);
+
+        DaemonState {
+            sessions: BTreeSet::new(),
+            agents: AgentStore { agents },
+            children: HashMap::new(),
+            pid: process::id(),
+            started_at_unix: 0,
+            started: Instant::now(),
+        }
+    }
+
+    fn agent_session(id: &str, status: AgentStatus) -> AgentSession {
+        AgentSession {
+            id: id.to_owned(),
+            kind: AgentKind::Pi,
+            name: None,
+            command: "pi".to_owned(),
+            args: Vec::new(),
+            cwd: PathBuf::from("/tmp"),
+            pid: u32::MAX,
+            log_path: PathBuf::from("/tmp/pi.log"),
+            status,
+            started_at_unix: 0,
+            updated_at_unix: 0,
+        }
     }
 }

@@ -705,7 +705,9 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("--installed --enabled"));
     assert!(script.contains("--all -h --help"));
     assert!(!script.contains("tui:open the terminal UI"));
+    assert!(script.contains("--setup"));
     assert!(script.contains("--no-setup"));
+    assert!(script.contains("--cleanup"));
     assert!(script.contains("--no-cleanup"));
     assert!(script.contains("--max-detached"));
     assert!(script.contains("--force-self-update"));
@@ -744,7 +746,9 @@ fn fish_integration_passes_json_short_flag_through() {
     assert!(script.contains("-l installed"));
     assert!(script.contains("-l enabled"));
     assert!(script.contains("-l all"));
+    assert!(script.contains("-l setup"));
     assert!(script.contains("-l no-setup"));
+    assert!(script.contains("-l cleanup"));
     assert!(script.contains("-l no-cleanup"));
     assert!(script.contains("-l max-detached"));
     assert!(script.contains("-l target-version"));
@@ -795,7 +799,9 @@ fn bash_integration_registers_completion() {
     assert!(script.contains("add update rm remove list ls available clean path doctor"));
     assert!(script.contains("--installed --enabled"));
     assert!(script.contains("--all -h --help"));
+    assert!(script.contains("--setup"));
     assert!(script.contains("--no-setup"));
+    assert!(script.contains("--cleanup"));
     assert!(script.contains("--no-cleanup"));
     assert!(script.contains("--max-detached"));
     assert!(script.contains("--target-version"));

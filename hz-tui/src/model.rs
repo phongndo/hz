@@ -109,6 +109,7 @@ pub(crate) struct UiModel {
     pub(crate) file_row_starts: Vec<(usize, usize)>,
     pub(crate) visible_files: Vec<usize>,
     pub(crate) hunk_start_rows: Vec<usize>,
+    pub(crate) hunk_row_starts: Vec<((usize, usize), usize)>,
 }
 
 impl UiModel {
@@ -163,6 +164,7 @@ impl UiModel {
         let mut file_start_rows = vec![None; changeset.files.len()];
         let mut file_row_starts = Vec::with_capacity(visible_files.len());
         let mut hunk_start_rows = Vec::with_capacity(total_hunks);
+        let mut hunk_row_starts = Vec::with_capacity(total_hunks);
 
         for (visible_index, file_index) in visible_files.iter().copied().enumerate() {
             let Some(file) = changeset.files.get(file_index) else {
@@ -260,7 +262,9 @@ impl UiModel {
                     }
                 }
 
-                hunk_start_rows.push(rows.len());
+                let hunk_start_row = rows.len();
+                hunk_start_rows.push(hunk_start_row);
+                hunk_row_starts.push(((file_index, hunk_index), hunk_start_row));
                 rows.push(UiRow::HunkHeader {
                     file: file_index,
                     hunk: hunk_index,
@@ -295,6 +299,7 @@ impl UiModel {
             file_row_starts,
             visible_files: visible_files.to_vec(),
             hunk_start_rows,
+            hunk_row_starts,
         }
     }
 
@@ -333,36 +338,28 @@ impl UiModel {
     }
 
     pub(crate) fn visible_file_position(&self, file: usize) -> Option<usize> {
-        self.visible_files
-            .iter()
-            .position(|candidate| *candidate == file)
+        self.visible_files.binary_search(&file).ok()
     }
 
     pub(crate) fn next_hunk_row(&self, row: usize) -> Option<usize> {
-        self.hunk_start_rows
-            .iter()
-            .copied()
-            .find(|start| *start > row)
+        let index = self.hunk_start_rows.partition_point(|start| *start <= row);
+        self.hunk_start_rows.get(index).copied()
     }
 
     pub(crate) fn previous_hunk_row(&self, row: usize) -> Option<usize> {
-        self.hunk_start_rows
-            .iter()
-            .rev()
+        let index = self.hunk_start_rows.partition_point(|start| *start < row);
+        index
+            .checked_sub(1)
+            .and_then(|index| self.hunk_start_rows.get(index))
             .copied()
-            .find(|start| *start < row)
     }
 
     pub(crate) fn hunk_start_row(&self, file: usize, hunk: usize) -> Option<usize> {
-        self.hunk_start_rows.iter().copied().find(|row| {
-            matches!(
-                self.row(*row),
-                Some(UiRow::HunkHeader {
-                    file: row_file,
-                    hunk: row_hunk,
-                }) if row_file == file && row_hunk == hunk
-            )
-        })
+        self.hunk_row_starts
+            .binary_search_by_key(&(file, hunk), |(key, _)| *key)
+            .ok()
+            .and_then(|index| self.hunk_row_starts.get(index))
+            .map(|(_, row)| *row)
     }
 
     pub(crate) fn hunk_row_range(&self, file: usize, hunk: usize) -> Option<Range<usize>> {

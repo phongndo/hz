@@ -76,17 +76,70 @@ impl DaemonState {
     }
 
     pub(crate) fn stop_agent(&mut self, id: String) -> HzResult<AgentSession> {
-        let session = self
-            .agents
-            .agents
-            .get_mut(&id)
-            .ok_or_else(|| HzError::Usage(format!("unknown agent session: {id}")))?;
+        self.refresh_agents();
 
-        terminate_process_group(session.pid)?;
+        let Some(session) = self.agents.agents.get(&id) else {
+            return Err(HzError::Usage(format!("unknown agent session: {id}")));
+        };
+        if session.status != AgentStatus::Running {
+            return Ok(session.clone());
+        }
+
+        if !self.children.contains_key(&id) {
+            // Without a live Child handle owned by this daemon, the stored PID
+            // may already be gone or reused by an unrelated process.
+            let session = self
+                .agents
+                .agents
+                .get_mut(&id)
+                .expect("agent session exists after status check");
+            session.status = AgentStatus::Unknown;
+            session.updated_at_unix = unix_seconds()?;
+            let session = session.clone();
+            self.agents.save()?;
+            return Ok(session);
+        }
+
+        let exit_status = self
+            .children
+            .get_mut(&id)
+            .expect("agent child exists after live check")
+            .child
+            .try_wait()?;
+        if let Some(status) = exit_status {
+            self.children.remove(&id);
+            let session = self
+                .agents
+                .agents
+                .get_mut(&id)
+                .expect("agent session exists after child exit");
+            session.status = AgentStatus::Exited {
+                code: status.code(),
+            };
+            session.updated_at_unix = unix_seconds()?;
+            let session = session.clone();
+            self.agents.save()?;
+            return Ok(session);
+        }
+
+        let pid = self
+            .agents
+            .agents
+            .get(&id)
+            .expect("agent session exists before terminate")
+            .pid;
+
+        terminate_process_group(pid)?;
         if let Some(mut running) = self.children.remove(&id) {
             let _ = running.child.kill();
             let _ = running.child.wait();
         }
+
+        let session = self
+            .agents
+            .agents
+            .get_mut(&id)
+            .expect("agent session exists after terminate");
         session.status = AgentStatus::Stopped;
         session.updated_at_unix = unix_seconds()?;
         let session = session.clone();

@@ -31,7 +31,7 @@ pub(crate) fn remove_worktree(args: RemoveWorktreeArgs) -> CliResult<()> {
         removable.push(candidate.worktree);
     }
 
-    if !args.no_cleanup {
+    if args.cleanup && !args.no_cleanup {
         for candidate in &removable {
             if should_run_cleanup_for_removal(candidate) {
                 hz_command::run_lifecycle_for_entry(candidate, hz_command::LifecycleKind::Cleanup)?;
@@ -153,7 +153,7 @@ fn push_removal_candidate(
 }
 
 fn is_unknown_worktree_error(error: &HzError) -> bool {
-    matches!(error, HzError::Usage(message) if message.starts_with("unknown worktree: "))
+    matches!(error, HzError::UnknownWorktree { .. })
 }
 
 pub(crate) fn removed_worktrees_json(
