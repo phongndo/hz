@@ -70,6 +70,8 @@ enum BenchCommand {
     Fixtures(FixturesArgs),
     #[command(about = "Measure patch loading, TUI rendering, and syntax highlighting")]
     Measure(MeasureArgs),
+    #[command(about = "Compare full editor reload with path-scoped editor reload")]
+    EditorReload(EditorReloadArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -127,6 +129,25 @@ struct MeasureArgs {
     #[arg(long, default_value_t = 200)]
     max_scroll_steps: usize,
     /// Emit JSON instead of a human table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct EditorReloadArgs {
+    /// Directory containing generated benchmark fixture directories.
+    #[arg(long, value_name = "DIR")]
+    fixtures: PathBuf,
+    /// Scenario to measure.
+    #[arg(long, value_enum, value_name = "NAME")]
+    scenario: ScenarioKind,
+    /// Repo-relative path to reload. Defaults to the first changed file.
+    #[arg(long, value_name = "PATH")]
+    path: Option<PathBuf>,
+    /// Number of measured iterations for each reload strategy.
+    #[arg(long, default_value_t = 5)]
+    iterations: usize,
+    /// Emit JSON instead of a human line.
     #[arg(long)]
     json: bool,
 }
@@ -311,6 +332,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     match cli.command {
         BenchCommand::Fixtures(args) => generate_fixtures(args)?,
         BenchCommand::Measure(args) => measure_fixtures(args)?,
+        BenchCommand::EditorReload(args) => measure_editor_reload(args)?,
     }
     Ok(())
 }
@@ -427,6 +449,16 @@ struct SyntaxMeasureReport {
     estimated_memory_peak_bytes: u64,
 }
 
+#[derive(Debug, Serialize)]
+struct EditorReloadReport {
+    scenario: &'static str,
+    path: String,
+    iterations: usize,
+    full_avg_micros: u128,
+    scoped_avg_micros: u128,
+    speedup: Option<f64>,
+}
+
 fn measure_fixtures(args: MeasureArgs) -> BenchResult<()> {
     let scenarios = select_scenarios(&args);
     let syntax_languages = if args.syntax_languages.is_empty() && args.syntax {
@@ -482,6 +514,77 @@ fn measure_fixtures(args: MeasureArgs) -> BenchResult<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print_measure_report(&report);
+    }
+
+    Ok(())
+}
+
+fn measure_editor_reload(args: EditorReloadArgs) -> BenchResult<()> {
+    if args.iterations == 0 {
+        return Err(BenchError::Usage(
+            "--iterations must be greater than zero".to_owned(),
+        ));
+    }
+
+    let scenario_dir = args.fixtures.join(args.scenario.name());
+    let manifest = load_manifest(&scenario_dir)?;
+    let repo = scenario_dir.join(&manifest.paths.repo);
+    let options = hz_diff::DiffOptions {
+        repo: Some(repo),
+        ..hz_diff::DiffOptions::default()
+    };
+    let path = match args.path {
+        Some(path) => path,
+        None => hz_diff::load_review_ref(&options)
+            .map_err(|error| BenchError::Hz(error.to_string()))?
+            .files
+            .first()
+            .map(|file| PathBuf::from(file.display_path()))
+            .ok_or_else(|| BenchError::Usage("scenario has no changed files".to_owned()))?,
+    };
+
+    let mut full_total = 0u128;
+    for _ in 0..args.iterations {
+        let start = Instant::now();
+        let _ = hz_diff::load_review_ref(&options)
+            .map_err(|error| BenchError::Hz(error.to_string()))?;
+        full_total = full_total.saturating_add(start.elapsed().as_micros());
+    }
+
+    let mut scoped_total = 0u128;
+    for _ in 0..args.iterations {
+        let start = Instant::now();
+        let _ = hz_diff::load_review_ref_path(&options, &path)
+            .map_err(|error| BenchError::Hz(error.to_string()))?;
+        scoped_total = scoped_total.saturating_add(start.elapsed().as_micros());
+    }
+
+    let full_avg = average_micros(full_total, args.iterations);
+    let scoped_avg = average_micros(scoped_total, args.iterations);
+    let report = EditorReloadReport {
+        scenario: args.scenario.name(),
+        path: path.display().to_string(),
+        iterations: args.iterations,
+        full_avg_micros: full_avg,
+        scoped_avg_micros: scoped_avg,
+        speedup: (scoped_avg > 0).then(|| full_avg as f64 / scoped_avg as f64),
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "{} path={} iterations={} full_avg={}µs scoped_avg={}µs speedup={}",
+            report.scenario,
+            report.path,
+            report.iterations,
+            report.full_avg_micros,
+            report.scoped_avg_micros,
+            report
+                .speedup
+                .map(|speedup| format!("{speedup:.2}x"))
+                .unwrap_or_else(|| "n/a".to_owned())
+        );
     }
 
     Ok(())

@@ -3,15 +3,18 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
+    time::Duration,
 };
 
 use crossterm::{
     cursor::Show,
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{self, DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use hz_core::HzResult;
+
+const EDITOR_EVENT_DRAIN_LIMIT: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EditorTarget {
@@ -109,13 +112,55 @@ impl SuspendedTerminal {
             return Ok(());
         }
 
+        let _ = flush_terminal_input_queue();
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         stdout.flush()?;
         enable_raw_mode()?;
+        drain_pending_editor_events()?;
         self.active = false;
         Ok(())
     }
+}
+
+fn drain_pending_editor_events() -> io::Result<()> {
+    for _ in 0..EDITOR_EVENT_DRAIN_LIMIT {
+        if !event::poll(Duration::ZERO)? {
+            break;
+        }
+
+        let _ = event::read()?;
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn flush_terminal_input_queue() -> io::Result<()> {
+    use std::fs::OpenOptions;
+
+    use rustix::{
+        io::Errno,
+        termios::{QueueSelector, isatty, tcflush},
+    };
+
+    let stdin = io::stdin();
+    let flush_result = if isatty(&stdin) {
+        tcflush(stdin, QueueSelector::IFlush)
+    } else {
+        let tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+        tcflush(tty, QueueSelector::IFlush)
+    };
+
+    match flush_result {
+        Ok(()) | Err(Errno::NOTTY) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(not(unix))]
+fn flush_terminal_input_queue() -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(unix)]

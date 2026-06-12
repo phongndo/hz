@@ -17,9 +17,8 @@ up safely from the terminal.
 
 `hz` is pre-1.0. The current release is usable for local Git worktree, handoff,
 lifecycle, shell integration, install/update, and diff review workflows. Built-
-in agent execution, provider adapters, and the broader dashboard/runtime are on
-the roadmap, not shipped yet. Prefer `--json` for scripts, and expect command
-shapes to keep tightening before 1.0.
+provider adapters and the broader dashboard/runtime are on the roadmap. Prefer
+`--json` for scripts, and expect command shapes to keep tightening before 1.0.
 
 See [docs/roadmap.md](docs/roadmap.md) for the product direction.
 
@@ -32,6 +31,10 @@ See [docs/roadmap.md](docs/roadmap.md) for the product direction.
 - Moves branch ownership between worktrees when both sides are clean.
 - Runs repo-local setup and cleanup hooks on explicit opt-in commands for reproducible agent workspaces.
 - Reviews worktree or patch diffs in a terminal UI, with plain output for pipes.
+- Opens a placeholder dashboard TUI with `hz`, backed by a lightweight local
+  attach/detach daemon.
+- Starts `pi`, `codex`, and Claude Code CLI processes under the local daemon,
+  keeps stdin open, and writes per-session logs.
 - Lists, finds, prunes, and removes managed and unmanaged worktrees.
 - Installs and updates release binaries from GitHub releases.
 
@@ -133,6 +136,27 @@ completions:
 hz install zsh
 source ~/.zshrc
 ```
+
+## AI CLI daemon
+
+The local daemon can start long-running AI CLI processes and keep their stdin
+open after the launching `hz` command exits. The first supported command names
+are `pi`, `codex`, and `claude` (Claude Code):
+
+```sh
+hz daemon run pi --name plan-login
+hz daemon run codex -- --model gpt-5
+hz daemon run claude --name review -- -p "review this worktree"
+hz daemon agents
+hz daemon send <session> continue
+hz daemon logs <session>
+hz daemon stop-agent <session>
+```
+
+This initial process supervisor records logs and supports line-based input; a
+full interactive PTY attach flow is still future work. Built-in AI CLI command
+definitions live in `hz-agent` so future integrations do not have to grow the
+daemon crate.
 
 ## Core workflows
 
@@ -385,13 +409,15 @@ For compatibility, `hz init <shell>` still installs shell integration, but
 
 ```text
 hz-cli       command parsing, terminal output, install/update, and CLI UX
+hz-agent     AI CLI integration models and built-in command definitions
 hz-command   command facade shared by CLI and future TUI/runtime callers
 hz-core      shared errors and common models
+hz-daemon    local daemon for TUI/runtime sessions and AI CLI processes
 hz-git       low-level Git integration boundary
 hz-worktree  worktree domain boundary: new, path, list, handoff, remove
 hz-diff      diff loading and rendering boundary
 hz-syntax    tree-sitter syntax highlighting and parser cache management
-hz-tui       ratatui/crossterm diff review UI boundary
+hz-tui       ratatui/crossterm main and diff review UI boundary
 hz-bench     local benchmark fixture generation
 ```
 

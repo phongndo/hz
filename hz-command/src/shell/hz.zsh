@@ -147,6 +147,7 @@ _hz_complete_main() {
     'shell:print shell integration'
     'update:update hz from GitHub releases'
     'diff:review a git diff'
+    'daemon:manage hz daemon'
     'ts:manage diff syntax highlighting languages'
     'tree-sitter:manage diff syntax highlighting languages'
     'worktree:worktree commands'
@@ -154,6 +155,29 @@ _hz_complete_main() {
   )
 
   _describe -t commands 'hz command' commands
+}
+
+_hz_complete_daemon_subcommand() {
+  local -a commands
+  commands=(
+    'start:start the hz daemon'
+    'stop:stop the hz daemon'
+    'status:show hz daemon status'
+    'run:run an AI CLI under the hz daemon'
+    'agents:list AI CLI sessions'
+    'ls:list AI CLI sessions'
+    'stop-agent:stop an AI CLI session'
+    'logs:print an AI CLI session log'
+    'send:send input to an AI CLI session'
+    'attach:attach a session to the hz daemon'
+    'detach:detach a session from the hz daemon'
+  )
+
+  _describe -t commands 'hz daemon command' commands
+}
+
+_hz_complete_ai_clis() {
+  compadd pi codex claude
 }
 
 _hz_complete_worktree_subcommand() {
@@ -316,6 +340,9 @@ _hz_complete_command_options() {
     diff)
       compadd -- -r --repo -b --base --pr --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help
       ;;
+    daemon)
+      compadd -- -h --help
+      ;;
   esac
 }
 
@@ -340,6 +367,32 @@ _hz_complete_ts_args() {
   case "$subcmd" in
     add|update|rm|remove)
       _message 'language'
+      ;;
+  esac
+}
+
+_hz_complete_daemon_args() {
+  local subcmd="$1"
+
+  if [[ "$PREFIX" == -* ]]; then
+    case "$subcmd" in
+      run)
+        compadd -- -n --name -C --cwd -h --help
+        ;;
+      start|stop|status|agents|ls|stop-agent|logs|send|attach|detach)
+        compadd -- -h --help
+        ;;
+    esac
+    return
+  fi
+
+  case "$subcmd" in
+    run)
+      _arguments \
+        '1:ai cli:_hz_complete_ai_clis'
+      ;;
+    stop-agent|logs|send|attach|detach)
+      _message 'session id'
       ;;
   esac
 }
@@ -427,6 +480,22 @@ _hz_completion() {
     shift 2 words
     (( CURRENT -= 2 ))
     _hz_complete_ts_args "$subcmd"
+    return
+  fi
+
+  if [[ "$cmd" == "daemon" ]]; then
+    if (( CURRENT == 3 )); then
+      if [[ "$PREFIX" == -* ]]; then
+        compadd -- -h --help
+      else
+        _hz_complete_daemon_subcommand
+      fi
+      return
+    fi
+    local subcmd="${words[3]}"
+    shift 2 words
+    (( CURRENT -= 2 ))
+    _hz_complete_daemon_args "$subcmd"
     return
   fi
 

@@ -697,6 +697,8 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("'install:install shell integration'"));
     assert!(script.contains("'update:update hz from GitHub releases'"));
     assert!(script.contains("'diff:review a git diff'"));
+    assert!(script.contains("'daemon:manage hz daemon'"));
+    assert!(script.contains("'start:start the hz daemon'"));
     assert!(script.contains("'ts:manage diff syntax highlighting languages'"));
     assert!(script.contains("'add:install and enable syntax highlighting languages'"));
     assert!(script.contains("'update:update cached syntax highlighting parsers'"));
@@ -734,7 +736,11 @@ fn fish_integration_passes_json_short_flag_through() {
     assert!(script.contains("__hz_complete_git_refs"));
     assert!(script.contains("complete -c hz -n \"__hz_command_is remove rm\""));
     assert!(script.contains("init install setup cleanup shell update"));
+    assert!(script.contains("diff daemon ts"));
     assert!(script.contains("ts tree-sitter"));
+    assert!(script.contains("__hz_needs_daemon_subcommand"));
+    assert!(script.contains("if test (count $tokens) -eq 3\n        return 0\n    end"));
+    assert!(script.contains("start stop status run agents ls stop-agent logs send attach detach"));
     assert!(script.contains("__hz_needs_ts_subcommand"));
     assert!(script.contains("add update rm remove list ls available clean path doctor"));
     assert!(script.contains("not __fish_seen_subcommand_from new path cd list ls"));
@@ -786,7 +792,10 @@ fn bash_integration_registers_completion() {
     assert!(script.contains("--branch)"));
     assert!(!script.contains("-b|--branch"));
     assert!(script.contains("init install setup cleanup shell update"));
+    assert!(script.contains("diff daemon ts"));
     assert!(script.contains("ts tree-sitter"));
+    assert!(script.contains("_hz_complete_daemon_args"));
+    assert!(script.contains("start stop status run agents ls stop-agent logs send attach detach"));
     assert!(script.contains("_hz_complete_ts_args"));
     assert!(script.contains("add update rm remove list ls available clean path doctor"));
     assert!(script.contains("--installed --enabled"));

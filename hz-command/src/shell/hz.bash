@@ -68,9 +68,11 @@ hzlocal() {
   hz cd local "$@"
 }
 
-_hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt"
+_hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt"
 _hz_worktree_commands="new path cd list ls remove rm handoff"
 _hz_ts_commands="add update rm remove list ls available clean path doctor"
+_hz_daemon_commands="start stop status run agents ls stop-agent logs send attach detach"
+_hz_ai_clis="pi codex claude"
 _hz_shells="zsh bash fish"
 
 _hz_reply() {
@@ -287,6 +289,9 @@ _hz_complete_command_args() {
         _hz_git_ref_reply "$current"
       fi
       ;;
+    daemon)
+      [[ "$current" == -* ]] && _hz_reply "-h --help" "$current"
+      ;;
   esac
 }
 
@@ -302,6 +307,24 @@ _hz_complete_ts_args() {
       [[ "$current" == -* ]] && _hz_reply "--all -h --help" "$current"
       ;;
     add|rm|remove|list|ls|clean|path|doctor)
+      [[ "$current" == -* ]] && _hz_reply "-h --help" "$current"
+      ;;
+  esac
+}
+
+_hz_complete_daemon_args() {
+  local subcmd="$1"
+  local current="$2"
+
+  case "$subcmd" in
+    run)
+      if [[ "$COMP_CWORD" -eq 3 ]]; then
+        _hz_reply "$_hz_ai_clis" "$current"
+      elif [[ "$current" == -* ]]; then
+        _hz_reply "-n --name -C --cwd -h --help" "$current"
+      fi
+      ;;
+    start|stop|status|agents|ls|stop-agent|logs|send|attach|detach)
       [[ "$current" == -* ]] && _hz_reply "-h --help" "$current"
       ;;
   esac
@@ -344,6 +367,19 @@ _hz_completion() {
       return
     fi
     _hz_complete_ts_args "${COMP_WORDS[2]}" "$current"
+    return
+  fi
+
+  if [[ "$cmd" == "daemon" ]]; then
+    if [[ "$COMP_CWORD" -eq 2 ]]; then
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-h --help" "$current"
+      else
+        _hz_reply "$_hz_daemon_commands" "$current"
+      fi
+      return
+    fi
+    _hz_complete_daemon_args "${COMP_WORDS[2]}" "$current"
     return
   fi
 

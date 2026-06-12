@@ -282,9 +282,36 @@ pub fn load_review_ref(options: &DiffOptions) -> HzResult<Changeset> {
     load_changeset(options, false)
 }
 
+pub fn load_review_ref_path(options: &DiffOptions, path: &Path) -> HzResult<Changeset> {
+    load_changeset_paths(options, &[path.to_path_buf()], false)
+}
+
+pub fn load_review_ref_paths(options: &DiffOptions, paths: &[PathBuf]) -> HzResult<Changeset> {
+    load_changeset_paths(options, paths, false)
+}
+
 fn load_changeset(options: &DiffOptions, keep_raw_patch: bool) -> HzResult<Changeset> {
     let title = diff_title(options);
     let (repo, patch) = diff_patch_bytes(options)?;
+    changeset_from_patch(repo, title, patch, keep_raw_patch)
+}
+
+fn load_changeset_paths(
+    options: &DiffOptions,
+    paths: &[PathBuf],
+    keep_raw_patch: bool,
+) -> HzResult<Changeset> {
+    let title = diff_title(options);
+    let (repo, patch) = diff_patch_bytes_paths(options, paths)?;
+    changeset_from_patch(repo, title, Cow::Owned(patch), keep_raw_patch)
+}
+
+fn changeset_from_patch(
+    repo: PathBuf,
+    title: String,
+    patch: Cow<'_, [u8]>,
+    keep_raw_patch: bool,
+) -> HzResult<Changeset> {
     let files = {
         // The parsed model is text-only for stats/TUI display. Keep raw_patch
         // as bytes and only decode lossily at this display/parsing boundary.
@@ -303,6 +330,34 @@ fn load_changeset(options: &DiffOptions, keep_raw_patch: bool) -> HzResult<Chang
         files,
         raw_patch,
     })
+}
+
+fn diff_patch_bytes_paths(
+    options: &DiffOptions,
+    paths: &[PathBuf],
+) -> HzResult<(PathBuf, Vec<u8>)> {
+    if matches!(options.source, DiffSource::Patch(_)) {
+        return Err(HzError::Usage(
+            "path-scoped reload does not apply to patch input".to_owned(),
+        ));
+    }
+    if paths.is_empty() {
+        return Err(HzError::Usage(
+            "path-scoped reload requires at least one path".to_owned(),
+        ));
+    }
+
+    let repo = hz_git::repository_root(options.repo.as_deref())?;
+    validate_options(options)?;
+    let mut args = git_diff_args(options, &repo)?;
+    append_pathspecs(&mut args, paths);
+    let patch = if should_include_untracked(options) {
+        git_diff_bytes_with_untracked_pathspecs(&repo, &args, paths)?
+    } else {
+        git_diff_bytes(&repo, &args)?
+    };
+
+    Ok((repo, patch))
 }
 
 fn diff_patch_bytes(options: &DiffOptions) -> HzResult<(PathBuf, Cow<'_, [u8]>)> {
@@ -742,6 +797,11 @@ fn git_diff_args(options: &DiffOptions, repo: &Path) -> HzResult<Vec<String>> {
     Ok(args)
 }
 
+fn append_pathspecs(args: &mut Vec<String>, paths: &[PathBuf]) {
+    args.push("--".to_owned());
+    args.extend(paths.iter().map(|path| path.to_string_lossy().into_owned()));
+}
+
 fn git_diff_numstat_args(options: &DiffOptions, repo: &Path) -> HzResult<Vec<String>> {
     let mut args = vec![
         "diff".to_owned(),
@@ -863,6 +923,23 @@ fn git_diff_bytes_with_index(
 
 fn git_diff_bytes_with_untracked(repo: &Path, args: &[String]) -> HzResult<Vec<u8>> {
     let untracked = untracked_paths(repo)?;
+    git_diff_bytes_with_untracked_paths(repo, args, untracked)
+}
+
+fn git_diff_bytes_with_untracked_pathspecs(
+    repo: &Path,
+    args: &[String],
+    pathspecs: &[PathBuf],
+) -> HzResult<Vec<u8>> {
+    let untracked = untracked_paths_for(repo, pathspecs)?;
+    git_diff_bytes_with_untracked_paths(repo, args, untracked)
+}
+
+fn git_diff_bytes_with_untracked_paths(
+    repo: &Path,
+    args: &[String],
+    untracked: Vec<PathBuf>,
+) -> HzResult<Vec<u8>> {
     if untracked.is_empty() {
         return git_diff_bytes(repo, args);
     }
@@ -1193,11 +1270,20 @@ fn temp_index_path(index_path: &Path, attempt: u32) -> HzResult<PathBuf> {
 }
 
 fn untracked_paths(repo: &Path) -> HzResult<Vec<PathBuf>> {
-    let output = Command::new("git")
+    untracked_paths_for(repo, &[])
+}
+
+fn untracked_paths_for(repo: &Path, pathspecs: &[PathBuf]) -> HzResult<Vec<PathBuf>> {
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(repo)
-        .args(["ls-files", "--others", "--exclude-standard", "-z"])
-        .output()?;
+        .args(["ls-files", "--others", "--exclude-standard", "-z"]);
+    if !pathspecs.is_empty() {
+        command.arg("--").args(pathspecs);
+    }
+
+    let output = command.output()?;
 
     if !output.status.success() {
         return Err(git_error("failed to list untracked files", &output));
@@ -1755,6 +1841,83 @@ mod tests {
         let full = render_stat(&load_review_ref(&options).unwrap());
 
         assert_eq!(streamed, full);
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn load_review_ref_path_limits_tracked_and_untracked_files() {
+        let test_dir = temp_test_dir("path-scoped-review");
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        init_repo(&repo);
+        fs::write(repo.join("other.txt"), "other\n").expect("other file should be written");
+        git(["add", "other.txt"], &repo);
+        git(["commit", "-q", "-m", "other"], &repo);
+
+        fs::write(repo.join("base.txt"), "base changed\n").expect("base file should change");
+        fs::write(repo.join("other.txt"), "other changed\n").expect("other file should change");
+        fs::write(repo.join("new.txt"), "new\n").expect("untracked file should be written");
+        let options = DiffOptions {
+            repo: Some(repo.clone()),
+            ..DiffOptions::default()
+        };
+
+        let tracked = load_review_ref_path(&options, Path::new("base.txt")).unwrap();
+        assert_eq!(tracked.files.len(), 1);
+        assert_eq!(tracked.files[0].display_path(), "base.txt");
+
+        let untracked = load_review_ref_path(&options, Path::new("new.txt")).unwrap();
+        assert_eq!(untracked.files.len(), 1);
+        assert_eq!(untracked.files[0].display_path(), "new.txt");
+
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn load_review_ref_paths_preserves_scoped_rename_metadata() {
+        let test_dir = temp_test_dir("path-scoped-rename");
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        init_repo(&repo);
+        let base = (1..=20)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        fs::write(repo.join("old.txt"), base).expect("old file should be written");
+        git(["add", "old.txt"], &repo);
+        git(["commit", "-q", "-m", "old"], &repo);
+
+        git(["mv", "old.txt", "new.txt"], &repo);
+        let changed = (1..=20)
+            .map(|line| {
+                if line == 20 {
+                    "line changed\n".to_owned()
+                } else {
+                    format!("line {line}\n")
+                }
+            })
+            .collect::<String>();
+        fs::write(repo.join("new.txt"), changed).expect("new file should be changed");
+        let options = DiffOptions {
+            repo: Some(repo.clone()),
+            ..DiffOptions::default()
+        };
+
+        let new_only = load_review_ref_path(&options, Path::new("new.txt")).unwrap();
+        assert_eq!(new_only.files[0].status, FileStatus::Added);
+
+        let paired = load_review_ref_paths(
+            &options,
+            &[PathBuf::from("old.txt"), PathBuf::from("new.txt")],
+        )
+        .unwrap();
+
+        assert_eq!(paired.files.len(), 1);
+        assert_eq!(paired.files[0].status, FileStatus::Renamed);
+        assert_eq!(paired.files[0].old_path.as_deref(), Some("old.txt"));
+        assert_eq!(paired.files[0].new_path.as_deref(), Some("new.txt"));
+        assert_eq!(paired.files[0].additions, 1);
+        assert_eq!(paired.files[0].deletions, 1);
+
         fs::remove_dir_all(test_dir).expect("test directory should be removed");
     }
 
