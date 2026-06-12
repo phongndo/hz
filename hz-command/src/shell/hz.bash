@@ -289,6 +289,9 @@ _hz_complete_command_args() {
         _hz_git_ref_reply "$current"
       fi
       ;;
+    daemon)
+      [[ "$current" == -* ]] && _hz_reply "-h --help" "$current"
+      ;;
   esac
 }
 

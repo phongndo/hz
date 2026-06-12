@@ -340,6 +340,9 @@ _hz_complete_command_options() {
     diff)
       compadd -- -r --repo -b --base --pr --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help
       ;;
+    daemon)
+      compadd -- -h --help
+      ;;
   esac
 }
 
