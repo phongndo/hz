@@ -59,6 +59,10 @@ pub fn agent_log_path(_id: &str) -> HzResult<PathBuf> {
     unsupported()
 }
 
+pub fn read_agent_log(_id: &str) -> HzResult<String> {
+    unsupported()
+}
+
 pub fn run_foreground() -> HzResult<()> {
     unsupported()
 }

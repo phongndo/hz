@@ -160,6 +160,9 @@ function __hz_daemon_run_needs_cli
     test "$tokens[3]" = run; or return 1
 
     set -l current (commandline -ct)
+    if test (count $tokens) -eq 3
+        return 0
+    end
     test (count $tokens) -eq 4; and test "$tokens[4]" = "$current"
 end
 

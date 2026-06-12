@@ -364,6 +364,16 @@ pub(crate) enum AiCliArg {
     Claude,
 }
 
+impl From<AiCliArg> for hz_agent::AgentKind {
+    fn from(value: AiCliArg) -> Self {
+        match value {
+            AiCliArg::Pi => Self::Pi,
+            AiCliArg::Codex => Self::Codex,
+            AiCliArg::Claude => Self::Claude,
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct DaemonAttachArgs {
     #[arg(value_name = "SESSION")]

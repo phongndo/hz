@@ -739,6 +739,7 @@ fn fish_integration_passes_json_short_flag_through() {
     assert!(script.contains("diff daemon ts"));
     assert!(script.contains("ts tree-sitter"));
     assert!(script.contains("__hz_needs_daemon_subcommand"));
+    assert!(script.contains("if test (count $tokens) -eq 3\n        return 0\n    end"));
     assert!(script.contains("start stop status run agents ls stop-agent logs send attach detach"));
     assert!(script.contains("__hz_needs_ts_subcommand"));
     assert!(script.contains("add update rm remove list ls available clean path doctor"));

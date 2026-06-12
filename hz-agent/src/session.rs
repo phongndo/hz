@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::AgentKind;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnAgent {
     pub kind: AgentKind,
     pub name: Option<String>,
@@ -12,7 +12,7 @@ pub struct SpawnAgent {
     pub args: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSession {
     pub id: String,
     pub kind: AgentKind,

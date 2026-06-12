@@ -91,6 +91,52 @@ fn non_stdout_or_non_broken_pipe_errors_do_not_exit_cleanly() {
 }
 
 #[test]
+fn default_command_uses_tui_only_for_terminal_stdout() {
+    assert_eq!(default_action(true), DefaultAction::MainTui);
+    assert_eq!(default_action(false), DefaultAction::Help);
+}
+
+#[test]
+fn default_help_renders_usage_for_non_terminal_stdout() {
+    let mut output = Vec::new();
+
+    write_default_help(&mut output).unwrap();
+
+    let help = String::from_utf8(output).unwrap();
+    assert!(help.contains("usage:"));
+    assert!(help.contains("commands:"));
+    assert!(!help.contains("Hello word"));
+}
+
+#[test]
+fn main_tui_finish_prefers_tui_error_over_detach_error() {
+    let error = finish_main_tui(
+        Err(CliError::from(hz_core::HzError::Usage(
+            "tui failed".to_owned(),
+        ))),
+        Err(CliError::from(hz_core::HzError::Usage(
+            "detach failed".to_owned(),
+        ))),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "tui failed");
+}
+
+#[test]
+fn main_tui_finish_reports_detach_error_after_successful_tui() {
+    let error = finish_main_tui(
+        Ok(()),
+        Err(CliError::from(hz_core::HzError::Usage(
+            "detach failed".to_owned(),
+        ))),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "detach failed");
+}
+
+#[test]
 fn list_output_uses_branch_as_display_identifier() {
     let output = render_worktree_list(&[hz_command::WorktreeEntry {
         id: "entry-id".to_owned(),

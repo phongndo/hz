@@ -1,5 +1,5 @@
 use std::{
-    env, io,
+    env, fs, io,
     io::{Read, Write},
     net::Shutdown,
     os::unix::{net::UnixStream, process::CommandExt},
@@ -142,6 +142,12 @@ pub fn agent_log_path(id: &str) -> HzResult<PathBuf> {
     ensure_running()?;
     let payload = request(&format!("AGENT_LOG {id}"))?;
     Ok(serde_json::from_str(&payload)?)
+}
+
+pub fn read_agent_log(id: &str) -> HzResult<String> {
+    let path = agent_log_path(id)?;
+    fs::read_to_string(&path)
+        .map_err(|error| HzError::Usage(format!("failed to read {}: {error}", path.display())))
 }
 
 pub(crate) fn request(line: &str) -> HzResult<String> {

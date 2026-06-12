@@ -558,6 +558,7 @@ name = "hz-agent"
 version = "0.2.1"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

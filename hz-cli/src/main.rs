@@ -16,7 +16,7 @@ use std::{
     process::ExitCode,
 };
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use hz_core::{HzError, HzResult};
 
 use crate::{
@@ -108,13 +108,10 @@ fn run() -> CliResult<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        None => {
-            if io::stdout().is_terminal() {
-                run_main_tui()
-            } else {
-                write_stdout(format_args!("Hello word\n"))
-            }
-        }
+        None => match default_action(io::stdout().is_terminal()) {
+            DefaultAction::MainTui => run_main_tui(),
+            DefaultAction::Help => write_default_help(io::stdout().lock()),
+        },
         Some(Command::Worktree { command }) => match command {
             WorktreeCommand::New(args) => create_worktree(args),
             WorktreeCommand::Path(args) => path_worktree(args),
@@ -155,11 +152,38 @@ fn run() -> CliResult<()> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefaultAction {
+    MainTui,
+    Help,
+}
+
+fn default_action(stdout_is_terminal: bool) -> DefaultAction {
+    if stdout_is_terminal {
+        DefaultAction::MainTui
+    } else {
+        DefaultAction::Help
+    }
+}
+
+fn write_default_help(mut writer: impl Write) -> CliResult<()> {
+    let mut command = Cli::command();
+    command
+        .write_help(&mut writer)
+        .map_err(stdout_write_error)?;
+    writer.write_all(b"\n").map_err(stdout_write_error)?;
+    Ok(())
+}
+
 fn run_main_tui() -> CliResult<()> {
     let mut session = hz_daemon::attach_main_session()?;
     let tui_result = hz_tui::run_main().map_err(CliError::from);
     let detach_result = session.detach().map_err(CliError::from);
 
+    finish_main_tui(tui_result, detach_result)
+}
+
+fn finish_main_tui(tui_result: CliResult<()>, detach_result: CliResult<()>) -> CliResult<()> {
     match (tui_result, detach_result) {
         (Err(error), _) => Err(error),
         (Ok(()), Err(error)) => Err(error),
