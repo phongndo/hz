@@ -25,9 +25,9 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     controls::{
         BranchMenu, CrosstermTerminal, DiffChoice, DiffFilterKind, DiffLayoutMode,
-        WORKTREE_DIFF_CHOICES, branch_base_from_options, branch_head_from_options,
-        branch_match_score, comparison_branches, current_head_label, default_branch_base,
-        default_layout_for_width, diff_stats_for_files, filtered_file_indices, grep_match_rows,
+        branch_base_from_options, branch_head_from_options, branch_match_score,
+        comparison_branches, current_head_label, default_branch_base, default_layout_for_width,
+        diff_choice_shortcut, diff_stats_for_files, filtered_file_indices, grep_match_rows,
     },
     editor::{EditorTarget, configured_editor, open_editor, repo_file_path},
     live_diff::{LiveDiff, LiveDiffReload, live_diff_supported},
@@ -715,6 +715,18 @@ impl DiffApp {
             }
             if key.code == KeyCode::Char('q') {
                 return Ok(true);
+            }
+        }
+
+        if let KeyCode::Char(character) = key.code {
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT)
+            {
+                if let Some(choice) = diff_choice_shortcut(character) {
+                    self.diff_menu_open = false;
+                    self.select_diff_choice(choice);
+                    return Ok(false);
+                }
             }
         }
 
@@ -1615,11 +1627,11 @@ impl DiffApp {
             return Vec::new();
         }
 
-        let mut choices = Vec::with_capacity(4);
-        choices.extend(WORKTREE_DIFF_CHOICES);
+        let mut choices = vec![DiffChoice::All];
         if self.branch_base.is_some() {
             choices.push(DiffChoice::Branch);
         }
+        choices.extend([DiffChoice::Unstaged, DiffChoice::Staged]);
         choices
     }
 
@@ -2071,7 +2083,12 @@ impl DiffApp {
         target_changed: bool,
         scoped_path: Option<&Path>,
     ) -> EditorReloadBehavior {
-        if !target_changed || !matches!(self.options.source, DiffSource::Worktree) {
+        if !target_changed
+            || !matches!(
+                self.options.source,
+                DiffSource::Worktree | DiffSource::Base(_)
+            )
+        {
             return EditorReloadBehavior::None;
         }
 

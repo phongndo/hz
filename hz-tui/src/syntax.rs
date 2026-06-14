@@ -1259,10 +1259,9 @@ pub(crate) fn full_file_source(
                 path,
             }
         }
-        (DiffSource::Base(_), DiffScope::All, DiffSide::New) => FullFileSourceKind::GitRevision {
-            rev: "HEAD".to_owned(),
-            path,
-        },
+        (DiffSource::Base(_), DiffScope::All, DiffSide::New) => {
+            FullFileSourceKind::Worktree { path }
+        }
         (DiffSource::Branch { base, head }, DiffScope::All, DiffSide::Old) => {
             FullFileSourceKind::GitMergeBase {
                 base: base.clone(),

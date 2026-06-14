@@ -87,6 +87,7 @@ pub(crate) const HELP_MENU_RIGHT_ROWS: &[HelpMenuRow] = &[
     HelpMenuRow::Binding("b", "toggle file sidebar"),
     HelpMenuRow::Binding("s", "split / unified"),
     HelpMenuRow::Binding("r", "reload diff"),
+    HelpMenuRow::Binding("1/2/3/4", "all / branch / unstaged / staged"),
     HelpMenuRow::Section("Filter input"),
     HelpMenuRow::Binding("Enter", "keep filter"),
     HelpMenuRow::Binding("Esc", "clear active filters"),

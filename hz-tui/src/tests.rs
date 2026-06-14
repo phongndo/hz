@@ -969,7 +969,7 @@ fn post_editor_quit_key_guard_ignores_only_transient_quit_keys() {
 }
 
 #[test]
-fn editor_reload_behavior_skips_unchanged_and_ref_diffs() {
+fn editor_reload_behavior_supports_worktree_backed_diffs() {
     let changeset = changeset_with_hunk_at(PathBuf::from("/repo"), 20);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
 
@@ -987,6 +987,15 @@ fn editor_reload_behavior_skips_unchanged_and_ref_diffs() {
     );
 
     app.options.source = DiffSource::Base("main".to_owned());
+    assert_eq!(
+        app.editor_reload_behavior(true, Some(Path::new("src/file.rs"))),
+        EditorReloadBehavior::ScopedAsync
+    );
+
+    app.options.source = DiffSource::Branch {
+        base: "main".to_owned(),
+        head: "feature".to_owned(),
+    };
     assert_eq!(
         app.editor_reload_behavior(true, Some(Path::new("src/file.rs"))),
         EditorReloadBehavior::None
@@ -2237,10 +2246,42 @@ fn diff_menu_lists_all_changes_first() {
         app.diff_menu_choices(),
         vec![
             DiffChoice::All,
+            DiffChoice::Branch,
             DiffChoice::Unstaged,
             DiffChoice::Staged,
-            DiffChoice::Branch,
         ]
+    );
+}
+
+#[test]
+fn diff_choice_number_shortcuts_match_menu_order() {
+    assert_eq!(diff_choice_shortcut('1'), Some(DiffChoice::All));
+    assert_eq!(diff_choice_shortcut('2'), Some(DiffChoice::Branch));
+    assert_eq!(diff_choice_shortcut('3'), Some(DiffChoice::Unstaged));
+    assert_eq!(diff_choice_shortcut('4'), Some(DiffChoice::Staged));
+    assert_eq!(diff_choice_shortcut('5'), None);
+}
+
+#[test]
+fn number_key_switches_diff_choice() {
+    let mut app = DiffApp::new(
+        DiffOptions::default(),
+        changeset_with_context_lines(1),
+        DiffLayoutMode::Unified,
+    );
+    app.branch_base = Some("origin/main".to_owned());
+    app.current_head = Some("feature".to_owned());
+
+    let should_quit = app
+        .handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE))
+        .expect("number shortcut should be handled");
+
+    assert!(!should_quit);
+    assert_eq!(
+        app.pending_diff_load
+            .as_ref()
+            .map(|load| &load.options.source),
+        Some(&DiffSource::Base("origin/main".to_owned()))
     );
 }
 
@@ -3699,6 +3740,14 @@ fn full_file_sources_cover_diff_modes_and_statuses() {
             base: "main".to_owned(),
             head: "HEAD".to_owned(),
             path: "old.rs".to_owned(),
+        }
+    );
+    assert_eq!(
+        full_file_source(&repo, &base, &file, DiffSide::New)
+            .unwrap()
+            .kind,
+        FullFileSourceKind::Worktree {
+            path: "new.rs".to_owned(),
         }
     );
 

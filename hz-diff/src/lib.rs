@@ -780,7 +780,7 @@ fn git_diff_args(options: &DiffOptions, repo: &Path) -> HzResult<Vec<String>> {
         },
         DiffSource::Base(base) => {
             args.push("--end-of-options".to_owned());
-            args.push(format!("{base}...HEAD"));
+            args.push(merge_base_revision(repo, base)?);
         }
         DiffSource::Branch { base, head } => {
             args.push("--end-of-options".to_owned());
@@ -823,7 +823,7 @@ fn git_diff_numstat_args(options: &DiffOptions, repo: &Path) -> HzResult<Vec<Str
         },
         DiffSource::Base(base) => {
             args.push("--end-of-options".to_owned());
-            args.push(format!("{base}...HEAD"));
+            args.push(merge_base_revision(repo, base)?);
         }
         DiffSource::Branch { base, head } => {
             args.push("--end-of-options".to_owned());
@@ -846,6 +846,25 @@ fn worktree_base_revision(repo: &Path) -> HzResult<String> {
     } else {
         empty_tree_revision(repo)
     }
+}
+
+fn merge_base_revision(repo: &Path, base: &str) -> HzResult<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["merge-base", "--end-of-options", base, "HEAD"])
+        .output()?;
+    if !output.status.success() {
+        return Err(git_error("failed to derive branch merge base", &output));
+    }
+
+    let revision = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if revision.is_empty() {
+        return Err(HzError::Usage(
+            "git returned an empty merge base revision".to_owned(),
+        ));
+    }
+    Ok(revision)
 }
 
 fn empty_tree_revision(repo: &Path) -> HzResult<String> {
@@ -879,7 +898,7 @@ fn has_head(repo: &Path) -> HzResult<bool> {
 
 fn should_include_untracked(options: &DiffOptions) -> bool {
     options.include_untracked
-        && matches!(options.source, DiffSource::Worktree)
+        && matches!(options.source, DiffSource::Worktree | DiffSource::Base(_))
         && matches!(options.scope, DiffScope::All | DiffScope::Unstaged)
 }
 
@@ -1841,6 +1860,42 @@ mod tests {
         let full = render_stat(&load_review_ref(&options).unwrap());
 
         assert_eq!(streamed, full);
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn base_branch_diff_includes_committed_staged_and_untracked_changes() {
+        let test_dir = temp_test_dir("base-branch-all-changes");
+        let repo = test_dir.join("repo");
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        init_repo(&repo);
+        git(["branch", "-M", "main"], &repo);
+        git(["checkout", "-q", "-b", "feature"], &repo);
+
+        fs::write(repo.join("committed.txt"), "committed\n")
+            .expect("committed file should be written");
+        git(["add", "committed.txt"], &repo);
+        git(["commit", "-q", "-m", "committed"], &repo);
+        fs::write(repo.join("staged.txt"), "staged\n").expect("staged file should be written");
+        git(["add", "staged.txt"], &repo);
+        fs::write(repo.join("untracked.txt"), "untracked\n")
+            .expect("untracked file should be written");
+
+        let changeset = load_review_ref(&DiffOptions {
+            repo: Some(repo.clone()),
+            source: DiffSource::Base("main".to_owned()),
+            ..DiffOptions::default()
+        })
+        .expect("base branch diff should load");
+        let paths = changeset
+            .files
+            .iter()
+            .map(DiffFile::display_path)
+            .collect::<Vec<_>>();
+
+        assert!(paths.contains(&"committed.txt"));
+        assert!(paths.contains(&"staged.txt"));
+        assert!(paths.contains(&"untracked.txt"));
         fs::remove_dir_all(test_dir).expect("test directory should be removed");
     }
 
