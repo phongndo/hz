@@ -40,14 +40,14 @@ fn worktree_defaults_use_child_home() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        child_worktree_root.exists(),
-        "worktree should be created under child HOME"
-    );
     if let Some(path) = parent_worktree_root.filter(|path| path.exists()) {
         let _ = fs::remove_dir_all(&path);
         panic!("worktree leaked into parent HOME: {}", path.display());
     }
+    assert!(
+        child_worktree_root.exists(),
+        "worktree should be created under child HOME"
+    );
 }
 
 fn initialize_repo(repo: &Path) {
