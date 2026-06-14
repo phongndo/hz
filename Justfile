@@ -2,6 +2,10 @@ setup:
     cargo fetch --locked
     cargo build -p hz-cli --locked
 
+install-hooks:
+    git config core.hooksPath .githooks
+    printf 'Git hooks installed from .githooks\n'
+
 check:
     rust-analyzer diagnostics .
     cargo fmt --all --check
