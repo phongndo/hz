@@ -12,12 +12,13 @@ fn hz() -> PathBuf {
 #[test]
 fn diff_renders_unborn_head_worktree() {
     let test_dir = temp_test_dir("unborn-head");
+    let home = test_home(&test_dir);
     let repo = test_dir.join("repo");
     fs::create_dir_all(&repo).expect("repo should be created");
     git(&repo, &["init", "-q"]);
     fs::write(repo.join("new.txt"), "new\n").expect("file should be written");
 
-    let output = Command::new(hz())
+    let output = hz_command(&home)
         .args(["diff", "--no-watch", "--no-syntax", "-r"])
         .arg(&repo)
         .output()
@@ -39,6 +40,7 @@ fn diff_renders_unborn_head_worktree() {
 #[test]
 fn diff_renders_unborn_sha256_head_worktree() {
     let test_dir = temp_test_dir("unborn-sha256-head");
+    let home = test_home(&test_dir);
     let repo = test_dir.join("repo");
     fs::create_dir_all(&repo).expect("repo should be created");
     if !try_git(&repo, &["init", "-q", "--object-format=sha256"]) {
@@ -47,7 +49,7 @@ fn diff_renders_unborn_sha256_head_worktree() {
     }
     fs::write(repo.join("new.txt"), "new\n").expect("file should be written");
 
-    let output = Command::new(hz())
+    let output = hz_command(&home)
         .args(["diff", "--no-watch", "--no-syntax", "-r"])
         .arg(&repo)
         .output()
@@ -69,6 +71,7 @@ fn diff_renders_unborn_sha256_head_worktree() {
 #[test]
 fn diff_stat_escapes_terminal_control_characters_in_paths() {
     let test_dir = temp_test_dir("stat-escape");
+    let home = test_home(&test_dir);
     let repo = test_dir.join("repo");
     fs::create_dir_all(&repo).expect("repo should be created");
     git(&repo, &["init", "-q"]);
@@ -81,7 +84,7 @@ fn diff_stat_escapes_terminal_control_characters_in_paths() {
     let evil_name = format!("evil{}]52;c;AAAA{}.txt", '\u{1b}', '\u{7}');
     fs::write(repo.join(&evil_name), "new\n").expect("evil file should be written");
 
-    let output = Command::new(hz())
+    let output = hz_command(&home)
         .args(["diff", "--stat", "-r"])
         .arg(&repo)
         .output()
@@ -108,6 +111,18 @@ fn temp_test_dir(name: &str) -> PathBuf {
             .expect("system time should be after unix epoch")
             .as_nanos()
     ))
+}
+
+fn test_home(test_dir: &Path) -> PathBuf {
+    let home = test_dir.join("home");
+    fs::create_dir_all(&home).expect("test home should be created");
+    home
+}
+
+fn hz_command(home: &Path) -> Command {
+    let mut command = Command::new(hz());
+    command.env("HOME", home);
+    command
 }
 
 fn git(repo: &Path, args: &[&str]) {
