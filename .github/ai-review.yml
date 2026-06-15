@@ -17,16 +17,18 @@ mode: balanced
 
 agents:
   correctness: true
-  security: true
-  tests: true
-  maintainability: true
+  security: auto
+  # Keep noisy review lenses off by default. They can be re-enabled here
+  # after their prompts prove they follow hz's simple-not-clever philosophy.
+  tests: false
+  maintainability: false
   performance: false
-  dependency: false
+  dependency: auto
   verification: true
 
 thresholds:
-  min_confidence: 0.65
-  max_findings: 12
+  min_confidence: 0.80
+  max_findings: 3
   post_low_severity: false
 
 github:

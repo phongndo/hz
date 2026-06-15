@@ -11,7 +11,9 @@ This CI driver intentionally keeps the trusted orchestration small:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import copy
+import fnmatch
 import json
 import os
 import re
@@ -52,16 +54,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "mode": "balanced",
     "agents": {
         "correctness": True,
-        "security": True,
-        "tests": True,
-        "maintainability": True,
+        "security": "auto",
+        "tests": False,
+        "maintainability": False,
         "performance": False,
-        "dependency": False,
+        "dependency": "auto",
         "verification": True,
     },
     "thresholds": {
-        "min_confidence": 0.65,
-        "max_findings": 12,
+        "min_confidence": 0.80,
+        "max_findings": 3,
         "post_low_severity": False,
     },
     "github": {"summary_comment": True, "sticky_comment": False, "inline_comments": True},
@@ -85,18 +87,17 @@ REVIEWER_FOCUS: dict[str, list[str]] = {
         "sensitive data exposure",
     ],
     "tests": [
-        "changed behavior without tests",
-        "weak assertions",
-        "missing regression tests",
-        "test gaps around edge cases",
+        "concrete behavior changes without focused coverage",
+        "bug fixes where the old bug can plausibly regress",
+        "critical parsing, state, API, shell, filesystem, or concurrency behavior without nearby coverage",
+        "weak assertions only when they would miss the changed behavior",
     ],
     "maintainability": [
-        "bad abstractions",
-        "duplicated logic",
-        "confusing ownership",
-        "leaky boundaries",
-        "brittle APIs",
-        "hard-to-change control flow",
+        "unnecessary abstraction or indirection",
+        "helpers with one call site that obscure simple local code",
+        "speculative reuse",
+        "clever control flow that hides invariants",
+        "leaky boundaries with a concrete change risk",
     ],
     "performance": [
         "meaningful regressions only",
@@ -173,6 +174,76 @@ Prefer a short, high-signal review over a long noisy one.
 Return machine-readable JSON exactly as requested by the prompt.
 """.strip()
 
+HZ_REVIEW_POLICY = """
+hz review policy:
+- Correct > compliant. Simple > clever. Boring code wins.
+- The default outcome is no findings.
+- Report only concrete, PR-introduced correctness, security, data-loss, build, compatibility, or user-visible regression risks.
+- Do not report style-only, formatting, naming, generic best-practice, or speculative maintainability concerns.
+- Do not recommend abstraction, helpers, wrappers, factories, traits, config layers, or future-proofing for speculative reuse.
+- A helper/function with one call site should usually stay inline unless it names a real domain concept or isolates unavoidable complexity.
+- Request tests only for a concrete changed behavior or bug fix that can plausibly regress; name the exact scenario the test would catch.
+- Prefer the smallest safe fix. Do not ask for broad rewrites.
+""".strip()
+
+DOC_PATH_PATTERNS = (
+    "*.md",
+    "docs/**",
+    "LICENSE",
+)
+
+GENERATED_PATH_PATTERNS = (
+    "*.snap",
+    "*.min.js",
+    "vendor/**",
+    "target/**",
+)
+
+TEST_PATH_PATTERNS = (
+    "tests/**",
+    "**/test/**",
+    "**/tests/**",
+    "**/*test*",
+    "**/*_test.*",
+)
+
+DEPENDENCY_PATH_PATTERNS = (
+    "Cargo.toml",
+    "**/Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "flake.nix",
+    "flake.lock",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+)
+
+SECURITY_PATH_PATTERNS = (
+    "**/shell/**",
+    "**/shell.*",
+    "**/*shell*",
+    "**/auth/**",
+    "**/security/**",
+    ".github/workflows/**",
+    "scripts/**",
+)
+
+SECURITY_DIFF_PATTERNS = (
+    "Command::new",
+    "std::process",
+    "subprocess",
+    "shell",
+    "token",
+    "secret",
+    "password",
+    "env::var",
+    "set_var",
+    "remove_file",
+    "remove_dir",
+    "canonicalize",
+)
 
 def log(message: str) -> None:
     print(message, flush=True)
@@ -293,6 +364,116 @@ def as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def as_auto(value: Any) -> bool:
+    return str(value).strip().lower() == "auto"
+
+
+def path_matches(path: str, patterns: tuple[str, ...]) -> bool:
+    return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
+
+
+def classify_review_context(context: dict[str, Any]) -> dict[str, Any]:
+    """Cheap deterministic PR classifier used to select review lenses.
+
+    Keep this intentionally boring. It should reduce work/noise, not replace the
+    final reviewer or invent semantic claims.
+    """
+
+    changed_files = context.get("changed_files") or []
+    paths = [str(item.get("path") or "") for item in changed_files if item.get("path")]
+    diff_text = str(context.get("text") or "").lower()
+    if not paths:
+        return {
+            "risk": "low",
+            "docs_only": False,
+            "generated_only": False,
+            "dependency_change": False,
+            "test_only": False,
+            "changed_behavior": False,
+            "touches_security": False,
+            "recommended_categories": [],
+            "skip_review": True,
+            "skip_reason": "empty diff",
+        }
+
+    docs_only = all(path_matches(path, DOC_PATH_PATTERNS) for path in paths)
+    generated_only = all(path_matches(path, GENERATED_PATH_PATTERNS) for path in paths)
+    dependency_change = any(path_matches(path, DEPENDENCY_PATH_PATTERNS) for path in paths)
+    test_only = all(path_matches(path, TEST_PATH_PATTERNS) for path in paths)
+    code_paths = [
+        path
+        for path in paths
+        if not path_matches(path, DOC_PATH_PATTERNS)
+        and not path_matches(path, GENERATED_PATH_PATTERNS)
+        and not path_matches(path, DEPENDENCY_PATH_PATTERNS)
+        and not path_matches(path, TEST_PATH_PATTERNS)
+    ]
+    # Treat source-code changes as reviewable even when a cheap text heuristic
+    # cannot prove behavior changed. The prompts/verifier still prefer no
+    # findings for mechanical refactors.
+    changed_behavior = bool(code_paths)
+    touches_security = any(path_matches(path, SECURITY_PATH_PATTERNS) for path in paths) or any(
+        pattern.lower() in diff_text for pattern in SECURITY_DIFF_PATTERNS
+    )
+
+    recommended: list[str] = []
+    if changed_behavior:
+        recommended.append("correctness")
+    if touches_security:
+        recommended.append("security")
+    if dependency_change:
+        recommended.append("dependency")
+
+    if docs_only:
+        risk = "low"
+        skip_review = True
+        skip_reason = "docs-only diff"
+    elif generated_only:
+        risk = "low"
+        skip_review = True
+        skip_reason = "generated-only diff"
+    elif touches_security:
+        risk = "high"
+        skip_review = False
+        skip_reason = ""
+    elif changed_behavior or dependency_change:
+        risk = "medium"
+        skip_review = False
+        skip_reason = ""
+    else:
+        risk = "low"
+        skip_review = test_only
+        skip_reason = "test-only diff" if test_only else ""
+
+    return {
+        "risk": risk,
+        "docs_only": docs_only,
+        "generated_only": generated_only,
+        "dependency_change": dependency_change,
+        "test_only": test_only,
+        "changed_behavior": changed_behavior,
+        "touches_security": touches_security,
+        "recommended_categories": recommended,
+        "skip_review": skip_review,
+        "skip_reason": skip_reason,
+    }
+
+
+def selected_review_categories(config: dict[str, Any], classification: dict[str, Any]) -> list[str]:
+    agents = config.get("agents") or {}
+    recommended = set(classification.get("recommended_categories") or [])
+    selected: list[str] = []
+    for category in CATEGORIES:
+        setting = agents.get(category, False)
+        if category == "correctness" and as_bool(setting):
+            if classification.get("changed_behavior") or classification.get("touches_security"):
+                selected.append(category)
+            continue
+        if as_bool(setting) or (as_auto(setting) and category in recommended):
+            selected.append(category)
+    return selected
 
 
 def set_output(name: str, value: Any) -> None:
@@ -793,6 +974,8 @@ def reviewer_prompt(category: str, context_text: str, raw_limit: int) -> str:
         f"""
         You are the {category} reviewer for this pull request.
 
+        {HZ_REVIEW_POLICY}
+
         Focus only on:
         {focus}
 
@@ -804,6 +987,8 @@ def reviewer_prompt(category: str, context_text: str, raw_limit: int) -> str:
         - Prefer no findings over weak findings.
         - Return at most {raw_limit} findings.
         - Use category "{category}" for every finding.
+        - If this is a tests finding, name the exact behavior that lacks coverage and why it can regress.
+        - If this is a maintainability finding, it must be about concrete unnecessary complexity, not a preference for more abstraction.
 
         Return JSON only: an array of findings matching this schema:
         {FINDING_SCHEMA}
@@ -818,6 +1003,8 @@ def serious_recheck_prompt(findings: list[dict[str, Any]], context_text: str, ra
     return textwrap.dedent(
         f"""
         You are the serious verification pass for medium/high/blocker PR findings.
+
+        {HZ_REVIEW_POLICY}
 
         Keep only findings that are clearly grounded in the supplied PR diff or nearby context.
         Drop duplicate, speculative, vague, style-only, unsupported, or already-handled findings.
@@ -843,6 +1030,8 @@ def verification_prompt(findings: list[dict[str, Any]], context_text: str, max_f
         f"""
         You are the final verification reviewer for this pull request.
 
+        {HZ_REVIEW_POLICY}
+
         Your job is to reduce noise before CI posts GitHub review comments.
         Verify the candidate findings against the supplied PR diff and nearby context.
 
@@ -856,6 +1045,8 @@ def verification_prompt(findings: list[dict[str, Any]], context_text: str, max_f
         - Lower severity when appropriate.
         - Do not invent new unrelated issues unless you discover a clear blocker while verifying an existing finding.
         - Prefer a short high-signal review.
+        - Reject test requests that do not name a concrete changed behavior and plausible regression.
+        - Reject maintainability requests that prefer clever abstraction over simple local code.
         - Set overall_confidence from 0.00 to 1.00 for the final review result, including a no-findings result.
         - Return at most {max_findings} accepted findings.
 
@@ -1541,7 +1732,6 @@ def command_summary() -> None:
 
 def command_review() -> None:
     config = load_config()
-    ensure_credentials(config)
 
     pr_number = os.environ.get("AI_REVIEW_PR_NUMBER", "")
     author = os.environ.get("AI_REVIEW_AUTHOR", "")
@@ -1554,25 +1744,73 @@ def command_review() -> None:
         raise SystemExit("AI_REVIEW_PR_NUMBER and AI_REVIEW_BASE_REF are required")
 
     context = build_context(base_ref, head_ref, pr_number)
-    context_text = context["text"]
+    classification = classify_review_context(context)
+    context_text = "\n\n".join(
+        [
+            context["text"],
+            "Review classification:\n```json\n"
+            + json.dumps(classification, indent=2, sort_keys=True)
+            + "\n```",
+        ]
+    )
     changed_paths = {item["path"] for item in context["changed_files"]}
     max_findings = mode_max_findings(config, mode)
     raw_limit = max(4, min(max_findings, 10))
-    min_confidence = float((config.get("thresholds") or {}).get("min_confidence", 0.65))
+    min_confidence = float((config.get("thresholds") or {}).get("min_confidence", 0.80))
     post_low = as_bool((config.get("thresholds") or {}).get("post_low_severity", False))
+    reviewed_diff = clean_string(context.get("head_subject"), 240) or clean_string(
+        head_ref or base_ref or "HEAD", 240
+    )
+
+    log(
+        "AI review classification: "
+        + json.dumps(
+            {
+                "risk": classification.get("risk"),
+                "recommended_categories": classification.get("recommended_categories"),
+                "skip_review": classification.get("skip_review"),
+                "skip_reason": classification.get("skip_reason"),
+            },
+            sort_keys=True,
+        )
+    )
+
+    selected_categories = selected_review_categories(config, classification)
+    if classification.get("skip_review"):
+        diff_summary = fallback_pr_summary(context["changed_files"])
+        reason = clean_string(classification.get("skip_reason"), 120)
+        if reason:
+            diff_summary = f"{diff_summary} Semantic AI review skipped: {reason}."
+        post_no_findings_comment(pr_number, context["head_sha"], reviewed_diff, diff_summary)
+        return
+    if not selected_categories:
+        diff_summary = fallback_pr_summary(context["changed_files"])
+        diff_summary = f"{diff_summary} No AI review lenses were selected for this diff."
+        post_no_findings_comment(pr_number, context["head_sha"], reviewed_diff, diff_summary)
+        return
+
+    ensure_credentials(config)
+    log("Selected AI review lenses: " + ", ".join(selected_categories))
 
     raw_findings: list[dict[str, Any]] = []
-    agents = config.get("agents") or {}
-    for category in CATEGORIES:
-        if not as_bool(agents.get(category, False)):
-            continue
+
+    def run_category(category: str) -> list[dict[str, Any]]:
         model = model_for_category(config, mode, category)
         prompt = reviewer_prompt(category, context_text, raw_limit)
-        try:
-            response = run_pi(prompt, model, f"{category} reviewer")
-            raw_findings.extend(parse_findings_response(response, category))
-        except Exception as error:  # Keep other focused reviewers useful.
-            log(f"{category} reviewer produced no usable findings: {error}")
+        response = run_pi(prompt, model, f"{category} reviewer")
+        return parse_findings_response(response, category)
+
+    max_workers = max(1, min(len(selected_categories), 4))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_by_category = {
+            executor.submit(run_category, category): category for category in selected_categories
+        }
+        for future in concurrent.futures.as_completed(future_by_category):
+            category = future_by_category[future]
+            try:
+                raw_findings.extend(future.result())
+            except Exception as error:  # Keep other focused reviewers useful.
+                log(f"{category} reviewer produced no usable findings: {error}")
 
     if mode == "balanced":
         serious_candidates = [
@@ -1588,22 +1826,23 @@ def command_review() -> None:
             )
             raw_findings = low_candidates + parse_findings_response(response)
 
-    verification_response = run_pi(
-        verification_prompt(raw_findings, context_text, max_findings, min_confidence),
-        verification_model(config),
-        "final verification reviewer",
-        thinking="medium" if mode != "deep" else "high",
-    )
-    verified = parse_verification_response(verification_response)
+    if raw_findings:
+        verification_response = run_pi(
+            verification_prompt(raw_findings, context_text, max_findings, min_confidence),
+            verification_model(config),
+            "final verification reviewer",
+            thinking="medium" if mode != "deep" else "high",
+        )
+        verified = parse_verification_response(verification_response)
+    else:
+        verified = {"pr_summary": "", "accepted_findings": [], "rejected_findings": []}
+
     visible, _hidden_low, _rejected = filter_verified_findings(
         verified,
         changed_paths=changed_paths,
         min_confidence=min_confidence,
         max_findings=max_findings,
         post_low=post_low,
-    )
-    reviewed_diff = clean_string(context.get("head_subject"), 240) or clean_string(
-        head_ref or base_ref or "HEAD", 240
     )
     diff_summary = clean_string(verified.get("pr_summary"), 1200) or fallback_pr_summary(
         context["changed_files"]
@@ -1656,7 +1895,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("gate", help="Check allowlist and emit GitHub Actions outputs")
     subparsers.add_parser("summary", help="Post the one-time AI PR summary comment")
-    subparsers.add_parser("review", help="Run Pi review agents and post findings-only comments")
+    subparsers.add_parser("review", help="Run Pi review lenses and post findings-only comments")
     args = parser.parse_args()
     if args.command == "gate":
         command_gate()
