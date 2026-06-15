@@ -24,11 +24,11 @@ pub(crate) fn fork_with_registry_and_patch_applier(
     input: ForkWorktree,
     apply_patch: impl FnOnce(&Path, &[u8]) -> HzResult<bool>,
 ) -> HzResult<ForkedWorktree> {
-    let source = hz_git::repository_root(input.repo.as_deref())?;
+    let current = hz_git::repository_root(input.repo.as_deref())?;
     let repo = resolve_repo(input.repo.as_deref(), registry)?;
-    let head = hz_git::current_head(&source)?;
+    let head = hz_git::current_head(&current)?;
     let patch = if input.include_diff {
-        Some(hz_git::diff_patch(&source)?)
+        Some(hz_git::diff_patch(&current)?)
     } else {
         None
     };

@@ -467,6 +467,59 @@ fn fork_copies_current_diff_to_named_detached_worktree() {
 }
 
 #[test]
+fn fork_copies_diff_from_linked_worktree() {
+    let test_dir = test_dir("hz-worktree-fork-linked-test");
+    let repo = test_dir.join("repo");
+    let linked = test_dir.join("linked");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+            "HEAD",
+        ],
+        &repo,
+    );
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+
+    fs::write(repo.join("file.txt"), "base\nmain\n").expect("main file should be changed");
+    fs::write(linked.join("file.txt"), "base\nlinked\n").expect("linked file should be changed");
+    fs::write(linked.join("linked-new.txt"), "linked new\n")
+        .expect("linked untracked file should be written");
+
+    let forked = fork(ForkWorktree {
+        name: Some("linked-copy".to_owned()),
+        repo: Some(linked.clone()),
+        path: Some(destination),
+        include_diff: true,
+        max_detached_worktrees: Some(0),
+    })
+    .unwrap();
+
+    assert!(forked.changed);
+    assert_eq!(
+        fs::read_to_string(forked.worktree.path.join("file.txt")).unwrap(),
+        "base\nlinked\n"
+    );
+    assert_eq!(
+        fs::read_to_string(forked.worktree.path.join("linked-new.txt")).unwrap(),
+        "linked new\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("file.txt")).unwrap(),
+        "base\nmain\n"
+    );
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
 fn fork_can_leave_current_diff_behind() {
     let test_dir = test_dir("hz-worktree-fork-no-diff-test");
     let repo = test_dir.join("repo");
