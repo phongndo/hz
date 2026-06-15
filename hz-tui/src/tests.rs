@@ -2070,7 +2070,11 @@ fn error_log_separator_drag_resizes_pane() {
     let separator_row = app
         .error_log_separator_row()
         .expect("error log should expose separator row");
-    assert_eq!(separator_row, 12);
+    assert_eq!(separator_row, 11);
+
+    app.open_filter_input(DiffFilterKind::File);
+    assert_eq!(app.error_log_separator_row(), Some(12));
+    app.filter_input = None;
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -2374,6 +2378,7 @@ fn notices_expire_after_ttl() {
 
     app.set_notice("reloaded");
     let expires_at = app.notice.as_ref().unwrap().expires_at;
+    assert_eq!(app.notice.as_ref().unwrap().text, "reloaded");
     app.dirty = false;
 
     app.expire_notice(expires_at - Duration::from_millis(1));
@@ -2383,6 +2388,16 @@ fn notices_expire_after_ttl() {
     app.expire_notice(expires_at);
     assert!(app.notice.is_none());
     assert!(app.dirty);
+}
+
+#[test]
+fn statusline_renders_notice_text() {
+    let changeset = changeset_with_context_lines(1);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+    app.set_notice("editor closed; reloading");
+
+    assert!(line_text(&statusline_header_line(&app, 120)).contains("editor closed; reloading"));
 }
 
 #[test]

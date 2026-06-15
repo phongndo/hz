@@ -422,6 +422,7 @@ impl MouseScroll {
 
 #[derive(Debug)]
 pub(crate) struct Notice {
+    pub(crate) text: String,
     pub(crate) expires_at: Instant,
 }
 
@@ -522,9 +523,10 @@ pub(crate) fn load_syntax_settings_for_diff(
 
     match hz_syntax::load_settings() {
         Ok(settings) => (settings, None),
-        Err(_) => (
+        Err(error) => (
             SyntaxSettings::default(),
             Some(Notice {
+                text: format!("syntax settings ignored: {error}"),
                 expires_at: Instant::now() + NOTICE_TTL,
             }),
         ),
@@ -574,8 +576,9 @@ impl DiffApp {
                 .map(|theme| theme.with_transparent_background(settings.transparent_background))
         }) {
             Ok(theme) => theme.with_diff_settings(settings.diff),
-            Err(_) => {
+            Err(error) => {
                 notice = Some(Notice {
+                    text: format!("colorscheme ignored: {error}"),
                     expires_at: Instant::now() + NOTICE_TTL,
                 });
                 DiffTheme::default()
@@ -589,8 +592,9 @@ impl DiffApp {
         let syntax = match syntax_mode {
             SyntaxStartupMode::Config => match SyntaxRuntime::start(&settings) {
                 Ok(syntax) => syntax,
-                Err(_) => {
+                Err(error) => {
                     notice = Some(Notice {
+                        text: format!("syntax disabled: {error}"),
                         expires_at: Instant::now() + NOTICE_TTL,
                     });
                     None
@@ -878,8 +882,9 @@ impl DiffApp {
         }
     }
 
-    pub(crate) fn set_notice(&mut self, _text: impl Into<String>) {
+    pub(crate) fn set_notice(&mut self, text: impl Into<String>) {
         self.notice = Some(Notice {
+            text: text.into(),
             expires_at: Instant::now() + NOTICE_TTL,
         });
         self.dirty = true;
@@ -928,7 +933,10 @@ impl DiffApp {
 
     pub(crate) fn error_log_separator_row(&self) -> Option<u16> {
         self.error_log.as_ref()?;
-        let row = 1usize.saturating_add(self.viewport_rows).saturating_add(1);
+        let filter_bar_height = usize::from(self.filter_input.is_some() || self.filters_active());
+        let row = 1usize
+            .saturating_add(self.viewport_rows)
+            .saturating_add(filter_bar_height);
         u16::try_from(row).ok()
     }
 
