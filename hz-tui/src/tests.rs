@@ -23,7 +23,9 @@ use crate::render::{
     },
 };
 use crate::{app::*, controls::*, editor::*, live_diff::*, model::*, syntax::*, theme::*};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use hz_diff::{
     Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSource, FileStatus, PatchSource,
 };
@@ -37,10 +39,11 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, mpsc},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
+use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
 
 #[test]
@@ -685,26 +688,43 @@ fn selecting_file_centers_and_focuses_its_first_hunk() {
 }
 
 #[test]
-fn n_and_p_file_navigation_focuses_first_hunk_and_updates_selected_file() {
+fn j_and_k_file_navigation_focuses_first_hunk_and_updates_selected_file() {
+    let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(7);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE))
+        .expect("J should be handled");
+
+    assert_eq!(app.selected_file, 1);
+    assert_eq!(app.focused_hunk_for_viewport(7), Some((1, 0)));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('J'), KeyModifiers::NONE))
+        .expect("J should be handled");
+    assert_eq!(app.selected_file, 2);
+    assert_eq!(app.focused_hunk_for_viewport(7), Some((2, 0)));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE))
+        .expect("K should be handled");
+    assert_eq!(app.selected_file, 1);
+    assert_eq!(app.focused_hunk_for_viewport(7), Some((1, 0)));
+}
+
+#[test]
+fn n_and_p_do_not_navigate_without_grep_filter() {
     let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
     app.set_viewport_rows(7);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
-        .expect("n should be handled");
-
-    assert_eq!(app.selected_file, 1);
-    assert_eq!(app.focused_hunk_for_viewport(7), Some((1, 0)));
-
-    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
-        .expect("n should be handled");
-    assert_eq!(app.selected_file, 2);
-    assert_eq!(app.focused_hunk_for_viewport(7), Some((2, 0)));
+        .expect("n should be ignored without grep");
+    assert_eq!(app.selected_file, 0);
+    assert_eq!(app.focused_hunk_for_viewport(7), Some((0, 0)));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))
-        .expect("p should be handled");
-    assert_eq!(app.selected_file, 1);
-    assert_eq!(app.focused_hunk_for_viewport(7), Some((1, 0)));
+        .expect("p should be ignored without grep");
+    assert_eq!(app.selected_file, 0);
+    assert_eq!(app.focused_hunk_for_viewport(7), Some((0, 0)));
 }
 
 #[test]
@@ -949,6 +969,33 @@ fn ctrl_g_without_editable_target_does_not_scroll_to_top() {
 }
 
 #[test]
+fn ctrl_g_without_editor_launch_preserves_queued_events() {
+    let mut changeset = changeset_with_hunk_at(PathBuf::from("/repo"), 20);
+    changeset.files[0].new_path = None;
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    let queued_quit = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    let (tx, rx) = mpsc::unbounded_channel();
+    tx.send(Ok(queued_quit.clone())).unwrap();
+    let mut events = crate::event_reader::TerminalEventReader::from_receiver(rx);
+    let mut live_diff = None;
+
+    let should_quit = handle_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)),
+        &mut live_diff,
+        &mut events,
+    )
+    .expect("Ctrl-G should be handled");
+
+    assert!(!should_quit);
+    assert_eq!(
+        app.notice.as_ref().map(|notice| notice.text.as_str()),
+        Some("no editable focused hunk")
+    );
+    assert_eq!(events.try_read().unwrap(), Some(queued_quit));
+}
+
+#[test]
 fn post_editor_quit_key_guard_ignores_only_transient_quit_keys() {
     let changeset = changeset_with_hunk_at(PathBuf::from("/repo"), 20);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
@@ -958,7 +1005,7 @@ fn post_editor_quit_key_guard_ignores_only_transient_quit_keys() {
     assert!(
         app.ignore_post_editor_quit_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), now)
     );
-    assert!(app.ignore_post_editor_quit_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), now));
+    assert!(!app.ignore_post_editor_quit_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), now));
     assert!(!app.ignore_post_editor_quit_key(
         KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
         now
@@ -1547,12 +1594,12 @@ fn live_reload_started_state_marks_pending_until_loaded() {
         changeset.clone(),
         DiffLayoutMode::Unified,
     );
-    let (reload_tx, reload_rx) = mpsc::channel();
+    let (reload_tx, mut reload_rx) = mpsc::unbounded_channel();
 
     reload_tx
         .send(LiveDiffReload::Started)
         .expect("started reload should send");
-    drain_live_reloads(&mut app, Some(&reload_rx));
+    drain_live_reloads(&mut app, Some(&mut reload_rx));
 
     assert!(app.live_reload_pending);
     app.dirty = false;
@@ -1560,7 +1607,7 @@ fn live_reload_started_state_marks_pending_until_loaded() {
     reload_tx
         .send(LiveDiffReload::Loaded(Ok(changeset)))
         .expect("loaded reload should send");
-    drain_live_reloads(&mut app, Some(&reload_rx));
+    drain_live_reloads(&mut app, Some(&mut reload_rx));
 
     assert!(!app.live_reload_pending);
     assert!(app.dirty);
@@ -1706,8 +1753,19 @@ fn slash_filters_files_by_diff_content_and_escape_clears_filter() {
         .expect("escape should clear grep filter");
 
     assert_eq!(app.grep_filter, "");
+    assert!(app.grep_matches.is_empty());
+    assert_eq!(app.current_grep_match_row(), None);
     assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs", "c.rs"]);
     assert!(app.filter_input.is_none());
+
+    let selected_file = app.selected_file;
+    let scroll = app.scroll;
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        .expect("n should not navigate after grep is cleared");
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))
+        .expect("p should not navigate after grep is cleared");
+    assert_eq!(app.selected_file, selected_file);
+    assert_eq!(app.scroll, scroll);
 }
 
 #[test]
@@ -1870,11 +1928,12 @@ fn n_and_p_navigate_grep_matches_when_grep_filter_is_active() {
     app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
         .expect("n should move to next grep match");
     assert_eq!(app.current_grep_match_row(), Some(6));
-    assert_eq!(app.scroll, 4);
+    assert_eq!(app.scroll + viewport_center_offset(app.viewport_rows), 6);
 
     app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))
         .expect("p should move to previous grep match");
     assert_eq!(app.current_grep_match_row(), Some(2));
+    assert_eq!(app.scroll + viewport_center_offset(app.viewport_rows), 2);
 }
 
 #[test]
@@ -1902,7 +1961,26 @@ fn n_and_p_navigate_grep_by_line_not_match_count() {
         .expect("n should move to next matching line");
 
     assert_eq!(app.current_grep_match_row(), Some(3));
-    assert_eq!(app.scroll, 3);
+    assert_eq!(app.scroll + viewport_center_offset(app.viewport_rows), 3);
+}
+
+#[test]
+fn grep_match_stays_centered_after_viewport_rows_are_known() {
+    let changeset = changeset_with_line_texts(&[
+        "other 0", "other 1", "other 2", "other 3", "other 4", "needle", "other 6", "other 7",
+    ]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.grep_filter = "needle".to_owned();
+    app.apply_filters(true);
+
+    assert_eq!(app.viewport_rows, 1);
+    assert_eq!(app.current_grep_match_row(), Some(7));
+    assert_eq!(app.scroll, 7);
+
+    app.set_viewport_rows(5);
+
+    assert_eq!(app.current_grep_match_row(), Some(7));
+    assert_eq!(app.scroll + viewport_center_offset(app.viewport_rows), 7);
 }
 
 #[test]
@@ -2006,7 +2084,7 @@ fn help_menu_esc_closes_without_quitting() {
 }
 
 #[test]
-fn esc_quits_diff_view_without_overlays_or_filters() {
+fn esc_without_overlays_or_filters_does_not_quit() {
     let changeset = changeset_with_context_lines(1);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
 
@@ -2014,7 +2092,7 @@ fn esc_quits_diff_view_without_overlays_or_filters() {
         .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
         .expect("Esc should be handled");
 
-    assert!(should_quit);
+    assert!(!should_quit);
 }
 
 #[test]
@@ -4390,7 +4468,7 @@ fn full_file_syntax_job_source() -> SyntaxJobSource {
 }
 
 fn syntax_runtime_with_queue(queue: SyntaxWorkerQueue) -> SyntaxRuntime {
-    let (_result_tx, result_rx) = mpsc::channel();
+    let (_result_tx, result_rx) = mpsc::unbounded_channel();
     SyntaxRuntime {
         languages: SyntaxLanguageSet::from_enabled_languages(&[]),
         limits: SyntaxLimits::default(),

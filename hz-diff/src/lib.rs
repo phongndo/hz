@@ -5,7 +5,6 @@ use std::{
     path::{Path, PathBuf},
     process::{self, Command, Stdio},
     sync::Arc,
-    thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -979,18 +978,18 @@ fn git_diff_to_writer_with_index(
     mut writer: impl Write,
 ) -> HzResult<()> {
     let mut command = Command::new("git");
+    let stderr = StderrCapture::new()?;
     command
         .arg("-C")
         .arg(repo)
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(stderr.stdio()?);
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
 
     let mut child = command.spawn()?;
-    let stderr = drain_child_stderr(child.stderr.take());
     if let Some(mut stdout) = child.stdout.take() {
         if let Err(error) = copy_to_writer(&mut stdout, &mut writer) {
             abort_git_child(child, stderr);
@@ -1025,18 +1024,18 @@ fn git_numstat_stats_with_index(
     index: Option<&Path>,
 ) -> HzResult<PatchStats> {
     let mut command = Command::new("git");
+    let stderr = StderrCapture::new()?;
     command
         .arg("-C")
         .arg(repo)
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(stderr.stdio()?);
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
 
     let mut child = command.spawn()?;
-    let stderr = drain_child_stderr(child.stderr.take());
     let stats = match if let Some(stdout) = child.stdout.take() {
         parse_numstat(stdout)
     } else {
@@ -1052,25 +1051,72 @@ fn git_numstat_stats_with_index(
     Ok(stats)
 }
 
-fn drain_child_stderr(stderr: Option<process::ChildStderr>) -> JoinHandle<io::Result<Vec<u8>>> {
-    thread::spawn(move || {
-        let mut output = Vec::new();
-        if let Some(mut stderr) = stderr {
-            stderr.read_to_end(&mut output)?;
+struct StderrCapture {
+    path: PathBuf,
+    file: Option<fs::File>,
+}
+
+impl StderrCapture {
+    fn new() -> io::Result<Self> {
+        for attempt in 0..1000u32 {
+            let path = std::env::temp_dir().join(format!(
+                "hz-git-stderr-{}-{}-{attempt}.tmp",
+                process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(io::Error::other)?
+                    .as_nanos()
+            ));
+            match create_private_temp_file(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        file: Some(file),
+                    });
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
         }
-        Ok(output)
-    })
+
+        Err(io::Error::new(
+            ErrorKind::AlreadyExists,
+            "failed to create git stderr temp file",
+        ))
+    }
+
+    fn stdio(&self) -> io::Result<Stdio> {
+        let file = self
+            .file
+            .as_ref()
+            .ok_or_else(|| io::Error::other("git stderr temp file was already closed"))?;
+        Ok(Stdio::from(file.try_clone()?))
+    }
+
+    fn read(mut self) -> io::Result<Vec<u8>> {
+        drop(self.file.take());
+        fs::read(&self.path)
+    }
+
+    fn discard(mut self) {
+        drop(self.file.take());
+    }
+}
+
+impl Drop for StderrCapture {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 fn wait_for_git_child(
     mut child: process::Child,
-    stderr: JoinHandle<io::Result<Vec<u8>>>,
+    stderr: StderrCapture,
     message: &str,
 ) -> HzResult<()> {
     let status = child.wait()?;
-    let stderr = stderr
-        .join()
-        .map_err(|_| io::Error::other("git stderr reader panicked"))??;
+    let stderr = stderr.read()?;
     let output = process::Output {
         status,
         stdout: Vec::new(),
@@ -1082,10 +1128,10 @@ fn wait_for_git_child(
     Ok(())
 }
 
-fn abort_git_child(mut child: process::Child, stderr: JoinHandle<io::Result<Vec<u8>>>) {
+fn abort_git_child(mut child: process::Child, stderr: StderrCapture) {
     let _ = child.kill();
     let _ = child.wait();
-    let _ = stderr.join();
+    stderr.discard();
 }
 
 fn git_numstat_stats_with_untracked(repo: &Path, args: &[String]) -> HzResult<PatchStats> {
@@ -2413,6 +2459,34 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".hz-diff-index-")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stderr_capture_temp_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let stderr = StderrCapture::new().expect("stderr capture should be created");
+        let path = stderr.path.clone();
+        let mode = fs::metadata(&path)
+            .expect("stderr capture should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(mode, 0o600);
+        stderr.discard();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn stderr_capture_drop_removes_temp_file() {
+        let stderr = StderrCapture::new().expect("stderr capture should be created");
+        let path = stderr.path.clone();
+
+        assert!(path.exists());
+        drop(stderr);
+        assert!(!path.exists());
     }
 
     fn temp_test_dir(name: &str) -> PathBuf {

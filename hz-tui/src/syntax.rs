@@ -5,10 +5,7 @@ use std::{
     panic::{self, AssertUnwindSafe},
     path::{Component, Path, PathBuf},
     process::Command,
-    sync::{
-        Arc, Condvar, Mutex,
-        mpsc::{self, Receiver, Sender},
-    },
+    sync::{Arc, Condvar, Mutex},
     thread,
 };
 
@@ -17,6 +14,7 @@ use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSou
 use hz_syntax::{
     HighlightedLine, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits, SyntaxSettings,
 };
+use tokio::sync::mpsc::{self, UnboundedReceiver as Receiver, UnboundedSender as Sender};
 
 use crate::theme::{
     MAX_INLINE_DIFF_LINE_BYTES, MAX_INLINE_DIFF_TOKENS, SYNTAX_THEME_ID, SyntaxBenchmarkReport,
@@ -555,7 +553,7 @@ impl SyntaxRuntime {
             return None;
         }
 
-        let (result_tx, result_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::unbounded_channel();
         let queue = SyntaxWorkerQueue::new(limits.queue_entries, 0);
         let worker_queue = queue.clone();
         let worker = thread::spawn(move || run_syntax_worker(worker_queue, result_tx));

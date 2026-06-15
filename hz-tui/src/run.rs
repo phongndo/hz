@@ -5,11 +5,11 @@ use std::{
 
 use crossterm::{
     cursor::Show,
-    event::{self, DisableMouseCapture, EnableMouseCapture},
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use hz_core::HzResult;
+use hz_core::{HzError, HzResult};
 use hz_diff::{Changeset, DiffOptions};
 use ratatui::{Terminal, backend::CrosstermBackend};
 
@@ -18,11 +18,10 @@ use crate::{
     controls::{DiffLayoutMode, default_layout_for_width, filtered_file_indices},
     model::UiModel,
     render::diff::render_row,
+    runtime,
     syntax::SyntaxRuntime,
     theme::{DiffBenchmarkOptions, DiffBenchmarkReport},
 };
-
-const EXIT_EVENT_DRAIN_LIMIT: usize = 1024;
 
 pub fn run() -> HzResult<()> {
     run_diff(DiffOptions::default())
@@ -41,7 +40,26 @@ pub fn run_diff_with_live_updates_and_syntax(
     live_updates: bool,
     syntax_enabled: bool,
 ) -> HzResult<()> {
-    let changeset = hz_diff::load_review_ref(&options)?;
+    runtime::block_on(run_diff_with_live_updates_and_syntax_async(
+        options,
+        live_updates,
+        syntax_enabled,
+    ))?
+}
+
+async fn run_diff_with_live_updates_and_syntax_async(
+    options: DiffOptions,
+    live_updates: bool,
+    syntax_enabled: bool,
+) -> HzResult<()> {
+    let load_options = options.clone();
+    let changeset = runtime::spawn_blocking(move || hz_diff::load_review_ref(&load_options))
+        .await
+        .map_err(|error| {
+            HzError::Io(io::Error::other(format!(
+                "initial diff load worker stopped: {error}"
+            )))
+        })??;
 
     let mut cleanup = TerminalCleanup::install()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -56,7 +74,7 @@ pub fn run_diff_with_live_updates_and_syntax(
     let mut live_diff = None;
     sync_live_diff(&mut live_diff, &mut app, live_updates);
 
-    let result = run_loop(&mut terminal, &mut app, live_updates, &mut live_diff);
+    let result = run_loop(&mut terminal, &mut app, live_updates, &mut live_diff).await;
     let cleanup_result = cleanup.cleanup();
 
     result?;
@@ -295,34 +313,14 @@ impl TerminalCleanup {
 
         let mut stdout = io::stdout();
         let screen_result = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
-        let drain_result = drain_pending_exit_events();
         let flush_input_result = flush_terminal_input_queue();
         let raw_mode_result = disable_raw_mode();
 
         screen_result?;
-        drain_result?;
         flush_input_result?;
         raw_mode_result?;
         Ok(())
     }
-}
-
-fn drain_pending_exit_events() -> io::Result<()> {
-    // Mouse capture can leave already-emitted SGR mouse sequences queued after the
-    // quit key. Drain only immediately-available events while raw mode is still
-    // active so the shell does not receive and print those escape codes after we
-    // return to the prompt, without delaying clean exits that have no queued
-    // input.
-
-    for _ in 0..EXIT_EVENT_DRAIN_LIMIT {
-        if !event::poll(Duration::ZERO)? {
-            break;
-        }
-
-        let _ = event::read()?;
-    }
-
-    Ok(())
 }
 
 #[cfg(unix)]
