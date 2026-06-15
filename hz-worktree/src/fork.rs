@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use crate::{
-    CreateWorktree, ForkWorktree, ForkedWorktree, Registry, WorktreeEntry, WorktreeSource,
-    WorktreeStatus, create_with_registry_and_deferred_prune,
-    remove_registered_entry_with_force_from_registry, resolve_repo,
+    CreateWorktree, ForkWorktree, ForkedWorktree, Registry, WorktreeEntry,
+    create_with_registry_and_deferred_prune, remove_registered_entry_with_force_from_registry,
+    resolve_repo, worktree_entry_from_created_worktree,
 };
 use hz_core::{HzError, HzResult};
 
@@ -49,28 +49,17 @@ pub(crate) fn fork_with_registry_and_patch_applier(
 
     let changed = match patch {
         Some(patch) => apply_patch(&worktree.path, &patch).map_err(|error| {
-            cleanup_created_fork(registry, created_worktree_entry(&worktree), error)
+            cleanup_created_fork(
+                registry,
+                worktree_entry_from_created_worktree(&worktree, 0),
+                error,
+            )
         })?,
         None => false,
     };
     worktree.warnings = pending_prune.prune(registry);
 
     Ok(ForkedWorktree { worktree, changed })
-}
-
-fn created_worktree_entry(created: &crate::CreatedWorktree) -> WorktreeEntry {
-    WorktreeEntry {
-        id: created.id.clone(),
-        handle: created.handle.clone(),
-        repo: created.repo.clone(),
-        path: created.path.clone(),
-        branch: created.branch.clone(),
-        base: created.base.clone(),
-        source: WorktreeSource::Managed,
-        created_at_unix: 0,
-        modified_at_unix: 0,
-        status: WorktreeStatus::Unknown,
-    }
 }
 
 fn cleanup_created_fork(

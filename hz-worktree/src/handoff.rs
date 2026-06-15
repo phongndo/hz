@@ -5,7 +5,7 @@ use crate::{
     WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
     create_with_registry_and_deferred_prune, discover_entries, matches_target,
     remove_registered_entry_with_force_from_registry, resolve_registered_repo, same_path, unix_now,
-    validate_worktree_name,
+    validate_worktree_name, worktree_entry_from_created_worktree,
 };
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
 
@@ -237,22 +237,9 @@ pub(crate) fn created_worktree_entry(
     created: CreatedWorktree,
     created_at_unix: u64,
 ) -> (WorktreeEntry, Vec<String>) {
+    let entry = worktree_entry_from_created_worktree(&created, created_at_unix);
     let warnings = created.warnings;
-    (
-        WorktreeEntry {
-            id: created.id,
-            handle: created.handle,
-            repo: created.repo,
-            path: created.path,
-            branch: created.branch,
-            base: created.base,
-            source: created.source,
-            created_at_unix,
-            modified_at_unix: 0,
-            status: WorktreeStatus::Unknown,
-        },
-        warnings,
-    )
+    (entry, warnings)
 }
 
 pub(crate) struct AppliedPatchHandoff {
