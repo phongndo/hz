@@ -167,6 +167,47 @@ fn cleanup_runs_for_user_managed_git_worktree_when_requested() {
     fs::remove_dir_all(test_dir).expect("test dir should be removed");
 }
 
+#[test]
+fn fork_no_diff_leaves_dirty_changes_behind() {
+    let test_dir = temp_test_dir("fork-no-diff");
+    let home = test_dir.join("home");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("forked");
+    fs::create_dir_all(&home).expect("home should be created");
+    fs::create_dir_all(&repo).expect("repo should be created");
+    initialize_repo_with_lifecycle(&repo);
+
+    fs::write(repo.join(".hz/hz.toml"), "# changed\n").expect("tracked file should be changed");
+    fs::write(repo.join("untracked.txt"), "untracked\n").expect("untracked file should be written");
+
+    run_hz(
+        &home,
+        &[
+            "fork",
+            "clean-copy",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--path",
+            destination.to_str().unwrap(),
+            "--no-diff",
+        ],
+    );
+
+    assert_eq!(
+        fs::read_to_string(destination.join(".hz/hz.toml"))
+            .expect("forked tracked file should exist"),
+        "[worktree]\nuser_managed_roots = [\"agent-worktrees\"]\n\n[lifecycle]\nsetup = [\".hz/environment/setup\"]\ncleanup = [\".hz/environment/cleanup\"]\n"
+    );
+    assert!(!destination.join("untracked.txt").exists());
+    assert_eq!(
+        fs::read_to_string(repo.join(".hz/hz.toml")).expect("source tracked file should exist"),
+        "# changed\n"
+    );
+    assert!(repo.join("untracked.txt").exists());
+
+    fs::remove_dir_all(test_dir).expect("test dir should be removed");
+}
+
 fn initialize_repo_with_lifecycle(repo: &Path) {
     git(repo, &["init", "-q"]);
     git(repo, &["config", "user.email", "test@example.com"]);

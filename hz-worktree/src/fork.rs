@@ -1,7 +1,9 @@
+use std::path::Path;
+
 use crate::{
     CreateWorktree, ForkWorktree, ForkedWorktree, Registry, WorktreeEntry, WorktreeSource,
     WorktreeStatus, create_with_registry_and_deferred_prune,
-    remove_registered_entry_with_force_from_registry, resolve_registered_repo,
+    remove_registered_entry_with_force_from_registry, resolve_repo,
 };
 use hz_core::{HzError, HzResult};
 
@@ -14,9 +16,16 @@ pub(crate) fn fork_with_registry(
     registry: &mut Registry,
     input: ForkWorktree,
 ) -> HzResult<ForkedWorktree> {
+    fork_with_registry_and_patch_applier(registry, input, hz_git::apply_patch)
+}
+
+pub(crate) fn fork_with_registry_and_patch_applier(
+    registry: &mut Registry,
+    input: ForkWorktree,
+    apply_patch: impl FnOnce(&Path, &[u8]) -> HzResult<bool>,
+) -> HzResult<ForkedWorktree> {
     let source = hz_git::repository_root(input.repo.as_deref())?;
-    let main = hz_git::main_worktree(&source)?;
-    let repo = resolve_registered_repo(registry, &source, &main).unwrap_or(main);
+    let repo = resolve_repo(input.repo.as_deref(), registry)?;
     let head = hz_git::current_head(&source)?;
     let patch = if input.include_diff {
         Some(hz_git::diff_patch(&source)?)
@@ -39,7 +48,7 @@ pub(crate) fn fork_with_registry(
     )?;
 
     let changed = match patch {
-        Some(patch) => hz_git::apply_patch(&worktree.path, &patch).map_err(|error| {
+        Some(patch) => apply_patch(&worktree.path, &patch).map_err(|error| {
             cleanup_created_fork(registry, created_worktree_entry(&worktree), error)
         })?,
         None => false,
