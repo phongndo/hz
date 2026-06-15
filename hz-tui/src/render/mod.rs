@@ -67,6 +67,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
 
     let sidebar_width = file_sidebar_width(app, body_area.width);
     app.file_sidebar_render_width = sidebar_width;
+    app.set_rendered_error_log_separator_row(error_log_area.map(|area| area.y));
     let (sidebar_area, diff_area) = if sidebar_width > 0 {
         (
             Some(Rect {

@@ -2064,17 +2064,18 @@ fn error_log_can_be_resized_with_bounds() {
 fn error_log_separator_drag_resizes_pane() {
     let changeset = changeset_with_context_lines(8);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
-    app.set_viewport_rows(10);
     app.set_error_log("reload failed");
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 17))
+        .expect("test terminal should be created");
+
+    terminal
+        .draw(|frame| crate::render::draw(frame, &mut app))
+        .expect("error log draw should succeed");
 
     let separator_row = app
         .error_log_separator_row()
         .expect("error log should expose separator row");
     assert_eq!(separator_row, 11);
-
-    app.open_filter_input(DiffFilterKind::File);
-    assert_eq!(app.error_log_separator_row(), Some(12));
-    app.filter_input = None;
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -2105,6 +2106,18 @@ fn error_log_separator_drag_resizes_pane() {
     .expect("resize should stop");
 
     assert!(!app.error_log_resizing);
+}
+
+#[test]
+fn file_sidebar_position_is_limited_to_rendered_body_rows() {
+    let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs", "d.rs"]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.file_sidebar_open = true;
+    app.file_sidebar_render_width = 20;
+    app.set_viewport_rows(3);
+
+    assert!(app.is_file_sidebar_position(0, 3));
+    assert!(!app.is_file_sidebar_position(0, 4));
 }
 
 #[test]

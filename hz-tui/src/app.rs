@@ -501,6 +501,7 @@ pub(crate) struct DiffApp {
     pub(crate) error_log: Option<String>,
     pub(crate) error_log_height: u16,
     pub(crate) error_log_resizing: bool,
+    pub(crate) rendered_error_log_separator_row: Option<u16>,
     pub(crate) mouse_scroll: MouseScroll,
     pub(crate) notice: Option<Notice>,
     pub(crate) theme: DiffTheme,
@@ -659,6 +660,7 @@ impl DiffApp {
             error_log: None,
             error_log_height: ERROR_LOG_DEFAULT_HEIGHT,
             error_log_resizing: false,
+            rendered_error_log_separator_row: None,
             mouse_scroll: MouseScroll::default(),
             notice,
             theme,
@@ -899,6 +901,7 @@ impl DiffApp {
     pub(crate) fn close_error_log(&mut self) -> bool {
         if self.error_log.take().is_some() {
             self.error_log_resizing = false;
+            self.rendered_error_log_separator_row = None;
             self.dirty = true;
             true
         } else {
@@ -933,11 +936,11 @@ impl DiffApp {
 
     pub(crate) fn error_log_separator_row(&self) -> Option<u16> {
         self.error_log.as_ref()?;
-        let filter_bar_height = usize::from(self.filter_input.is_some() || self.filters_active());
-        let row = 1usize
-            .saturating_add(self.viewport_rows)
-            .saturating_add(filter_bar_height);
-        u16::try_from(row).ok()
+        self.rendered_error_log_separator_row
+    }
+
+    pub(crate) fn set_rendered_error_log_separator_row(&mut self, row: Option<u16>) {
+        self.rendered_error_log_separator_row = row.filter(|_| self.error_log.is_some());
     }
 
     pub(crate) fn start_error_log_resize(&mut self, row: u16) -> bool {
@@ -1125,6 +1128,7 @@ impl DiffApp {
             && self.file_sidebar_render_width > 0
             && column < self.file_sidebar_render_width
             && row > 0
+            && usize::from(row - 1) < self.visible_file_sidebar_rows()
     }
 
     pub(crate) fn is_file_sidebar_resize_handle(&self, column: u16, row: u16) -> bool {
@@ -1279,22 +1283,7 @@ impl DiffApp {
         );
         self.context_expansions
             .insert(ContextKey { file, hunk }, next);
-        let search_result = self.search_index.search_with_grep_match_limit(
-            &self.file_filter,
-            &self.grep_filter,
-            MAX_LIVE_GREP_MATCHES,
-        );
-        self.replace_model(
-            &search_result.visible_files,
-            HunkFocusModelBehavior::PreserveIfValid,
-        );
-        self.grep_matches = grep_match_rows(&self.model, &search_result.grep_matches);
-        self.grep_matches_truncated = search_result.grep_matches_truncated;
-        self.selected_grep_match = None;
-        self.set_scroll_with_grep_sync(self.scroll, true, HunkFocusScrollBehavior::Preserve);
-        self.sync_grep_match_selection_to_scroll();
-        self.set_horizontal_scroll(self.horizontal_scroll);
-        self.dirty = true;
+        self.rebuild_model_after_context_visibility_change();
         true
     }
 
@@ -1307,6 +1296,11 @@ impl DiffApp {
             return false;
         }
 
+        self.rebuild_model_after_context_visibility_change();
+        true
+    }
+
+    fn rebuild_model_after_context_visibility_change(&mut self) {
         let search_result = self.search_index.search_with_grep_match_limit(
             &self.file_filter,
             &self.grep_filter,
@@ -1323,7 +1317,6 @@ impl DiffApp {
         self.sync_grep_match_selection_to_scroll();
         self.set_horizontal_scroll(self.horizontal_scroll);
         self.dirty = true;
-        true
     }
 
     pub(crate) fn context_expand_count(&self, available: usize) -> usize {
