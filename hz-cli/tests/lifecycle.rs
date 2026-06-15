@@ -204,6 +204,10 @@ fn fork_no_diff_leaves_dirty_changes_behind() {
         "# changed\n"
     );
     assert!(repo.join("untracked.txt").exists());
+    assert!(
+        !repo.join("lifecycle.log").exists(),
+        "fork ran lifecycle hooks"
+    );
 
     fs::remove_dir_all(test_dir).expect("test dir should be removed");
 }
@@ -248,6 +252,10 @@ fn fork_copies_dirty_changes_by_default() {
         "# changed\n"
     );
     assert!(repo.join("untracked.txt").exists());
+    assert!(
+        !repo.join("lifecycle.log").exists(),
+        "fork ran lifecycle hooks"
+    );
 
     fs::remove_dir_all(test_dir).expect("test dir should be removed");
 }

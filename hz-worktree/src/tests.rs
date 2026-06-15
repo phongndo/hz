@@ -595,6 +595,40 @@ fn fork_removes_created_worktree_when_patch_apply_fails() {
 }
 
 #[test]
+fn fork_errors_when_destination_path_exists() {
+    let test_dir = test_dir("hz-worktree-fork-existing-path-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    fs::create_dir_all(&destination).expect("destination directory should be created");
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    let mut registry = Registry::default();
+
+    let error = fork_with_registry(
+        &mut registry,
+        ForkWorktree {
+            name: Some("copy".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(destination.clone()),
+            include_diff: false,
+            max_detached_worktrees: Some(0),
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!("worktree path already exists: {}", destination.display())
+    );
+    assert!(registry.entries.is_empty());
+    assert!(!git_worktree_listed(&repo, &destination));
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
 fn fork_prunes_oldest_clean_detached_worktree() {
     let test_dir = test_dir("hz-worktree-fork-prune-test");
     let repo = test_dir.join("repo");
