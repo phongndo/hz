@@ -12,8 +12,6 @@ use crossterm::event::{self, Event};
 use hz_core::{HzError, HzResult};
 use tokio::sync::mpsc::{self, Receiver, Sender, error::TryRecvError};
 
-use crate::runtime;
-
 const EVENT_READER_POLL: Duration = Duration::from_millis(2);
 const EVENT_READER_CHANNEL_CAPACITY: usize = 1024;
 const READY_EVENT_DRAIN_LIMIT: usize = 1024;
@@ -89,6 +87,10 @@ impl TerminalEventReader {
         if let Some(shutdown) = self.shutdown.take() {
             shutdown.store(true, Ordering::Relaxed);
         }
+        if self.handle.is_some() {
+            // Unblock a reader thread parked on a full bounded channel.
+            self.rx.close();
+        }
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -143,12 +145,12 @@ fn read_terminal_events(tx: Sender<io::Result<Event>>, shutdown: Arc<AtomicBool>
             Ok(true) if shutdown.load(Ordering::Relaxed) => break,
             Ok(true) => match event::read() {
                 Ok(event) => {
-                    if !runtime::send_with_timeout(&tx, Ok(event)) && tx.is_closed() {
+                    if !send_terminal_event(&tx, Ok(event)) {
                         break;
                     }
                 }
                 Err(error) => {
-                    let _ = runtime::send_with_timeout(&tx, Err(error));
+                    let _ = send_terminal_event(&tx, Err(error));
                     break;
                 }
             },
@@ -158,7 +160,7 @@ fn read_terminal_events(tx: Sender<io::Result<Event>>, shutdown: Arc<AtomicBool>
                 }
             }
             Err(error) => {
-                let _ = runtime::send_with_timeout(&tx, Err(error));
+                let _ = send_terminal_event(&tx, Err(error));
                 break;
             }
         }
@@ -168,6 +170,10 @@ fn read_terminal_events(tx: Sender<io::Result<Event>>, shutdown: Arc<AtomicBool>
 
 fn drain_ready_terminal_events() {
     drain_ready_events(|| event::poll(Duration::ZERO), || event::read().map(|_| ()));
+}
+
+fn send_terminal_event(tx: &Sender<io::Result<Event>>, event: io::Result<Event>) -> bool {
+    tx.blocking_send(event).is_ok()
 }
 
 fn drain_ready_events(
@@ -240,5 +246,18 @@ mod tests {
         );
 
         assert_eq!(reads, READY_EVENT_DRAIN_LIMIT);
+    }
+
+    #[test]
+    fn terminal_event_send_unblocks_when_receiver_closes() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(Ok(Event::Resize(80, 24))).unwrap();
+        let handle = thread::spawn(move || send_terminal_event(&tx, Ok(Event::Resize(100, 30))));
+
+        thread::sleep(Duration::from_millis(20));
+        assert!(!handle.is_finished());
+
+        rx.close();
+        assert!(!handle.join().unwrap());
     }
 }

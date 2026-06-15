@@ -282,7 +282,7 @@ pub(crate) fn spawn_live_diff_worker(
                 continue;
             }
 
-            if !runtime::send_async_with_timeout(&reload_tx, LiveDiffReload::Started).await {
+            if !send_live_reload(&reload_tx, LiveDiffReload::Started).await {
                 break;
             }
             let load_options = options.clone();
@@ -299,13 +299,15 @@ pub(crate) fn spawn_live_diff_worker(
             if reload_should_wait_for_unpause(&paused, &pending_while_paused) {
                 continue;
             }
-            if !runtime::send_async_with_timeout(&reload_tx, LiveDiffReload::Loaded(changeset))
-                .await
-            {
+            if !send_live_reload(&reload_tx, LiveDiffReload::Loaded(changeset)).await {
                 break;
             }
         }
     })
+}
+
+async fn send_live_reload(sender: &Sender<LiveDiffReload>, reload: LiveDiffReload) -> bool {
+    sender.send(reload).await.is_ok()
 }
 
 fn queue_changed_or_record_pending(
@@ -397,5 +399,31 @@ mod tests {
 
         assert!(reload_should_wait_for_unpause(&paused, &pending));
         assert!(pending.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn live_reload_send_waits_for_receiver_capacity() {
+        let runtime = crate::runtime::build_runtime().expect("runtime should start");
+        runtime.block_on(async {
+            let (tx, mut rx) = mpsc::channel(1);
+            tx.try_send(LiveDiffReload::Started)
+                .expect("initial reload should send");
+            let send_task = tokio::spawn({
+                let send_tx = tx.clone();
+                async move { send_live_reload(&send_tx, LiveDiffReload::Started).await }
+            });
+
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            assert!(!send_task.is_finished());
+            assert!(matches!(rx.try_recv(), Ok(LiveDiffReload::Started)));
+
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), send_task)
+                    .await
+                    .expect("send task should finish")
+                    .expect("send task should not panic")
+            );
+            assert!(matches!(rx.try_recv(), Ok(LiveDiffReload::Started)));
+        });
     }
 }

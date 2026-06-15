@@ -104,19 +104,6 @@ pub(crate) fn send_with_timeout<T>(sender: &mpsc::Sender<T>, mut value: T) -> bo
     }
 }
 
-pub(crate) async fn send_async_with_timeout<T>(sender: &mpsc::Sender<T>, value: T) -> bool {
-    let value = match sender.try_send(value) {
-        Ok(()) => return true,
-        Err(mpsc::error::TrySendError::Full(value)) => value,
-        Err(mpsc::error::TrySendError::Closed(_)) => return false,
-    };
-
-    matches!(
-        tokio::time::timeout(CHANNEL_SEND_TIMEOUT, sender.send(value)).await,
-        Ok(Ok(()))
-    )
-}
-
 fn global_runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| build_runtime().expect("tokio runtime should start"))
