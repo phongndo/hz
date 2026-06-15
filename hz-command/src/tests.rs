@@ -682,6 +682,8 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("compdef _hz_completion hz _hz"));
     assert!(script.contains("compdef _hzcd_completion hzcd _hzcd"));
     assert!(script.contains("compdef _hzlocal_completion hzlocal _hzlocal"));
+    assert!(script.contains("_hz_deferred_register_completion()"));
+    assert!(script.contains("add-zsh-hook precmd _hz_deferred_register_completion"));
     assert!(script.contains("compadd -- -h --help -V --version"));
     assert!(script.contains("if [[ \"$PREFIX\" == -* ]]; then"));
     assert!(script.contains("_hz_complete_command_options \"$cmd\""));

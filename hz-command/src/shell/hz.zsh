@@ -477,5 +477,23 @@ _hz_register_completion() {
   fi
 }
 
+_hz_deferred_register_completion() {
+  _hz_register_completion
+
+  if (( $+functions[add-zsh-hook] )); then
+    add-zsh-hook -d precmd _hz_deferred_register_completion
+  fi
+
+  unfunction _hz_deferred_register_completion
+  unfunction _hz_register_completion
+}
+
 _hz_register_completion
-unfunction _hz_register_completion
+
+if ! (( $+functions[add-zsh-hook] )); then
+  autoload -Uz add-zsh-hook
+fi
+
+if (( $+functions[add-zsh-hook] )); then
+  add-zsh-hook precmd _hz_deferred_register_completion
+fi
