@@ -10,11 +10,12 @@ use std::{
 
 use crossterm::event::{self, Event};
 use hz_core::{HzError, HzResult};
-use tokio::sync::mpsc::{
-    self, UnboundedReceiver as Receiver, UnboundedSender as Sender, error::TryRecvError,
-};
+use tokio::sync::mpsc::{self, Receiver, Sender, error::TryRecvError};
 
-const EVENT_READER_POLL: Duration = Duration::from_millis(25);
+use crate::runtime;
+
+const EVENT_READER_POLL: Duration = Duration::from_millis(2);
+const EVENT_READER_CHANNEL_CAPACITY: usize = 1024;
 const READY_EVENT_DRAIN_LIMIT: usize = 1024;
 type EventReaderParts = (Receiver<io::Result<Event>>, Arc<AtomicBool>, JoinHandle<()>);
 
@@ -126,7 +127,7 @@ impl Drop for TerminalEventReader {
 }
 
 fn spawn_reader_thread(thread_name: &'static str) -> io::Result<EventReaderParts> {
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(EVENT_READER_CHANNEL_CAPACITY);
     let shutdown = Arc::new(AtomicBool::new(false));
     let thread_shutdown = Arc::clone(&shutdown);
     let handle = thread::Builder::new()
@@ -142,12 +143,12 @@ fn read_terminal_events(tx: Sender<io::Result<Event>>, shutdown: Arc<AtomicBool>
             Ok(true) if shutdown.load(Ordering::Relaxed) => break,
             Ok(true) => match event::read() {
                 Ok(event) => {
-                    if tx.send(Ok(event)).is_err() {
+                    if !runtime::send_with_timeout(&tx, Ok(event)) && tx.is_closed() {
                         break;
                     }
                 }
                 Err(error) => {
-                    let _ = tx.send(Err(error));
+                    let _ = runtime::send_with_timeout(&tx, Err(error));
                     break;
                 }
             },
@@ -157,7 +158,7 @@ fn read_terminal_events(tx: Sender<io::Result<Event>>, shutdown: Arc<AtomicBool>
                 }
             }
             Err(error) => {
-                let _ = tx.send(Err(error));
+                let _ = runtime::send_with_timeout(&tx, Err(error));
                 break;
             }
         }
@@ -195,8 +196,8 @@ mod tests {
 
     #[test]
     fn try_read_returns_queued_event() {
-        let (tx, rx) = mpsc::unbounded_channel();
-        tx.send(Ok(Event::Resize(80, 24))).unwrap();
+        let (tx, rx) = mpsc::channel(1);
+        tx.try_send(Ok(Event::Resize(80, 24))).unwrap();
         let mut reader = TerminalEventReader::from_receiver(rx);
 
         assert_eq!(reader.try_read().unwrap(), Some(Event::Resize(80, 24)));
@@ -205,8 +206,8 @@ mod tests {
 
     #[test]
     fn try_read_returns_queued_error() {
-        let (tx, rx) = mpsc::unbounded_channel();
-        tx.send(Err(io::Error::other("event failed"))).unwrap();
+        let (tx, rx) = mpsc::channel(1);
+        tx.try_send(Err(io::Error::other("event failed"))).unwrap();
         let mut reader = TerminalEventReader::from_receiver(rx);
 
         assert_eq!(reader.try_read().unwrap_err().to_string(), "event failed");
@@ -214,9 +215,9 @@ mod tests {
 
     #[test]
     fn pause_discards_events_already_queued_for_hz() {
-        let (tx, rx) = mpsc::unbounded_channel();
-        tx.send(Ok(Event::Resize(80, 24))).unwrap();
-        tx.send(Ok(Event::Resize(100, 30))).unwrap();
+        let (tx, rx) = mpsc::channel(2);
+        tx.try_send(Ok(Event::Resize(80, 24))).unwrap();
+        tx.try_send(Ok(Event::Resize(100, 30))).unwrap();
         let mut reader = TerminalEventReader::from_receiver(rx);
 
         let mut paused = reader.pause();

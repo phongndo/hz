@@ -14,7 +14,7 @@ use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSou
 use hz_syntax::{
     HighlightedLine, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits, SyntaxSettings,
 };
-use tokio::sync::mpsc::{self, UnboundedReceiver as Receiver, UnboundedSender as Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::theme::{
     MAX_INLINE_DIFF_LINE_BYTES, MAX_INLINE_DIFF_TOKENS, SYNTAX_THEME_ID, SyntaxBenchmarkReport,
@@ -553,7 +553,7 @@ impl SyntaxRuntime {
             return None;
         }
 
-        let (result_tx, result_rx) = mpsc::unbounded_channel();
+        let (result_tx, result_rx) = mpsc::channel(limits.queue_entries.max(1));
         let queue = SyntaxWorkerQueue::new(limits.queue_entries, 0);
         let worker_queue = queue.clone();
         let worker = thread::spawn(move || run_syntax_worker(worker_queue, result_tx));
@@ -1110,7 +1110,10 @@ pub(crate) fn run_syntax_worker(queue: SyntaxWorkerQueue, result_tx: Sender<Synt
                 .map_err(|_| SyntaxJobFailure::HighlightError)
         }))
         .unwrap_or(Err(SyntaxJobFailure::HighlightError));
-        if result_tx.send(SyntaxResult { key: job.key, side }).is_err() {
+        if result_tx
+            .blocking_send(SyntaxResult { key: job.key, side })
+            .is_err()
+        {
             break;
         }
     }

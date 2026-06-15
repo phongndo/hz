@@ -6,7 +6,6 @@ use ratatui::{
     prelude::{Color, Line, Modifier, Span, Style, Text},
     widgets::Paragraph,
 };
-use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::{DiffApp, split_cell_content_width, unified_content_width},
@@ -18,7 +17,10 @@ use crate::{
             file_header_line, file_separator_line, hunk_header_line, hunk_header_line_with_focus,
         },
         style::{base_bg, diff_indicator_span, diff_sign_style, focused_diff_indicator_span},
-        text::{fit, fit_padded, fit_padded_from, format_count, skip_display_prefix},
+        text::{
+            fit, fit_padded, fit_padded_from, fit_with_width, format_count, skip_display_prefix,
+            spaces,
+        },
     },
     syntax::{DiffSide, InlineRange, unified_syntax_side},
     theme::{
@@ -363,11 +365,7 @@ pub(crate) fn render_unified_line_at_scroll_with_focus(
     let indicator_width = 1.min(width);
     let gutter_width = UNIFIED_GUTTER_WIDTH.min(width.saturating_sub(indicator_width));
     let content_width = unified_content_width(width);
-    let gutter = format!(
-        "{:>5} {:>5} ",
-        unified_line_number(line.old_line, line.kind),
-        unified_line_number(line.new_line, line.kind)
-    );
+    let gutter = unified_gutter_text(line.old_line, line.new_line);
     let mut spans = Vec::new();
     if indicator_width > 0 {
         spans.push(diff_indicator_span_for_focus(line.kind, theme, focused));
@@ -399,10 +397,44 @@ pub(crate) fn diff_indicator_span_for_focus(
     }
 }
 
-pub(crate) fn unified_line_number(line: Option<usize>, _kind: DiffLineKind) -> String {
-    match line {
-        Some(line) => line.to_string(),
-        None => String::new(),
+fn unified_gutter_text(old_line: Option<usize>, new_line: Option<usize>) -> String {
+    let mut gutter = String::with_capacity(UNIFIED_GUTTER_WIDTH);
+    push_right_aligned_number(&mut gutter, old_line, 5);
+    gutter.push(' ');
+    push_right_aligned_number(&mut gutter, new_line, 5);
+    gutter.push(' ');
+    gutter
+}
+
+fn split_gutter_text(line: Option<usize>) -> String {
+    let mut gutter = String::with_capacity(GUTTER_WIDTH.saturating_sub(1));
+    push_right_aligned_number(&mut gutter, line, 5);
+    gutter.push(' ');
+    gutter
+}
+
+fn push_right_aligned_number(out: &mut String, line: Option<usize>, width: usize) {
+    let Some(mut value) = line else {
+        out.extend(std::iter::repeat_n(' ', width));
+        return;
+    };
+
+    let mut digits = [0u8; 39];
+    let mut len = 0usize;
+    loop {
+        digits[digits.len() - 1 - len] = b'0' + (value % 10) as u8;
+        len += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+
+    if len < width {
+        out.extend(std::iter::repeat_n(' ', width - len));
+    }
+    for digit in &digits[digits.len() - len..] {
+        out.push(*digit as char);
     }
 }
 
@@ -436,15 +468,17 @@ pub(crate) fn gutter_spans(
 }
 
 pub(crate) fn empty_diff_fill_from(width: usize, row_index: usize, column_offset: usize) -> String {
-    (0..width)
-        .map(|column| {
+    let mut fill = String::with_capacity(width.saturating_mul(EMPTY_DIFF_FILL.len_utf8()));
+    for column in 0..width {
+        fill.push(
             if (column + column_offset + row_index) % EMPTY_DIFF_FILL_SPACING == 0 {
                 EMPTY_DIFF_FILL
             } else {
                 ' '
-            }
-        })
-        .collect()
+            },
+        );
+    }
+    fill
 }
 
 pub(crate) fn content_spans_at_scroll(
@@ -460,7 +494,13 @@ pub(crate) fn content_spans_at_scroll(
         return Vec::new();
     }
 
-    let inline = valid_inline_ranges(text, inline);
+    let valid_inline;
+    let inline = if inline.is_empty() {
+        &[][..]
+    } else {
+        valid_inline = valid_inline_ranges(text, inline);
+        valid_inline.as_slice()
+    };
     let syntax = syntax.filter(|syntax| syntax_line_matches_text(syntax, text));
     if syntax.is_none() && inline.is_empty() {
         return vec![Span::styled(
@@ -469,7 +509,9 @@ pub(crate) fn content_spans_at_scroll(
         )];
     }
 
-    let mut writer = ContentSpanWriter::new(&inline, kind, width, theme, horizontal_scroll);
+    let span_capacity = syntax.map_or(1, |syntax| syntax.segments.len()) + inline.len() * 2 + 1;
+    let mut writer =
+        ContentSpanWriter::new(inline, kind, width, theme, horizontal_scroll, span_capacity);
 
     if let Some(syntax) = syntax {
         let mut byte_start = 0usize;
@@ -491,21 +533,27 @@ pub(crate) fn content_spans_at_scroll(
 }
 
 pub(crate) fn valid_inline_ranges(text: &str, ranges: &[InlineRange]) -> Vec<InlineRange> {
-    let mut valid = ranges
-        .iter()
-        .filter_map(|range| {
-            let byte_start = range.byte_start.min(text.len());
-            let byte_end = range.byte_end.min(text.len());
-            (byte_start < byte_end
-                && text.is_char_boundary(byte_start)
-                && text.is_char_boundary(byte_end))
-            .then_some(InlineRange {
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+
+    let mut valid = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        let byte_start = range.byte_start.min(text.len());
+        let byte_end = range.byte_end.min(text.len());
+        if byte_start < byte_end
+            && text.is_char_boundary(byte_start)
+            && text.is_char_boundary(byte_end)
+        {
+            valid.push(InlineRange {
                 byte_start,
                 byte_end,
-            })
-        })
-        .collect::<Vec<_>>();
-    valid.sort_by_key(|range| (range.byte_start, range.byte_end));
+            });
+        }
+    }
+    if valid.len() > 1 {
+        valid.sort_by_key(|range| (range.byte_start, range.byte_end));
+    }
     valid
 }
 
@@ -526,9 +574,10 @@ impl<'a> ContentSpanWriter<'a> {
         width: usize,
         theme: DiffTheme,
         horizontal_scroll: usize,
+        span_capacity: usize,
     ) -> Self {
         Self {
-            spans: Vec::new(),
+            spans: Vec::with_capacity(span_capacity),
             inline,
             kind,
             width,
@@ -613,21 +662,20 @@ impl<'a> ContentSpanWriter<'a> {
                 return true;
             }
         }
-        let fitted = fit(piece, remaining);
+        let (fitted, fitted_width, complete) = fit_with_width(piece, remaining);
         if fitted.is_empty() {
             return false;
         }
 
-        let fitted_len = fitted.len();
-        self.used += UnicodeWidthStr::width(fitted.as_str());
+        self.used += fitted_width;
         self.spans.push(Span::styled(fitted, style));
-        fitted_len == piece.len()
+        complete
     }
 
     pub(crate) fn finish(mut self) -> Vec<Span<'static>> {
         if self.used < self.width {
             self.spans.push(Span::styled(
-                " ".repeat(self.width - self.used),
+                spaces(self.width - self.used),
                 line_style(self.kind, self.theme),
             ));
         }
@@ -818,7 +866,7 @@ pub(crate) fn split_cell_spans_at_scroll_with_focus(
         }
         if gutter_width > 0 {
             spans.push(Span::styled(
-                " ".repeat(gutter_width),
+                spaces(gutter_width),
                 Style::default().bg(line_gutter_bg(empty_kind, theme)),
             ));
         }
@@ -841,9 +889,7 @@ pub(crate) fn split_cell_spans_at_scroll_with_focus(
     let line_number = match side {
         SplitSide::Old => line.old_line,
         SplitSide::New => line.new_line,
-    }
-    .map(|line| line.to_string())
-    .unwrap_or_default();
+    };
     let sign = match (side, line.kind) {
         (SplitSide::Old, DiffLineKind::Deletion) => "-",
         (SplitSide::New, DiffLineKind::Addition) => "+",
@@ -856,7 +902,7 @@ pub(crate) fn split_cell_spans_at_scroll_with_focus(
     }
     if gutter_width > 0 {
         spans.extend(gutter_spans(
-            &format!("{line_number:>5} "),
+            &split_gutter_text(line_number),
             sign,
             gutter_width,
             line.kind,

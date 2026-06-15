@@ -10,10 +10,13 @@ use std::{
 use hz_core::{HzError, HzResult};
 use hz_diff::{Changeset, DiffOptions, DiffSource};
 use notify::{RecursiveMode, Watcher};
-use tokio::sync::mpsc::{self, UnboundedReceiver as Receiver, UnboundedSender as Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::runtime;
 use crate::theme::LIVE_RELOAD_DEBOUNCE;
+
+const LIVE_DIFF_CONTROL_CHANNEL_CAPACITY: usize = 64;
+const LIVE_DIFF_RELOAD_CHANNEL_CAPACITY: usize = 4;
 
 pub(crate) struct LiveDiff {
     pub(crate) options: DiffOptions,
@@ -29,8 +32,8 @@ impl LiveDiff {
     pub(crate) fn start(options: DiffOptions, repo: &Path) -> HzResult<Self> {
         let watch_spec = live_diff_watch_spec(repo)?;
         let filter = watch_spec.filter.clone();
-        let (control_tx, control_rx) = mpsc::unbounded_channel();
-        let (reload_tx, reload_rx) = mpsc::unbounded_channel();
+        let (control_tx, control_rx) = mpsc::channel(LIVE_DIFF_CONTROL_CHANNEL_CAPACITY);
+        let (reload_tx, reload_rx) = mpsc::channel(LIVE_DIFF_RELOAD_CHANNEL_CAPACITY);
         let watcher_tx = control_tx.clone();
         let paused = Arc::new(AtomicBool::new(false));
         let watcher_paused = Arc::clone(&paused);
@@ -95,7 +98,7 @@ impl LiveDiff {
 
 impl Drop for LiveDiff {
     fn drop(&mut self) {
-        let _ = self.control_tx.send(LiveDiffCommand::Stop);
+        let _ = self.control_tx.try_send(LiveDiffCommand::Stop);
         self._worker.abort();
     }
 }
@@ -279,7 +282,7 @@ pub(crate) fn spawn_live_diff_worker(
                 continue;
             }
 
-            if reload_tx.send(LiveDiffReload::Started).is_err() {
+            if !runtime::send_async_with_timeout(&reload_tx, LiveDiffReload::Started).await {
                 break;
             }
             let load_options = options.clone();
@@ -296,7 +299,9 @@ pub(crate) fn spawn_live_diff_worker(
             if reload_should_wait_for_unpause(&paused, &pending_while_paused) {
                 continue;
             }
-            if reload_tx.send(LiveDiffReload::Loaded(changeset)).is_err() {
+            if !runtime::send_async_with_timeout(&reload_tx, LiveDiffReload::Loaded(changeset))
+                .await
+            {
                 break;
             }
         }
@@ -318,7 +323,7 @@ fn queue_changed_or_record_pending(
         }
     }
 
-    let _ = control_tx.send(LiveDiffCommand::Changed);
+    let _ = runtime::send_with_timeout(control_tx, LiveDiffCommand::Changed);
 }
 
 fn flush_pending_paused_reload(
@@ -326,7 +331,7 @@ fn flush_pending_paused_reload(
     control_tx: &Sender<LiveDiffCommand>,
 ) {
     if pending_while_paused.swap(false, Ordering::AcqRel) {
-        let _ = control_tx.send(LiveDiffCommand::Changed);
+        let _ = runtime::send_with_timeout(control_tx, LiveDiffCommand::Changed);
     }
 }
 
@@ -368,7 +373,7 @@ mod tests {
     fn paused_live_diff_records_and_flushes_pending_reload() {
         let paused = AtomicBool::new(true);
         let pending = AtomicBool::new(false);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(2);
 
         queue_changed_or_record_pending(&paused, &pending, &tx);
 

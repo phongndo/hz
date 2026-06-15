@@ -1,12 +1,21 @@
-use std::{future::Future, io, sync::OnceLock, thread};
+use std::{future::Future, io, sync::OnceLock, thread, time::Duration};
 
 use tokio::{
     runtime::{Builder, Handle, Runtime},
-    sync::oneshot,
+    sync::{mpsc, oneshot},
 };
 
+const RUNTIME_WORKER_THREADS: usize = 2;
+const RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
+const CHANNEL_SEND_TIMEOUT: Duration = Duration::from_millis(10);
+
 pub(crate) fn build_runtime() -> io::Result<Runtime> {
-    Builder::new_multi_thread().enable_all().build()
+    Builder::new_multi_thread()
+        .worker_threads(RUNTIME_WORKER_THREADS)
+        .max_blocking_threads(RUNTIME_MAX_BLOCKING_THREADS)
+        .thread_name("hz-tokio")
+        .enable_time()
+        .build()
 }
 
 pub(crate) fn block_on<F, R>(future: F) -> io::Result<R>
@@ -58,9 +67,7 @@ pub(crate) fn spawn_detached_blocking<F>(function: F)
 where
     F: FnOnce() + Send + 'static,
 {
-    let _ = thread::Builder::new()
-        .name("hz-blocking".to_owned())
-        .spawn(function);
+    drop(spawn_blocking(function));
 }
 
 pub(crate) async fn run_detached_blocking<F, R>(function: F) -> Result<R, oneshot::error::RecvError>
@@ -73,6 +80,41 @@ where
         let _ = tx.send(function());
     });
     rx.await
+}
+
+pub(crate) fn send_with_timeout<T>(sender: &mpsc::Sender<T>, mut value: T) -> bool {
+    match sender.try_send(value) {
+        Ok(()) => return true,
+        Err(mpsc::error::TrySendError::Full(next_value)) => value = next_value,
+        Err(mpsc::error::TrySendError::Closed(_)) => return false,
+    }
+
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() >= CHANNEL_SEND_TIMEOUT {
+            return false;
+        }
+
+        thread::sleep(Duration::from_millis(1));
+        match sender.try_send(value) {
+            Ok(()) => return true,
+            Err(mpsc::error::TrySendError::Full(next_value)) => value = next_value,
+            Err(mpsc::error::TrySendError::Closed(_)) => return false,
+        }
+    }
+}
+
+pub(crate) async fn send_async_with_timeout<T>(sender: &mpsc::Sender<T>, value: T) -> bool {
+    let value = match sender.try_send(value) {
+        Ok(()) => return true,
+        Err(mpsc::error::TrySendError::Full(value)) => value,
+        Err(mpsc::error::TrySendError::Closed(_)) => return false,
+    };
+
+    matches!(
+        tokio::time::timeout(CHANNEL_SEND_TIMEOUT, sender.send(value)).await,
+        Ok(Ok(()))
+    )
 }
 
 fn global_runtime() -> &'static Runtime {
