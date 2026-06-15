@@ -14,7 +14,9 @@ use self::{
     diff::draw_diff,
     menus::{draw_branch_menu, draw_diff_menu, draw_help_menu},
     sidebar::{draw_file_sidebar, file_sidebar_width},
-    statusline::{draw_filter_bar, draw_header, filter_bar_visible},
+    statusline::{
+        draw_error_log, draw_filter_bar, draw_header, error_log_height, filter_bar_visible,
+    },
 };
 
 pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
@@ -29,11 +31,18 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
         width: area.width,
         height: 1,
     };
-    let filter_bar_height = u16::from(filter_bar_visible(app) && area.height > 1);
+    let filter_bar_height = u16::from(area.height > 1 && filter_bar_visible(app));
+    let error_log_height = error_log_height(
+        app,
+        area.height
+            .saturating_sub(1)
+            .saturating_sub(filter_bar_height),
+    );
     let body_height = area
         .height
         .saturating_sub(1)
-        .saturating_sub(filter_bar_height);
+        .saturating_sub(filter_bar_height)
+        .saturating_sub(error_log_height);
     let body_area = Rect {
         x: area.x,
         y: area.y.saturating_add(1),
@@ -42,9 +51,18 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
     };
     let filter_bar_area = (filter_bar_height > 0).then_some(Rect {
         x: area.x,
-        y: area.y.saturating_add(area.height.saturating_sub(1)),
+        y: body_area.y.saturating_add(body_area.height),
         width: area.width,
         height: 1,
+    });
+    let error_log_area = (error_log_height > 0).then_some(Rect {
+        x: area.x,
+        y: body_area
+            .y
+            .saturating_add(body_area.height)
+            .saturating_add(filter_bar_height),
+        width: area.width,
+        height: error_log_height,
     });
 
     let sidebar_width = file_sidebar_width(app, body_area.width);
@@ -77,6 +95,9 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut DiffApp) {
     draw_diff(frame, app, diff_area);
     if let Some(filter_bar_area) = filter_bar_area {
         draw_filter_bar(frame, app, filter_bar_area);
+    }
+    if let Some(error_log_area) = error_log_area {
+        draw_error_log(frame, app, error_log_area);
     }
     draw_diff_menu(frame, app, area);
     draw_branch_menu(frame, app, area);

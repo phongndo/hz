@@ -87,8 +87,36 @@ pub fn benchmark_diff_view(
     let syntax_enabled = app.syntax.is_some();
 
     let file_filter_start = Instant::now();
-    let _ = filtered_file_indices(&app.changeset, "src", "");
+    let _ = app.search_index.search("src", "");
     let file_filter_micros = file_filter_start.elapsed().as_micros();
+
+    let legacy_file_filter_start = Instant::now();
+    let _ = filtered_file_indices(&app.changeset, "src", "");
+    let legacy_file_filter_micros = legacy_file_filter_start.elapsed().as_micros();
+
+    let grep_filter_start = Instant::now();
+    let _ = app.search_index.search("", "line");
+    let grep_filter_micros = grep_filter_start.elapsed().as_micros();
+
+    let legacy_grep_filter_start = Instant::now();
+    let _ = filtered_file_indices(&app.changeset, "", "line");
+    let legacy_grep_filter_micros = legacy_grep_filter_start.elapsed().as_micros();
+
+    let file_filter_apply_start = Instant::now();
+    app.file_filter = "src".to_owned();
+    app.apply_filters(false);
+    let file_filter_apply_micros = file_filter_apply_start.elapsed().as_micros();
+
+    app.file_filter.clear();
+    app.apply_filters(false);
+
+    let grep_filter_apply_start = Instant::now();
+    app.grep_filter = "line".to_owned();
+    app.apply_filters(true);
+    let grep_filter_apply_micros = grep_filter_apply_start.elapsed().as_micros();
+
+    app.grep_filter.clear();
+    app.apply_filters(false);
 
     let (hunk_navigation_steps, hunk_navigation_total_micros, hunk_navigation_max_micros) =
         benchmark_hunk_navigation(&app.model);
@@ -123,6 +151,11 @@ pub fn benchmark_diff_view(
         hunk_count,
         open_micros,
         file_filter_micros,
+        legacy_file_filter_micros,
+        grep_filter_micros,
+        legacy_grep_filter_micros,
+        file_filter_apply_micros,
+        grep_filter_apply_micros,
         hunk_navigation_steps,
         hunk_navigation_total_micros,
         hunk_navigation_max_micros,

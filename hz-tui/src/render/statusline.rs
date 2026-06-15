@@ -1,17 +1,17 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    prelude::{Line, Modifier, Span, Style},
-    widgets::Paragraph,
+    prelude::{Line, Modifier, Span, Style, Text},
+    widgets::{Paragraph, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::DiffApp,
-    controls::{BranchMenu, DiffFilterKind},
+    controls::{BranchMenu, DiffFilterKind, INPUT_CURSOR},
     render::{
         menus::{diff_comparison_label, diff_selector_text},
-        style::statusline_bg,
+        style::{base_bg, statusline_bg},
         text::{fit, fit_with_ellipsis, format_count, progress_label},
     },
     theme::{
@@ -36,6 +36,76 @@ pub(crate) fn draw_filter_bar(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) 
     );
 }
 
+pub(crate) fn draw_error_log(frame: &mut Frame<'_>, app: &DiffApp, area: Rect) {
+    let Some(error_log) = app.error_log.as_deref() else {
+        return;
+    };
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let bg = base_bg(app.theme);
+    let separator = error_log_separator(area.width as usize);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            separator,
+            Style::default()
+                .fg(app.theme.deletion_fg)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .style(Style::default().bg(bg)),
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        },
+    );
+
+    let body_area = Rect {
+        x: area.x,
+        y: area.y.saturating_add(1),
+        width: area.width,
+        height: area.height.saturating_sub(1),
+    };
+    if body_area.height == 0 {
+        return;
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(error_log.to_owned()))
+            .style(Style::default().fg(app.theme.foreground).bg(bg))
+            .wrap(Wrap { trim: false }),
+        body_area,
+    );
+}
+
+pub(crate) fn error_log_separator(width: usize) -> String {
+    let title = "error ";
+    if width == 0 {
+        return String::new();
+    }
+    if width <= title.width() {
+        return fit(title, width);
+    }
+    let right = width.saturating_sub(title.width());
+    format!("{title}{}", "─".repeat(right))
+}
+
+pub(crate) fn error_log_height(app: &DiffApp, available_height: u16) -> u16 {
+    if app.error_log.is_none() || available_height == 0 {
+        return 0;
+    }
+
+    app.error_log_height
+        .clamp(
+            crate::app::ERROR_LOG_MIN_HEIGHT,
+            crate::app::ERROR_LOG_MAX_HEIGHT,
+        )
+        .min(available_height)
+}
+
 pub(crate) fn filter_bar_visible(app: &DiffApp) -> bool {
     app.filter_input.is_some() || app.filters_active()
 }
@@ -45,33 +115,84 @@ pub(crate) fn filter_bar_line(app: &DiffApp, width: usize) -> Line<'static> {
         return Line::default();
     }
 
-    if !filter_bar_visible(app) {
-        return Line::from(Span::styled(
-            " ".repeat(width),
-            Style::default().bg(statusline_bg(app.theme)),
-        ));
+    if filter_bar_visible(app) {
+        return filter_status_line(app, width);
     }
 
-    let mut remaining = width;
-    let mut spans = Vec::new();
+    blank_filter_bar_line(app, width)
+}
+
+pub(crate) fn filter_status_line(app: &DiffApp, width: usize) -> Line<'static> {
     let bg = statusline_bg(app.theme);
+    let right = filter_status_right_label(app);
+    let right_width = right.as_deref().map(str::width).unwrap_or_default();
+    let mut left_width = width.saturating_sub(right_width);
+    let mut spans = Vec::new();
 
     if app.filter_input == Some(DiffFilterKind::File) || !app.file_filter.is_empty() {
-        push_file_filter_bar_spans(app, &mut spans, &mut remaining);
+        push_file_filter_bar_spans(app, &mut spans, &mut left_width);
     }
 
     if app.filter_input == Some(DiffFilterKind::Grep) || !app.grep_filter.is_empty() {
         if !spans.is_empty() {
-            push_filter_bar_span(&mut spans, "  ", Style::default().bg(bg), &mut remaining);
+            push_filter_bar_span(&mut spans, "  ", Style::default().bg(bg), &mut left_width);
         }
-        push_grep_filter_bar_spans(app, &mut spans, &mut remaining);
+        push_grep_filter_bar_spans(app, &mut spans, &mut left_width);
     }
 
-    if remaining > 0 {
-        spans.push(Span::styled(" ".repeat(remaining), Style::default().bg(bg)));
+    let left_used = width.saturating_sub(right_width).saturating_sub(left_width);
+    let gap = width.saturating_sub(left_used).saturating_sub(right_width);
+    if gap > 0 {
+        spans.push(Span::styled(" ".repeat(gap), Style::default().bg(bg)));
+    }
+    if let Some(right) = right
+        && right_width > 0
+    {
+        spans.push(Span::styled(
+            right,
+            Style::default().fg(app.theme.muted).bg(bg),
+        ));
     }
 
     Line::from(spans)
+}
+
+pub(crate) fn blank_filter_bar_line(app: &DiffApp, width: usize) -> Line<'static> {
+    Line::from(Span::styled(
+        " ".repeat(width),
+        Style::default().bg(statusline_bg(app.theme)),
+    ))
+}
+
+pub(crate) fn filter_status_right_label(app: &DiffApp) -> Option<String> {
+    if app.filter_busy() {
+        return Some("…".to_owned());
+    }
+
+    if !app.grep_filter.is_empty() {
+        let total = app.grep_matches.len();
+        if total == 0 {
+            return Some("0".to_owned());
+        }
+        let current = app
+            .selected_grep_match
+            .map(|index| index.saturating_add(1).min(total))
+            .unwrap_or(1);
+        let total = if app.grep_matches_truncated {
+            "10k+".to_owned()
+        } else {
+            format_count(total)
+        };
+        return Some(format!("{}/{total}", format_count(current)));
+    }
+
+    (!app.file_filter.is_empty()).then(|| {
+        format!(
+            "{}/{} files",
+            format_count(app.stats.files),
+            format_count(app.total_stats.files)
+        )
+    })
 }
 
 pub(crate) fn push_file_filter_bar_spans(
@@ -81,29 +202,24 @@ pub(crate) fn push_file_filter_bar_spans(
 ) {
     let bg = statusline_bg(app.theme);
     let query = filter_bar_query(app, DiffFilterKind::File);
+    let active = app.filter_input == Some(DiffFilterKind::File);
     push_filter_bar_span(
         spans,
-        "filter: ",
+        "@",
         Style::default()
             .fg(app.theme.foreground)
             .bg(bg)
             .add_modifier(Modifier::BOLD),
         remaining,
     );
-    if query.is_empty() {
-        push_filter_bar_span(
-            spans,
-            "type to filter files",
-            Style::default().fg(app.theme.muted).bg(bg),
-            remaining,
-        );
-    } else {
-        push_filter_bar_span(
-            spans,
-            query,
-            Style::default().fg(app.theme.foreground).bg(bg),
-            remaining,
-        );
+    push_filter_bar_span(
+        spans,
+        query,
+        Style::default().fg(app.theme.foreground).bg(bg),
+        remaining,
+    );
+    if active {
+        push_filter_bar_cursor_span(app, spans, remaining);
     }
 }
 
@@ -114,6 +230,7 @@ pub(crate) fn push_grep_filter_bar_spans(
 ) {
     let bg = statusline_bg(app.theme);
     let query = filter_bar_query(app, DiffFilterKind::Grep);
+    let active = app.filter_input == Some(DiffFilterKind::Grep);
     push_filter_bar_span(
         spans,
         "/",
@@ -123,21 +240,31 @@ pub(crate) fn push_grep_filter_bar_spans(
             .add_modifier(Modifier::BOLD),
         remaining,
     );
-    if query.is_empty() {
-        push_filter_bar_span(
-            spans,
-            " type to grep diff",
-            Style::default().fg(app.theme.muted).bg(bg),
-            remaining,
-        );
-    } else {
-        push_filter_bar_span(
-            spans,
-            query,
-            Style::default().fg(app.theme.foreground).bg(bg),
-            remaining,
-        );
+    push_filter_bar_span(
+        spans,
+        query,
+        Style::default().fg(app.theme.foreground).bg(bg),
+        remaining,
+    );
+    if active {
+        push_filter_bar_cursor_span(app, spans, remaining);
     }
+}
+
+pub(crate) fn push_filter_bar_cursor_span(
+    app: &DiffApp,
+    spans: &mut Vec<Span<'static>>,
+    remaining: &mut usize,
+) {
+    push_filter_bar_span(
+        spans,
+        INPUT_CURSOR,
+        Style::default()
+            .fg(app.theme.cursor)
+            .bg(statusline_bg(app.theme))
+            .add_modifier(Modifier::BOLD),
+        remaining,
+    );
 }
 
 pub(crate) fn filter_bar_query(app: &DiffApp, kind: DiffFilterKind) -> &str {
@@ -306,35 +433,6 @@ pub(crate) fn push_statusline_left_spans(
             .add_modifier(Modifier::BOLD),
         remaining,
     );
-    let notice = app
-        .notice
-        .as_ref()
-        .map(|notice| notice.text.as_str())
-        .unwrap_or_else(|| {
-            if app.pending_diff_load.is_some() {
-                "loading diff"
-            } else if app.live_reload_pending {
-                "refreshing diff"
-            } else {
-                ""
-            }
-        });
-    if !notice.is_empty() {
-        push_fitted_statusline_span(
-            spans,
-            "  ",
-            Style::default().bg(statusline_bg(app.theme)),
-            remaining,
-        );
-        push_fitted_statusline_span(
-            spans,
-            notice,
-            Style::default()
-                .fg(app.theme.notice)
-                .bg(statusline_bg(app.theme)),
-            remaining,
-        );
-    }
 }
 
 pub(crate) fn statusline_file_count_label(app: &DiffApp) -> String {

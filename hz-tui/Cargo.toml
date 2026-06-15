@@ -7,11 +7,13 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+fff-grep.workspace = true
 crossterm.workspace = true
 hz-core.workspace = true
 hz-diff.workspace = true
 hz-git.workspace = true
 hz-syntax.workspace = true
+memchr.workspace = true
 notify.workspace = true
 ratatui.workspace = true
 shlex.workspace = true

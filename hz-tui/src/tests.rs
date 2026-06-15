@@ -13,7 +13,8 @@ use crate::render::{
     },
     sidebar::file_sidebar_lines,
     statusline::{
-        filter_bar_line, filter_bar_visible, statusline_file_count_label, statusline_header_line,
+        error_log_height, error_log_separator, filter_bar_line, filter_bar_visible,
+        statusline_file_count_label, statusline_header_line,
     },
     style::base_bg,
     text::{
@@ -957,7 +958,7 @@ fn post_editor_quit_key_guard_ignores_only_transient_quit_keys() {
     assert!(
         app.ignore_post_editor_quit_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), now)
     );
-    assert!(app.ignore_post_editor_quit_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), now));
+    assert!(!app.ignore_post_editor_quit_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), now));
     assert!(!app.ignore_post_editor_quit_key(
         KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
         now
@@ -1530,7 +1531,7 @@ fn b_key_clears_file_sidebar_resize_state() {
 }
 
 #[test]
-fn live_reload_started_state_is_visible_until_loaded() {
+fn live_reload_started_state_marks_pending_until_loaded() {
     let changeset = changeset_with_files(&["src/lib.rs"]);
     let mut app = DiffApp::new(
         DiffOptions::default(),
@@ -1545,7 +1546,6 @@ fn live_reload_started_state_is_visible_until_loaded() {
     drain_live_reloads(&mut app, Some(&reload_rx));
 
     assert!(app.live_reload_pending);
-    assert!(line_text(&statusline_header_line(&app, 120)).contains("refreshing diff"));
     app.dirty = false;
 
     reload_tx
@@ -1610,7 +1610,7 @@ fn f_key_filters_files_and_escape_clears_filter() {
 
     app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
         .expect("f should open file filter");
-    assert!(line_text(&filter_bar_line(&app, 40)).starts_with("filter: type to filter files"));
+    assert!(line_text(&filter_bar_line(&app, 40)).starts_with(&format!("@{INPUT_CURSOR}")));
     let generation_before_input = app.generation;
     for character in "tui".chars() {
         app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
@@ -1621,7 +1621,7 @@ fn f_key_filters_files_and_escape_clears_filter() {
     assert_eq!(app.file_filter_input, "tui");
     assert_eq!(visible_paths(&app), vec!["hz-tui/src/lib.rs"]);
     assert_eq!(app.generation, generation_before_input);
-    assert!(line_text(&filter_bar_line(&app, 40)).starts_with("filter: tui"));
+    assert!(line_text(&filter_bar_line(&app, 40)).starts_with("@tui"));
 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .expect("enter should keep file filter");
@@ -1630,14 +1630,20 @@ fn f_key_filters_files_and_escape_clears_filter() {
     assert_eq!(app.file_filter, "tui");
     assert_eq!(visible_paths(&app), vec!["hz-tui/src/lib.rs"]);
     assert_eq!(statusline_file_count_label(&app), "1/3 files");
-    assert!(line_text(&filter_bar_line(&app, 40)).starts_with("filter: tui"));
+    assert!(line_text(&filter_bar_line(&app, 40)).starts_with("@tui"));
     assert!(!line_text(&statusline_header_line(&app, 120)).contains("f:tui"));
     assert!(app.filter_input.is_none());
     assert!(filter_bar_visible(&app));
-    assert!(line_text(&filter_bar_line(&app, 40)).starts_with("filter: tui"));
+    assert!(line_text(&filter_bar_line(&app, 40)).starts_with("@tui"));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
         .expect("f should reopen file filter");
+    assert_eq!(app.file_filter, "");
+    assert_eq!(app.file_filter_input, "");
+    assert_eq!(
+        visible_paths(&app),
+        vec!["src/lib.rs", "README.md", "hz-tui/src/lib.rs"]
+    );
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
         .expect("escape should clear file filter");
@@ -1657,7 +1663,7 @@ fn slash_filters_files_by_diff_content_and_escape_clears_filter() {
 
     app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
         .expect("slash should open grep filter");
-    assert!(line_text(&filter_bar_line(&app, 40)).starts_with("/ type to grep diff"));
+    assert!(line_text(&filter_bar_line(&app, 40)).starts_with(&format!("/{INPUT_CURSOR}")));
     for character in "line 1".chars() {
         app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
             .expect("grep filter input should be handled");
@@ -1683,6 +1689,9 @@ fn slash_filters_files_by_diff_content_and_escape_clears_filter() {
 
     app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
         .expect("slash should reopen grep filter");
+    assert_eq!(app.grep_filter, "");
+    assert_eq!(app.grep_filter_input, "");
+    assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs", "c.rs"]);
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
         .expect("escape should clear grep filter");
@@ -1690,6 +1699,18 @@ fn slash_filters_files_by_diff_content_and_escape_clears_filter() {
     assert_eq!(app.grep_filter, "");
     assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs", "c.rs"]);
     assert!(app.filter_input.is_none());
+}
+
+#[test]
+fn slash_does_not_match_file_paths() {
+    let changeset = changeset_with_files(&["unique_name.rs", "other.rs"]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+    app.grep_filter = "unique_name".to_owned();
+    app.apply_filters(true);
+
+    assert!(visible_paths(&app).is_empty());
+    assert!(app.grep_matches.is_empty());
 }
 
 #[test]
@@ -1739,7 +1760,7 @@ fn file_filter_and_grep_filter_compose_and_render_together() {
         .expect("enter should keep grep filter");
 
     assert_eq!(visible_paths(&app), vec!["b.rs"]);
-    assert!(line_text(&filter_bar_line(&app, 80)).starts_with("filter: b  /line 1"));
+    assert!(line_text(&filter_bar_line(&app, 80)).starts_with("@b  /line 1"));
 
     let should_quit = app
         .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
@@ -1749,6 +1770,63 @@ fn file_filter_and_grep_filter_compose_and_render_together() {
     assert_eq!(app.grep_filter, "");
     assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs", "c.rs"]);
     assert!(!filter_bar_visible(&app));
+}
+
+#[test]
+fn draw_reserves_filter_bar_only_while_filter_visible() {
+    let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 10))
+        .expect("test terminal should be created");
+
+    terminal
+        .draw(|frame| crate::render::draw(frame, &mut app))
+        .expect("initial draw should succeed");
+    assert_eq!(app.viewport_rows, 9);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+        .expect("f should open file filter");
+    terminal
+        .draw(|frame| crate::render::draw(frame, &mut app))
+        .expect("file filter draw should succeed");
+    assert_eq!(app.viewport_rows, 8);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("escape should close file filter");
+    terminal
+        .draw(|frame| crate::render::draw(frame, &mut app))
+        .expect("draw after closing filter should succeed");
+    assert_eq!(app.viewport_rows, 9);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        .expect("slash should open grep filter");
+    terminal
+        .draw(|frame| crate::render::draw(frame, &mut app))
+        .expect("grep filter draw should succeed");
+    assert_eq!(app.viewport_rows, 8);
+}
+
+#[test]
+fn file_filter_edit_with_active_grep_preserves_current_grep_match() {
+    let changeset = changeset_with_files(&["a.rs", "b.rs", "c.rs"]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(5);
+    app.grep_filter = "line".to_owned();
+    app.apply_filters(true);
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        .expect("n should move to next grep match");
+    let scroll_before_file_filter = app.scroll;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+        .expect("f should open file filter");
+    for character in "rs".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE))
+            .expect("file filter input should be handled");
+    }
+
+    assert_eq!(visible_paths(&app), vec!["a.rs", "b.rs", "c.rs"]);
+    assert_eq!(app.current_grep_match_row(), Some(6));
+    assert_eq!(app.scroll, scroll_before_file_filter);
 }
 
 #[test]
@@ -1788,6 +1866,34 @@ fn n_and_p_navigate_grep_matches_when_grep_filter_is_active() {
     app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))
         .expect("p should move to previous grep match");
     assert_eq!(app.current_grep_match_row(), Some(2));
+}
+
+#[test]
+fn n_and_p_navigate_grep_by_line_not_match_count() {
+    let changeset = changeset_with_line_texts(&[
+        "line line line",
+        "line",
+        "other 2",
+        "other 3",
+        "other 4",
+        "other 5",
+        "other 6",
+        "other 7",
+    ]);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(5);
+    app.grep_filter = "line".to_owned();
+    app.apply_filters(true);
+
+    assert_eq!(app.grep_matches, vec![2, 3]);
+    assert_eq!(app.current_grep_match_row(), Some(2));
+    assert_eq!(app.scroll, 0);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        .expect("n should move to next matching line");
+
+    assert_eq!(app.current_grep_match_row(), Some(3));
+    assert_eq!(app.scroll, 3);
 }
 
 #[test]
@@ -1888,6 +1994,112 @@ fn help_menu_esc_closes_without_quitting() {
     assert!(!should_quit);
     assert!(!app.help_menu_open);
     assert!(app.dirty);
+}
+
+#[test]
+fn esc_does_not_quit_diff_view() {
+    let changeset = changeset_with_context_lines(1);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+
+    let should_quit = app
+        .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("Esc should be handled");
+
+    assert!(!should_quit);
+}
+
+#[test]
+fn esc_closes_error_log_without_quitting() {
+    let changeset = changeset_with_context_lines(1);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_error_log("reload failed:\nfatal: bad revision");
+
+    assert!(app.error_log.is_some());
+    assert_eq!(error_log_height(&app, 20), ERROR_LOG_DEFAULT_HEIGHT);
+
+    let should_quit = app
+        .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("Esc should close error log");
+
+    assert!(!should_quit);
+    assert!(app.error_log.is_none());
+}
+
+#[test]
+fn error_log_can_be_resized_with_bounds() {
+    let changeset = changeset_with_context_lines(1);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_error_log("reload failed");
+
+    assert_eq!(error_log_height(&app, 20), ERROR_LOG_DEFAULT_HEIGHT);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE))
+        .expect("plus should resize error log");
+    assert_eq!(error_log_height(&app, 20), ERROR_LOG_DEFAULT_HEIGHT + 1);
+
+    for _ in 0..32 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::NONE))
+            .expect("minus should resize error log");
+    }
+    assert_eq!(error_log_height(&app, 20), ERROR_LOG_MIN_HEIGHT);
+
+    for _ in 0..32 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE))
+            .expect("plus should resize error log");
+    }
+    assert_eq!(error_log_height(&app, 20), ERROR_LOG_MAX_HEIGHT);
+    assert_eq!(error_log_height(&app, 4), 4);
+}
+
+#[test]
+fn error_log_separator_drag_resizes_pane() {
+    let changeset = changeset_with_context_lines(8);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.set_viewport_rows(10);
+    app.set_error_log("reload failed");
+
+    let separator_row = app
+        .error_log_separator_row()
+        .expect("error log should expose separator row");
+    assert_eq!(separator_row, 12);
+
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 0,
+        row: separator_row,
+        modifiers: KeyModifiers::NONE,
+    })
+    .expect("resize should start");
+
+    assert!(app.error_log_resizing);
+
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: 0,
+        row: separator_row.saturating_sub(2),
+        modifiers: KeyModifiers::NONE,
+    })
+    .expect("drag should resize");
+
+    assert_eq!(app.error_log_height, ERROR_LOG_DEFAULT_HEIGHT + 2);
+
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 0,
+        row: separator_row.saturating_sub(2),
+        modifiers: KeyModifiers::NONE,
+    })
+    .expect("resize should stop");
+
+    assert!(!app.error_log_resizing);
+}
+
+#[test]
+fn error_log_separator_fills_width() {
+    assert_eq!(error_log_separator(0), "");
+    assert_eq!(error_log_separator(4), "erro");
+    assert_eq!(error_log_separator(12), "error ──────");
+    assert_eq!(error_log_separator(12).width(), 12);
 }
 
 #[test]
@@ -2340,7 +2552,8 @@ fn branch_header_exposes_head_and_base_selectors() {
     app.toggle_branch_menu(BranchMenu::Head);
     let empty_input = app.branch_selector_text(BranchMenu::Head).unwrap();
     assert_eq!(empty_input.width(), "● feature/ui ▾".width());
-    assert!(empty_input.trim_start().starts_with('▾'));
+    assert!(empty_input.starts_with(INPUT_CURSOR));
+    assert!(empty_input.trim_end().ends_with('▾'));
     app.push_branch_input('f');
     let typed_input = app.branch_selector_text(BranchMenu::Head).unwrap();
     assert_eq!(typed_input.width(), "● feature/ui ▾".width());
@@ -3034,6 +3247,7 @@ fn color_overrides_layer_on_colorscheme() {
             bg: Some("#010203".to_owned()),
             addition_bg: Some("#123456".to_owned()),
             deletion_fg: Some("bright-red".to_owned()),
+            cursor: Some("white".to_owned()),
             search_match_fg: Some("#112233".to_owned()),
             search_match_bg: Some("#223344".to_owned()),
             keyword: Some("ansi-13".to_owned()),
@@ -3047,6 +3261,7 @@ fn color_overrides_layer_on_colorscheme() {
         Color::Rgb(0x12, 0x34, 0x56)
     );
     assert_eq!(theme.deletion_fg, Color::LightRed);
+    assert_eq!(theme.cursor, Color::White);
     assert_eq!(theme.search_match_fg, Color::Rgb(0x11, 0x22, 0x33));
     assert_eq!(theme.search_match_bg, Color::Rgb(0x22, 0x33, 0x44));
     assert_eq!(
@@ -3897,6 +4112,10 @@ fn changeset_with_context_lines_at(repo: PathBuf, start: usize, line_count: usiz
 }
 
 fn changeset_with_line_text(text: &str) -> Changeset {
+    changeset_with_line_texts(&[text])
+}
+
+fn changeset_with_line_texts(texts: &[&str]) -> Changeset {
     Changeset {
         repo: PathBuf::from("/repo"),
         title: "test".to_owned(),
@@ -3907,15 +4126,19 @@ fn changeset_with_line_text(text: &str) -> Changeset {
             hunks: vec![hz_diff::DiffHunk {
                 header: "@@ -1 +1 @@".to_owned(),
                 old_start: 1,
-                old_count: 1,
+                old_count: texts.len(),
                 new_start: 1,
-                new_count: 1,
-                lines: vec![DiffLine {
-                    kind: DiffLineKind::Context,
-                    old_line: Some(1),
-                    new_line: Some(1),
-                    text: text.to_owned(),
-                }],
+                new_count: texts.len(),
+                lines: texts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, text)| DiffLine {
+                        kind: DiffLineKind::Context,
+                        old_line: Some(index + 1),
+                        new_line: Some(index + 1),
+                        text: (*text).to_owned(),
+                    })
+                    .collect(),
             }],
             additions: 0,
             deletions: 0,

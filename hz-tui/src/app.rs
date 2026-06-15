@@ -24,10 +24,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     controls::{
-        BranchMenu, CrosstermTerminal, DiffChoice, DiffFilterKind, DiffLayoutMode,
+        BranchMenu, CrosstermTerminal, DiffChoice, DiffFilterKind, DiffLayoutMode, INPUT_CURSOR,
         WORKTREE_DIFF_CHOICES, branch_base_from_options, branch_head_from_options,
         branch_match_score, comparison_branches, current_head_label, default_branch_base,
-        default_layout_for_width, diff_stats_for_files, filtered_file_indices, grep_match_rows,
+        default_layout_for_width, diff_stats_for_files,
     },
     editor::{EditorTarget, configured_editor, open_editor, repo_file_path},
     live_diff::{LiveDiff, LiveDiffReload, live_diff_supported},
@@ -41,6 +41,7 @@ use crate::{
         sidebar::max_file_sidebar_width,
         text::fit_padded,
     },
+    search::{DiffSearchIndex, DiffSearchResult, grep_match_rows},
     syntax::{
         DiffSide, InlineHunkEmphasisCache, InlineHunkKey, InlineRange, LruCache, SyntaxPosition,
         SyntaxPriority, SyntaxRuntime, available_context_lines, full_file_source,
@@ -60,6 +61,12 @@ use crate::{
 
 const MOUSE_HUNK_FOCUS_SCROLL_TICKS: isize = 3;
 const EDITOR_RELOAD_POLL: Duration = Duration::from_millis(8);
+const FILTER_DEBOUNCE: Duration = Duration::from_millis(120);
+const FILTER_WORKER_POLL: Duration = Duration::from_millis(8);
+const MAX_LIVE_GREP_MATCHES: usize = 10_000;
+pub(crate) const ERROR_LOG_DEFAULT_HEIGHT: u16 = 6;
+pub(crate) const ERROR_LOG_MIN_HEIGHT: u16 = 3;
+pub(crate) const ERROR_LOG_MAX_HEIGHT: u16 = 14;
 const POST_EDITOR_QUIT_KEY_IGNORE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +102,33 @@ impl std::fmt::Debug for EditorReloadWorker {
 pub(crate) struct EditorScopedReload {
     path: PathBuf,
     changeset: HzResult<Changeset>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingFilterApply {
+    generation: u64,
+    due_at: Instant,
+    jump_to_grep: bool,
+}
+
+pub(crate) struct FilterWorker {
+    generation: u64,
+    file_filter: String,
+    grep_filter: String,
+    jump_to_grep: bool,
+    rx: Receiver<DiffSearchResult>,
+}
+
+impl std::fmt::Debug for FilterWorker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FilterWorker")
+            .field("generation", &self.generation)
+            .field("file_filter", &self.file_filter)
+            .field("grep_filter", &self.grep_filter)
+            .field("jump_to_grep", &self.jump_to_grep)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +180,8 @@ pub(crate) fn run_loop(
             live_diff.as_ref().map(|live_diff| &live_diff.reload_rx),
         );
         app.drain_pending_diff_load();
+        app.start_due_filter_apply();
+        app.drain_filter_worker();
         app.drain_syntax();
         if app.dirty {
             if app.terminal_clear_requested {
@@ -216,7 +252,7 @@ pub(crate) fn sync_live_diff(
             *live_diff = None;
             app.live_diff_failed_options = Some(app.options.clone());
             app.live_reload_pending = false;
-            app.set_notice(format!("live reload unavailable: {error}"));
+            app.set_error_log(format!("live reload unavailable: {error}"));
         }
     }
 }
@@ -238,7 +274,7 @@ pub(crate) fn drain_live_reloads(
             LiveDiffReload::Loaded(Ok(changeset)) => app.replace_changeset(changeset, None),
             LiveDiffReload::Loaded(Err(error)) => {
                 app.live_reload_pending = false;
-                app.set_notice(format!("live reload failed: {error}"));
+                app.set_error_log(format!("live reload failed: {error}"));
             }
         }
     }
@@ -273,8 +309,7 @@ pub(crate) fn is_ctrl_g_key(key: KeyEvent) -> bool {
 }
 
 pub(crate) fn is_quit_key(key: KeyEvent) -> bool {
-    key.code == KeyCode::Esc
-        || is_plain_char_key(key, 'q')
+    is_plain_char_key(key, 'q')
         || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
 }
 
@@ -387,7 +422,6 @@ impl MouseScroll {
 
 #[derive(Debug)]
 pub(crate) struct Notice {
-    pub(crate) text: String,
     pub(crate) expires_at: Instant,
 }
 
@@ -417,6 +451,7 @@ pub(crate) struct DiffApp {
     pub(crate) options: DiffOptions,
     pub(crate) base_changeset: Changeset,
     pub(crate) changeset: Changeset,
+    pub(crate) search_index: Arc<DiffSearchIndex>,
     pub(crate) total_stats: DiffStats,
     pub(crate) stats: DiffStats,
     pub(crate) model: UiModel,
@@ -442,6 +477,7 @@ pub(crate) struct DiffApp {
     pub(crate) grep_filter: String,
     pub(crate) grep_filter_input: String,
     pub(crate) grep_matches: Vec<usize>,
+    pub(crate) grep_matches_truncated: bool,
     pub(crate) selected_grep_match: Option<usize>,
     pub(crate) branch_menu_open: Option<BranchMenu>,
     pub(crate) branch_menu_input: String,
@@ -457,6 +493,13 @@ pub(crate) struct DiffApp {
     pub(crate) post_editor_quit_key_ignore_until: Option<Instant>,
     pub(crate) live_reload_pending: bool,
     pub(crate) pending_diff_load: Option<PendingDiffLoad>,
+    pub(crate) filter_generation: u64,
+    pub(crate) pending_filter_apply: Option<PendingFilterApply>,
+    pub(crate) filter_worker: Option<FilterWorker>,
+    pub(crate) filter_searching: bool,
+    pub(crate) error_log: Option<String>,
+    pub(crate) error_log_height: u16,
+    pub(crate) error_log_resizing: bool,
     pub(crate) mouse_scroll: MouseScroll,
     pub(crate) notice: Option<Notice>,
     pub(crate) theme: DiffTheme,
@@ -479,10 +522,9 @@ pub(crate) fn load_syntax_settings_for_diff(
 
     match hz_syntax::load_settings() {
         Ok(settings) => (settings, None),
-        Err(error) => (
+        Err(_) => (
             SyntaxSettings::default(),
             Some(Notice {
-                text: format!("syntax settings ignored: {error}"),
                 expires_at: Instant::now() + NOTICE_TTL,
             }),
         ),
@@ -504,6 +546,7 @@ impl DiffApp {
         let context_expansions = HashMap::new();
         let context_cache = HashMap::new();
         let model = UiModel::new(&changeset, layout, &context_expansions);
+        let search_index = Arc::new(DiffSearchIndex::new(&changeset));
         let manual_hunk_focus = model
             .hunk_start_rows
             .first()
@@ -531,9 +574,8 @@ impl DiffApp {
                 .map(|theme| theme.with_transparent_background(settings.transparent_background))
         }) {
             Ok(theme) => theme.with_diff_settings(settings.diff),
-            Err(error) => {
+            Err(_) => {
                 notice = Some(Notice {
-                    text: format!("colorscheme ignored: {error}"),
                     expires_at: Instant::now() + NOTICE_TTL,
                 });
                 DiffTheme::default()
@@ -547,9 +589,8 @@ impl DiffApp {
         let syntax = match syntax_mode {
             SyntaxStartupMode::Config => match SyntaxRuntime::start(&settings) {
                 Ok(syntax) => syntax,
-                Err(error) => {
+                Err(_) => {
                     notice = Some(Notice {
-                        text: format!("syntax disabled: {error}"),
                         expires_at: Instant::now() + NOTICE_TTL,
                     });
                     None
@@ -560,11 +601,12 @@ impl DiffApp {
                 SyntaxRuntime::start_with_languages(languages, syntax_limits)
             }
         };
-        let max_line_width = changeset_max_line_width(&changeset);
+        let max_line_width = search_index.max_line_width();
         Self {
             options,
             base_changeset: changeset.clone(),
             changeset,
+            search_index,
             total_stats,
             stats,
             model,
@@ -590,6 +632,7 @@ impl DiffApp {
             grep_filter: String::new(),
             grep_filter_input: String::new(),
             grep_matches: Vec::new(),
+            grep_matches_truncated: false,
             selected_grep_match: None,
             branch_menu_open: None,
             branch_menu_input: String::new(),
@@ -605,6 +648,13 @@ impl DiffApp {
             post_editor_quit_key_ignore_until: None,
             live_reload_pending: false,
             pending_diff_load: None,
+            filter_generation: 0,
+            pending_filter_apply: None,
+            filter_worker: None,
+            filter_searching: false,
+            error_log: None,
+            error_log_height: ERROR_LOG_DEFAULT_HEIGHT,
+            error_log_resizing: false,
             mouse_scroll: MouseScroll::default(),
             notice,
             theme,
@@ -707,6 +757,24 @@ impl DiffApp {
             return Ok(false);
         }
 
+        if self.error_log.is_some() {
+            match key.code {
+                KeyCode::Char('+') | KeyCode::Char('=') => {
+                    self.resize_error_log(1);
+                    return Ok(false);
+                }
+                KeyCode::Char('-') => {
+                    self.resize_error_log(-1);
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+
+        if key.code == KeyCode::Esc && self.close_error_log() {
+            return Ok(false);
+        }
+
         if self.diff_menu_open {
             if key.code == KeyCode::Esc {
                 self.diff_menu_open = false;
@@ -720,7 +788,8 @@ impl DiffApp {
 
         match key.code {
             KeyCode::Esc if self.filters_active() => self.clear_all_filters(),
-            KeyCode::Esc | KeyCode::Char('q') => return Ok(true),
+            KeyCode::Esc => {}
+            KeyCode::Char('q') => return Ok(true),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_or_focus_hunk(1),
             KeyCode::Up | KeyCode::Char('k') => self.scroll_or_focus_hunk(-1),
             KeyCode::Left | KeyCode::Char('h') => {
@@ -759,11 +828,18 @@ impl DiffApp {
     }
 
     pub(crate) fn event_poll(&self) -> Duration {
+        let now = Instant::now();
+        let mut poll = EVENT_POLL;
         if self.editor_reload.is_some() || self.pending_editor_reload.is_some() {
-            EDITOR_RELOAD_POLL
-        } else {
-            EVENT_POLL
+            poll = poll.min(EDITOR_RELOAD_POLL);
         }
+        if self.filter_worker.is_some() {
+            poll = poll.min(FILTER_WORKER_POLL);
+        }
+        if let Some(pending) = self.pending_filter_apply {
+            poll = poll.min(pending.due_at.saturating_duration_since(now));
+        }
+        poll
     }
 
     pub(crate) fn ignore_post_editor_quit_key(&mut self, key: KeyEvent, now: Instant) -> bool {
@@ -790,12 +866,80 @@ impl DiffApp {
         }
     }
 
-    pub(crate) fn set_notice(&mut self, text: impl Into<String>) {
+    pub(crate) fn set_notice(&mut self, _text: impl Into<String>) {
         self.notice = Some(Notice {
-            text: text.into(),
             expires_at: Instant::now() + NOTICE_TTL,
         });
         self.dirty = true;
+    }
+
+    pub(crate) fn set_error_log(&mut self, text: impl Into<String>) {
+        self.error_log = Some(text.into());
+        self.error_log_height = ERROR_LOG_DEFAULT_HEIGHT;
+        self.dirty = true;
+    }
+
+    pub(crate) fn close_error_log(&mut self) -> bool {
+        if self.error_log.take().is_some() {
+            self.error_log_resizing = false;
+            self.dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn resize_error_log(&mut self, delta: isize) -> bool {
+        if self.error_log.is_none() || delta == 0 {
+            return false;
+        }
+        let current = isize::try_from(self.error_log_height).unwrap_or(isize::MAX);
+        let next = current
+            .saturating_add(delta)
+            .clamp(ERROR_LOG_MIN_HEIGHT as isize, ERROR_LOG_MAX_HEIGHT as isize)
+            as u16;
+        self.set_error_log_height(next)
+    }
+
+    pub(crate) fn set_error_log_height(&mut self, height: u16) -> bool {
+        if self.error_log.is_none() {
+            return false;
+        }
+        let next = height.clamp(ERROR_LOG_MIN_HEIGHT, ERROR_LOG_MAX_HEIGHT);
+        if next == self.error_log_height {
+            return false;
+        }
+        self.error_log_height = next;
+        self.dirty = true;
+        true
+    }
+
+    pub(crate) fn error_log_separator_row(&self) -> Option<u16> {
+        self.error_log.as_ref()?;
+        let row = 1usize.saturating_add(self.viewport_rows).saturating_add(1);
+        u16::try_from(row).ok()
+    }
+
+    pub(crate) fn start_error_log_resize(&mut self, row: u16) -> bool {
+        if self.error_log_separator_row() != Some(row) {
+            return false;
+        }
+        self.error_log_resizing = true;
+        self.dirty = true;
+        true
+    }
+
+    pub(crate) fn resize_error_log_to_separator_row(&mut self, row: u16) -> bool {
+        let Some(separator_row) = self.error_log_separator_row() else {
+            return false;
+        };
+        let delta = i32::from(separator_row).saturating_sub(i32::from(row));
+        let current = i32::from(self.error_log_height);
+        let next = current.saturating_add(delta).clamp(
+            i32::from(ERROR_LOG_MIN_HEIGHT),
+            i32::from(ERROR_LOG_MAX_HEIGHT),
+        );
+        self.set_error_log_height(next as u16)
     }
 
     pub(crate) fn expire_notice(&mut self, now: Instant) {
@@ -852,8 +996,8 @@ impl DiffApp {
                 let notice = pending.success_notice;
                 self.replace_loaded_diff(pending.options, changeset, Some(&notice));
             }
-            Some(Err(error)) => self.set_notice(format!("{}: {error}", pending.error_prefix)),
-            None => self.set_notice(format!("{}: worker stopped", pending.error_prefix)),
+            Some(Err(error)) => self.set_error_log(format!("{}: {error}", pending.error_prefix)),
+            None => self.set_error_log(format!("{}: worker stopped", pending.error_prefix)),
         }
     }
 
@@ -895,8 +1039,27 @@ impl DiffApp {
             }
         }
 
+        if self.error_log_resizing {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Moved => {
+                    self.resize_error_log_to_separator_row(mouse.row);
+                    return Ok(());
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.resize_error_log_to_separator_row(mouse.row);
+                    self.error_log_resizing = false;
+                    self.dirty = true;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                if self.start_error_log_resize(mouse.row) {
+                    return Ok(());
+                }
                 if self.start_file_sidebar_resize(mouse.column, mouse.row) {
                     return Ok(());
                 }
@@ -1096,10 +1259,17 @@ impl DiffApp {
         );
         self.context_expansions
             .insert(ContextKey { file, hunk }, next);
-        let visible_files =
-            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.replace_model(&visible_files, HunkFocusModelBehavior::PreserveIfValid);
-        self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
+        let search_result = self.search_index.search_with_grep_match_limit(
+            &self.file_filter,
+            &self.grep_filter,
+            MAX_LIVE_GREP_MATCHES,
+        );
+        self.replace_model(
+            &search_result.visible_files,
+            HunkFocusModelBehavior::PreserveIfValid,
+        );
+        self.grep_matches = grep_match_rows(&self.model, &search_result.grep_matches);
+        self.grep_matches_truncated = search_result.grep_matches_truncated;
         self.selected_grep_match = None;
         self.set_scroll_with_grep_sync(self.scroll, true, HunkFocusScrollBehavior::Preserve);
         self.sync_grep_match_selection_to_scroll();
@@ -1117,10 +1287,17 @@ impl DiffApp {
             return false;
         }
 
-        let visible_files =
-            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.replace_model(&visible_files, HunkFocusModelBehavior::PreserveIfValid);
-        self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
+        let search_result = self.search_index.search_with_grep_match_limit(
+            &self.file_filter,
+            &self.grep_filter,
+            MAX_LIVE_GREP_MATCHES,
+        );
+        self.replace_model(
+            &search_result.visible_files,
+            HunkFocusModelBehavior::PreserveIfValid,
+        );
+        self.grep_matches = grep_match_rows(&self.model, &search_result.grep_matches);
+        self.grep_matches_truncated = search_result.grep_matches_truncated;
         self.selected_grep_match = None;
         self.set_scroll_with_grep_sync(self.scroll, true, HunkFocusScrollBehavior::Preserve);
         self.sync_grep_match_selection_to_scroll();
@@ -1532,8 +1709,9 @@ impl DiffApp {
         let branch = self.branch_ref(menu)?;
         let label = self.branch_label(menu, branch);
         if self.branch_menu_open == Some(menu) {
-            let width = label.width().max(self.branch_menu_input.width());
-            return Some(format!("{} ▾", fit_padded(&self.branch_menu_input, width)));
+            let input = format!("{}{}", self.branch_menu_input, INPUT_CURSOR);
+            let width = label.width().max(input.width());
+            return Some(format!("{} ▾", fit_padded(&input, width)));
         }
 
         Some(format!("{label} ▾"))
@@ -1633,7 +1811,7 @@ impl DiffApp {
             BranchMenu::Base => self.branch_head.clone(),
         };
         let Some((base, head)) = base.zip(head) else {
-            self.set_notice("branch diff unavailable");
+            self.set_error_log("branch diff unavailable");
             return;
         };
 
@@ -2056,13 +2234,13 @@ impl DiffApp {
                     EditorReloadBehavior::Sync => match self.reload() {
                         Ok(()) => self.set_notice("editor closed; reloading"),
                         Err(error) => {
-                            self.set_notice(format!("editor closed; reload failed: {error}"));
+                            self.set_error_log(format!("editor closed; reload failed: {error}"));
                         }
                     },
                 }
             }
             Ok(status) => self.set_notice(format!("editor exited with {status}")),
-            Err(error) => self.set_notice(format!("editor failed: {error}")),
+            Err(error) => self.set_error_log(format!("editor failed: {error}")),
         }
     }
 
@@ -2124,7 +2302,7 @@ impl DiffApp {
                             Some("edited file reloaded"),
                         );
                     }
-                    Err(error) => self.set_notice(format!("edited file reload failed: {error}")),
+                    Err(error) => self.set_error_log(format!("edited file reload failed: {error}")),
                 }
                 true
             }
@@ -2133,7 +2311,7 @@ impl DiffApp {
                 false
             }
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.set_notice("edited file reload failed");
+                self.set_error_log("edited file reload failed");
                 true
             }
         }
@@ -2230,6 +2408,10 @@ impl DiffApp {
             &mut requested,
             &mut requested_files,
         );
+
+        if self.syntax_prefetch_paused() {
+            return;
+        }
 
         let prefetch_rows = visible_rows.saturating_mul(self.syntax_limits.prefetch_viewports);
         let ahead_end = visible_end
@@ -2364,10 +2546,6 @@ impl DiffApp {
     }
 
     pub(crate) fn drain_syntax(&mut self) {
-        if self.syntax_updates_paused() {
-            return;
-        }
-
         if let Some(syntax) = self.syntax.as_mut()
             && syntax.drain(self.generation, MAX_SYNTAX_RESULTS_PER_FRAME)
         {
@@ -2382,19 +2560,24 @@ impl DiffApp {
             .unwrap_or_default()
     }
 
-    pub(crate) fn syntax_updates_paused(&self) -> bool {
+    pub(crate) fn syntax_prefetch_paused(&self) -> bool {
         self.filter_input.is_some()
     }
 
     pub(crate) fn open_filter_input(&mut self, kind: DiffFilterKind) {
-        match kind {
-            DiffFilterKind::File => self.file_filter_input = self.file_filter.clone(),
-            DiffFilterKind::Grep => self.grep_filter_input = self.grep_filter.clone(),
-        }
         self.filter_input = Some(kind);
         self.diff_menu_open = false;
         self.close_branch_menu();
-        self.dirty = true;
+
+        let had_filter =
+            !self.filter_query(kind).is_empty() || !self.filter_input_query(kind).is_empty();
+        self.filter_query_mut(kind).clear();
+        self.filter_input_query_mut(kind).clear();
+        if had_filter {
+            self.schedule_filter_change(kind, Duration::ZERO);
+        } else {
+            self.dirty = true;
+        }
     }
 
     pub(crate) fn handle_filter_input_key(&mut self, key: KeyEvent) -> bool {
@@ -2463,12 +2646,15 @@ impl DiffApp {
     pub(crate) fn commit_filter_input(&mut self, kind: DiffFilterKind) {
         let next = self.filter_input_query(kind).to_owned();
         if self.filter_query(kind) == next {
+            if self.pending_filter_apply.is_some() {
+                self.schedule_filter_change(kind, Duration::ZERO);
+            }
             self.dirty = true;
             return;
         }
 
         *self.filter_query_mut(kind) = next;
-        self.apply_filter_change(kind);
+        self.schedule_filter_change(kind, Duration::ZERO);
     }
 
     pub(crate) fn sync_filter_input(&mut self, kind: DiffFilterKind) {
@@ -2479,7 +2665,7 @@ impl DiffApp {
         }
 
         *self.filter_query_mut(kind) = next;
-        self.apply_filter_change(kind);
+        self.schedule_filter_change(kind, FILTER_DEBOUNCE);
     }
 
     pub(crate) fn clear_all_filters(&mut self) {
@@ -2494,15 +2680,13 @@ impl DiffApp {
         self.file_filter_input.clear();
         self.grep_filter.clear();
         self.grep_filter_input.clear();
-        self.apply_filters(false);
-    }
-
-    pub(crate) fn apply_filter_change(&mut self, kind: DiffFilterKind) {
-        let jump_to_grep = kind == DiffFilterKind::Grep && !self.grep_filter.is_empty();
-        self.apply_filters(jump_to_grep);
+        self.schedule_filter_apply(Duration::ZERO, false);
     }
 
     pub(crate) fn apply_filters(&mut self, jump_to_grep: bool) {
+        self.pending_filter_apply = None;
+        self.filter_worker = None;
+        self.filter_searching = false;
         let selected_path = self
             .changeset
             .files
@@ -2514,10 +2698,134 @@ impl DiffApp {
             .map(|start| self.scroll.saturating_sub(start))
             .unwrap_or_default();
 
-        let visible_files =
-            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
+        let search_result = self.search_index.search_with_grep_match_limit(
+            &self.file_filter,
+            &self.grep_filter,
+            MAX_LIVE_GREP_MATCHES,
+        );
         self.replace_visible_files(
-            visible_files,
+            search_result,
+            selected_path,
+            relative_scroll,
+            jump_to_grep,
+            HunkFocusModelBehavior::PreserveIfValid,
+        );
+    }
+
+    pub(crate) fn schedule_filter_change(&mut self, kind: DiffFilterKind, debounce: Duration) {
+        self.schedule_filter_apply(
+            debounce,
+            kind == DiffFilterKind::Grep && !self.grep_filter.is_empty(),
+        );
+    }
+
+    pub(crate) fn schedule_filter_apply(&mut self, debounce: Duration, jump_to_grep: bool) {
+        #[cfg(test)]
+        {
+            let _ = debounce;
+            self.apply_filters(jump_to_grep);
+        }
+
+        #[cfg(not(test))]
+        {
+            self.filter_generation = self.filter_generation.wrapping_add(1);
+            self.pending_filter_apply = Some(PendingFilterApply {
+                generation: self.filter_generation,
+                due_at: Instant::now() + debounce,
+                jump_to_grep,
+            });
+            self.filter_worker = None;
+            self.filter_searching = true;
+            self.dirty = true;
+        }
+    }
+
+    pub(crate) fn start_due_filter_apply(&mut self) {
+        let Some(pending) = self.pending_filter_apply else {
+            return;
+        };
+        if Instant::now() < pending.due_at {
+            return;
+        }
+
+        self.pending_filter_apply = None;
+        let generation = pending.generation;
+        let jump_to_grep = pending.jump_to_grep;
+        let file_filter = self.file_filter.clone();
+        let grep_filter = self.grep_filter.clone();
+        let worker_file_filter = file_filter.clone();
+        let worker_grep_filter = grep_filter.clone();
+        let search_index = Arc::clone(&self.search_index);
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = search_index.search_with_grep_match_limit(
+                &worker_file_filter,
+                &worker_grep_filter,
+                MAX_LIVE_GREP_MATCHES,
+            );
+            let _ = tx.send(result);
+        });
+
+        self.filter_worker = Some(FilterWorker {
+            generation,
+            file_filter,
+            grep_filter,
+            jump_to_grep,
+            rx,
+        });
+        self.filter_searching = true;
+        self.dirty = true;
+    }
+
+    pub(crate) fn drain_filter_worker(&mut self) {
+        let Some(outcome) =
+            self.filter_worker
+                .as_ref()
+                .and_then(|worker| match worker.rx.try_recv() {
+                    Ok(result) => Some(Some(result)),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => Some(None),
+                })
+        else {
+            return;
+        };
+
+        let Some(worker) = self.filter_worker.take() else {
+            return;
+        };
+
+        if worker.generation != self.filter_generation
+            || worker.file_filter != self.file_filter
+            || worker.grep_filter != self.grep_filter
+        {
+            return;
+        }
+
+        self.filter_searching = false;
+        match outcome {
+            Some(result) => self.apply_filter_result(result, worker.jump_to_grep),
+            None => self.set_error_log("filter worker stopped"),
+        }
+    }
+
+    pub(crate) fn filter_busy(&self) -> bool {
+        self.filter_searching || self.pending_filter_apply.is_some() || self.filter_worker.is_some()
+    }
+
+    fn apply_filter_result(&mut self, search_result: DiffSearchResult, jump_to_grep: bool) {
+        let selected_path = self
+            .changeset
+            .files
+            .get(self.selected_file)
+            .map(|file| file.display_path().to_owned());
+        let relative_scroll = self
+            .model
+            .file_start_row(self.selected_file)
+            .map(|start| self.scroll.saturating_sub(start))
+            .unwrap_or_default();
+
+        self.replace_visible_files(
+            search_result,
             selected_path,
             relative_scroll,
             jump_to_grep,
@@ -2527,12 +2835,18 @@ impl DiffApp {
 
     fn replace_visible_files(
         &mut self,
-        visible_files: Vec<usize>,
+        search_result: DiffSearchResult,
         selected_path: Option<String>,
         relative_scroll: usize,
         jump_to_grep: bool,
         hunk_focus_behavior: HunkFocusModelBehavior,
     ) {
+        let DiffSearchResult {
+            visible_files,
+            grep_matches,
+            grep_matches_truncated,
+        } = search_result;
+
         let selected_file = selected_path
             .and_then(|path| {
                 self.changeset
@@ -2545,10 +2859,11 @@ impl DiffApp {
             .unwrap_or(0);
 
         self.stats = diff_stats_for_files(&self.changeset, &visible_files);
-        self.max_line_width = changeset_max_line_width_for_files(&self.changeset, &visible_files);
+        self.max_line_width = self.search_index.max_line_width_for_files(&visible_files);
         self.replace_model(&visible_files, hunk_focus_behavior);
         self.selected_file = selected_file;
-        self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
+        self.grep_matches = grep_match_rows(&self.model, &grep_matches);
+        self.grep_matches_truncated = grep_matches_truncated;
         self.selected_grep_match = None;
 
         let scroll = self
@@ -2621,8 +2936,16 @@ impl DiffApp {
         };
 
         self.selected_grep_match = Some(next);
-        self.set_scroll_centered_on(self.grep_matches[next]);
+        self.set_scroll_for_grep_navigation(self.grep_matches[next]);
         self.dirty = true;
+    }
+
+    pub(crate) fn set_scroll_for_grep_navigation(&mut self, row: usize) {
+        if row >= self.scroll && row < self.scroll.saturating_add(self.viewport_rows) {
+            self.set_scroll_with_grep_sync(row, false, HunkFocusScrollBehavior::ClearOnScroll);
+        } else {
+            self.set_scroll_centered_on(row);
+        }
     }
 
     pub(crate) fn syntax_line(
@@ -2893,10 +3216,14 @@ impl DiffApp {
         }
 
         self.layout = layout;
-        let visible_files =
-            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
-        self.replace_model(&visible_files, HunkFocusModelBehavior::Clear);
-        self.grep_matches = grep_match_rows(&self.changeset, &self.model, &self.grep_filter);
+        let search_result = self.search_index.search_with_grep_match_limit(
+            &self.file_filter,
+            &self.grep_filter,
+            MAX_LIVE_GREP_MATCHES,
+        );
+        self.replace_model(&search_result.visible_files, HunkFocusModelBehavior::Clear);
+        self.grep_matches = grep_match_rows(&self.model, &search_result.grep_matches);
+        self.grep_matches_truncated = search_result.grep_matches_truncated;
         self.selected_grep_match = None;
         self.set_horizontal_scroll(self.horizontal_scroll);
         let scroll = self
@@ -2956,13 +3283,20 @@ impl DiffApp {
         self.context_cache.clear();
         self.generation = self.generation.wrapping_add(1);
         self.inline_cache.clear();
+        self.search_index = Arc::new(DiffSearchIndex::new(&self.changeset));
+        self.pending_filter_apply = None;
+        self.filter_worker = None;
+        self.filter_searching = false;
         if let Some(syntax) = self.syntax.as_mut() {
             syntax.clear(self.generation);
         }
-        let visible_files =
-            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
+        let search_result = self.search_index.search_with_grep_match_limit(
+            &self.file_filter,
+            &self.grep_filter,
+            MAX_LIVE_GREP_MATCHES,
+        );
         self.replace_visible_files(
-            visible_files,
+            search_result,
             selected_path,
             relative_scroll,
             false,
@@ -3027,17 +3361,24 @@ impl DiffApp {
         self.total_stats = changeset.stats();
         self.base_changeset = changeset.clone();
         self.changeset = changeset;
+        self.search_index = Arc::new(DiffSearchIndex::new(&self.changeset));
         self.context_expansions.clear();
         self.context_cache.clear();
         self.generation = self.generation.wrapping_add(1);
         self.inline_cache.clear();
+        self.pending_filter_apply = None;
+        self.filter_worker = None;
+        self.filter_searching = false;
         if let Some(syntax) = self.syntax.as_mut() {
             syntax.clear(self.generation);
         }
-        let visible_files =
-            filtered_file_indices(&self.changeset, &self.file_filter, &self.grep_filter);
+        let search_result = self.search_index.search_with_grep_match_limit(
+            &self.file_filter,
+            &self.grep_filter,
+            MAX_LIVE_GREP_MATCHES,
+        );
         self.replace_visible_files(
-            visible_files,
+            search_result,
             selected_path,
             relative_scroll,
             false,
@@ -3158,22 +3499,6 @@ fn find_visible_row_outward<T>(
     }
 
     None
-}
-
-pub(crate) fn changeset_max_line_width(changeset: &Changeset) -> usize {
-    let files: Vec<_> = (0..changeset.files.len()).collect();
-    changeset_max_line_width_for_files(changeset, &files)
-}
-
-pub(crate) fn changeset_max_line_width_for_files(changeset: &Changeset, files: &[usize]) -> usize {
-    files
-        .iter()
-        .filter_map(|file| changeset.files.get(*file))
-        .flat_map(|file| file.hunks.iter())
-        .flat_map(|hunk| hunk.lines.iter())
-        .map(|line| line.text.width())
-        .max()
-        .unwrap_or_default()
 }
 
 pub(crate) fn repo_relative_path(repo: &Path, path: &Path) -> Option<PathBuf> {

@@ -3,12 +3,11 @@ use std::{collections::HashSet, env, io, path::Path, process::Command};
 use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffSource, DiffStats};
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use crate::{
-    model::{UiModel, UiRow},
-    theme::MIN_SPLIT_WIDTH,
-};
+use crate::theme::MIN_SPLIT_WIDTH;
 
 pub(crate) type CrosstermTerminal = Terminal<CrosstermBackend<io::Stdout>>;
+
+pub(crate) const INPUT_CURSOR: &str = "│";
 
 pub(crate) fn default_layout_for_width(width: u16) -> DiffLayoutMode {
     if width >= MIN_SPLIT_WIDTH {
@@ -388,75 +387,6 @@ pub(crate) fn diff_line_grep_prefix(kind: DiffLineKind) -> char {
         DiffLineKind::Deletion => '-',
         DiffLineKind::Meta => '\\',
     }
-}
-
-pub(crate) fn grep_match_rows(changeset: &Changeset, model: &UiModel, query: &str) -> Vec<usize> {
-    let Some(matcher) = TextMatcher::new(query) else {
-        return Vec::new();
-    };
-
-    (0..model.len())
-        .filter(|row_index| {
-            model
-                .row(*row_index)
-                .is_some_and(|row| row_matches_grep(changeset, row, &matcher))
-        })
-        .collect()
-}
-
-pub(crate) fn row_matches_grep(changeset: &Changeset, row: UiRow, matcher: &TextMatcher) -> bool {
-    match row {
-        UiRow::FileSeparator
-        | UiRow::Collapsed { .. }
-        | UiRow::ContextLine { .. }
-        | UiRow::ContextHide { .. } => false,
-        UiRow::FileHeader(file) | UiRow::BinaryFile(file) => changeset
-            .files
-            .get(file)
-            .is_some_and(|file| file_grep_header_matches(file, matcher)),
-        UiRow::HunkHeader { file, hunk } => changeset
-            .files
-            .get(file)
-            .and_then(|file| file.hunks.get(hunk))
-            .is_some_and(|hunk| matcher.matches(&hunk.header)),
-        UiRow::UnifiedLine { file, hunk, line } | UiRow::MetaLine { file, hunk, line } => changeset
-            .files
-            .get(file)
-            .and_then(|file| file.hunks.get(hunk))
-            .and_then(|hunk| hunk.lines.get(line))
-            .is_some_and(|line| diff_line_grep_text_matches(line, matcher)),
-        UiRow::SplitLine {
-            file,
-            hunk,
-            left,
-            right,
-        } => changeset
-            .files
-            .get(file)
-            .and_then(|file| file.hunks.get(hunk))
-            .is_some_and(|hunk| {
-                left.and_then(|line| hunk.lines.get(line))
-                    .is_some_and(|line| diff_line_grep_text_matches(line, matcher))
-                    || right
-                        .and_then(|line| hunk.lines.get(line))
-                        .is_some_and(|line| diff_line_grep_text_matches(line, matcher))
-            }),
-    }
-}
-
-pub(crate) fn file_grep_header_matches(file: &hz_diff::DiffFile, matcher: &TextMatcher) -> bool {
-    matcher.matches(file.display_path())
-        || file
-            .old_path
-            .as_deref()
-            .is_some_and(|path| matcher.matches(path))
-        || file
-            .new_path
-            .as_deref()
-            .is_some_and(|path| matcher.matches(path))
-        || matcher.matches(file.status.label())
-        || (file.is_binary && matcher.matches("binary file"))
-        || (!file.is_binary && file.hunks.is_empty() && matcher.matches("no textual changes"))
 }
 
 pub(crate) fn diff_stats_for_files(changeset: &Changeset, files: &[usize]) -> DiffStats {

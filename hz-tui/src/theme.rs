@@ -68,7 +68,7 @@ pub(crate) const HELP_MENU_LEFT_ROWS: &[HelpMenuRow] = &[
     HelpMenuRow::Binding("?", "toggle this help"),
     HelpMenuRow::Binding("q", "quit"),
     HelpMenuRow::Binding("Ctrl-C", "force quit"),
-    HelpMenuRow::Binding("Esc", "close menu / quit"),
+    HelpMenuRow::Binding("Esc", "close"),
     HelpMenuRow::Section("Navigate"),
     HelpMenuRow::Binding("j/k, ↑/↓", "scroll"),
     HelpMenuRow::Binding("d/u, PgDn/PgUp", "page"),
@@ -149,6 +149,11 @@ pub struct DiffBenchmarkReport {
     pub hunk_count: usize,
     pub open_micros: u128,
     pub file_filter_micros: u128,
+    pub legacy_file_filter_micros: u128,
+    pub grep_filter_micros: u128,
+    pub legacy_grep_filter_micros: u128,
+    pub file_filter_apply_micros: u128,
+    pub grep_filter_apply_micros: u128,
     pub hunk_navigation_steps: usize,
     pub hunk_navigation_total_micros: u128,
     pub hunk_navigation_max_micros: u128,
@@ -192,6 +197,7 @@ pub(crate) struct DiffTheme {
     pub(crate) file: Color,
     pub(crate) hunk: Color,
     pub(crate) notice: Color,
+    pub(crate) cursor: Color,
     pub(crate) muted: Color,
     pub(crate) gutter_bg: Color,
     pub(crate) empty_diff: Color,
@@ -228,6 +234,7 @@ impl DiffTheme {
             file: Color::Reset,
             hunk: Color::Indexed(13),
             notice: green.color(),
+            cursor: Color::White,
             muted: Color::Rgb(0x7d, 0x87, 0x94),
             gutter_bg: Color::Indexed(0),
             empty_diff: Color::Rgb(0x3d, 0x42, 0x49),
@@ -258,6 +265,7 @@ impl DiffTheme {
             file: Color::Rgb(215, 218, 224),
             hunk: Color::Rgb(205, 130, 170),
             notice: Color::Green,
+            cursor: Color::White,
             muted: Color::Rgb(125, 135, 148),
             gutter_bg: Color::Rgb(12, 16, 20),
             empty_diff: Color::Rgb(38, 45, 54),
@@ -288,6 +296,7 @@ impl DiffTheme {
             file: Color::Rgb(45, 51, 59),
             hunk: Color::Rgb(138, 43, 92),
             notice: Color::Green,
+            cursor: Color::Black,
             muted: Color::Rgb(106, 115, 125),
             gutter_bg: Color::Rgb(238, 242, 246),
             empty_diff: Color::Rgb(225, 228, 232),
@@ -315,6 +324,7 @@ impl DiffTheme {
             file: Color::White,
             hunk: Color::Magenta,
             notice: Color::Green,
+            cursor: Color::White,
             muted: Color::DarkGray,
             gutter_bg: Color::Black,
             empty_diff: Color::DarkGray,
@@ -342,6 +352,7 @@ impl DiffTheme {
             file: Color::Indexed(15),
             hunk: Color::Indexed(13),
             notice: Color::Indexed(2),
+            cursor: Color::Indexed(15),
             muted: Color::Indexed(8),
             gutter_bg: Color::Indexed(0),
             empty_diff: Color::Indexed(8),
@@ -372,6 +383,7 @@ impl DiffTheme {
             file: Color::Rgb(0xcd, 0xd6, 0xf4),
             hunk: Color::Rgb(0xcb, 0xa6, 0xf7),
             notice: green.color(),
+            cursor: Color::Rgb(0xf5, 0xe0, 0xdc),
             muted: Color::Rgb(0x6c, 0x70, 0x86),
             gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
             empty_diff: Color::Rgb(0x31, 0x32, 0x44),
@@ -402,6 +414,7 @@ impl DiffTheme {
             file: Color::Rgb(0xeb, 0xdb, 0xb2),
             hunk: Color::Rgb(0xd3, 0x86, 0x9b),
             notice: green.color(),
+            cursor: Color::Rgb(0xfb, 0xf1, 0xc7),
             muted: Color::Rgb(0x92, 0x83, 0x74),
             gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
             empty_diff: Color::Rgb(0x3c, 0x38, 0x36),
@@ -432,6 +445,7 @@ impl DiffTheme {
             file: Color::Rgb(0xc0, 0xca, 0xf5),
             hunk: Color::Rgb(0xbb, 0x9a, 0xf7),
             notice: green.color(),
+            cursor: Color::Rgb(0xc0, 0xca, 0xf5),
             muted: Color::Rgb(0x56, 0x5f, 0x89),
             gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
             empty_diff: Color::Rgb(0x24, 0x28, 0x3b),
@@ -462,6 +476,7 @@ impl DiffTheme {
             file: Color::Rgb(0xf8, 0xf8, 0xf2),
             hunk: Color::Rgb(0xff, 0x79, 0xc6),
             notice: green.color(),
+            cursor: Color::Rgb(0xf8, 0xf8, 0xf2),
             muted: Color::Rgb(0x62, 0x72, 0xa4),
             gutter_bg: base.blend(RgbColor::new(0, 0, 0), 0.22).color(),
             empty_diff: Color::Rgb(0x44, 0x47, 0x5a),
@@ -489,6 +504,7 @@ impl DiffTheme {
             file: scheme.base05.color(),
             hunk: scheme.base0e.color(),
             notice: scheme.base0b.color(),
+            cursor: scheme.base05.color(),
             muted: scheme.base03.color(),
             gutter_bg: scheme.base00.blend(RgbColor::new(0, 0, 0), 0.18).color(),
             empty_diff: scheme.base01.color(),
@@ -536,6 +552,9 @@ impl DiffTheme {
         }
         if let Some(color) = config_color(&colors.notice, "notice")? {
             self.notice = color;
+        }
+        if let Some(color) = config_color(&colors.cursor, "cursor")? {
+            self.cursor = color;
         }
         if let Some(color) = config_color(&colors.muted, "muted")? {
             self.muted = color;
