@@ -1,9 +1,9 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{
     CreateWorktree, ForkWorktree, ForkedWorktree, Registry, WorktreeEntry,
     create_with_registry_and_deferred_prune, remove_registered_entry_with_force_from_registry,
-    resolve_repo, worktree_entry_from_created_worktree,
+    resolve_repo, same_path, worktree_entry_from_created_worktree,
 };
 use hz_core::{HzError, HzResult};
 
@@ -24,7 +24,7 @@ pub(crate) fn fork_with_registry_and_patch_applier(
     input: ForkWorktree,
     apply_patch: impl FnOnce(&Path, &[u8]) -> HzResult<bool>,
 ) -> HzResult<ForkedWorktree> {
-    let current = hz_git::repository_root(input.repo.as_deref())?;
+    let current = fork_source_worktree(input.repo.as_deref())?;
     let repo = resolve_repo(input.repo.as_deref(), registry)?;
     let head = hz_git::current_head(&current)?;
     let patch = if input.include_diff {
@@ -60,6 +60,29 @@ pub(crate) fn fork_with_registry_and_patch_applier(
     worktree.warnings = pending_prune.prune(registry);
 
     Ok(ForkedWorktree { worktree, changed })
+}
+
+fn fork_source_worktree(repo: Option<&Path>) -> HzResult<PathBuf> {
+    let hinted = repo
+        .map(|repo| hz_git::repository_root(Some(repo)))
+        .transpose()?;
+    let current = hz_git::repository_root(None).ok();
+
+    match (current, hinted) {
+        (Some(current), Some(hinted)) if same_git_worktree_family(&current, &hinted)? => {
+            Ok(current)
+        }
+        (_, Some(hinted)) => Ok(hinted),
+        (Some(current), None) => Ok(current),
+        (None, None) => hz_git::repository_root(None),
+    }
+}
+
+fn same_git_worktree_family(left: &Path, right: &Path) -> HzResult<bool> {
+    Ok(same_path(
+        &hz_git::main_worktree(left)?,
+        &hz_git::main_worktree(right)?,
+    ))
 }
 
 fn cleanup_created_fork(
