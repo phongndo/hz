@@ -240,7 +240,7 @@ impl LiveDiffFilter {
 }
 
 pub(crate) fn live_diff_supported(options: &DiffOptions) -> bool {
-    matches!(options.source, DiffSource::Worktree)
+    matches!(options.source, DiffSource::Worktree | DiffSource::Base(_))
 }
 
 pub(crate) fn live_diff_watch_spec(repo: &Path) -> HzResult<LiveDiffWatchSpec> {

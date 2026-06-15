@@ -109,34 +109,6 @@ fn default_help_renders_usage_for_non_terminal_stdout() {
 }
 
 #[test]
-fn main_tui_finish_prefers_tui_error_over_detach_error() {
-    let error = finish_main_tui(
-        Err(CliError::from(hz_core::HzError::Usage(
-            "tui failed".to_owned(),
-        ))),
-        Err(CliError::from(hz_core::HzError::Usage(
-            "detach failed".to_owned(),
-        ))),
-    )
-    .unwrap_err();
-
-    assert_eq!(error.to_string(), "tui failed");
-}
-
-#[test]
-fn main_tui_finish_reports_detach_error_after_successful_tui() {
-    let error = finish_main_tui(
-        Ok(()),
-        Err(CliError::from(hz_core::HzError::Usage(
-            "detach failed".to_owned(),
-        ))),
-    )
-    .unwrap_err();
-
-    assert_eq!(error.to_string(), "detach failed");
-}
-
-#[test]
 fn list_output_uses_branch_as_display_identifier() {
     let output = render_worktree_list(&[hz_command::WorktreeEntry {
         id: "entry-id".to_owned(),
@@ -1120,72 +1092,6 @@ fn creation_and_diff_accept_short_flags() {
             assert!(args.stat);
         }
         command => panic!("expected diff command, got {command:?}"),
-    }
-}
-
-#[test]
-fn daemon_commands_parse() {
-    let cli = Cli::try_parse_from(["hz", "daemon", "start"]).unwrap();
-    match cli.command {
-        Some(Command::Daemon(args)) => assert!(matches!(args.command, DaemonCommand::Start)),
-        command => panic!("expected daemon start command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "daemon", "attach", "session-1"]).unwrap();
-    match cli.command {
-        Some(Command::Daemon(args)) => match args.command {
-            DaemonCommand::Attach(args) => assert_eq!(args.session.as_deref(), Some("session-1")),
-            command => panic!("expected daemon attach command, got {command:?}"),
-        },
-        command => panic!("expected daemon command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "daemon", "detach", "session-1"]).unwrap();
-    match cli.command {
-        Some(Command::Daemon(args)) => match args.command {
-            DaemonCommand::Detach(args) => assert_eq!(args.session, "session-1"),
-            command => panic!("expected daemon detach command, got {command:?}"),
-        },
-        command => panic!("expected daemon command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from([
-        "hz", "daemon", "run", "claude", "--name", "review", "-C", "/repo", "--", "--model",
-        "sonnet",
-    ])
-    .unwrap();
-    match cli.command {
-        Some(Command::Daemon(args)) => match args.command {
-            DaemonCommand::Run(args) => {
-                assert_eq!(args.cli, AiCliArg::Claude);
-                assert_eq!(args.name.as_deref(), Some("review"));
-                assert_eq!(args.cwd, Some(PathBuf::from("/repo")));
-                assert_eq!(args.args, ["--model", "sonnet"]);
-            }
-            command => panic!("expected daemon run command, got {command:?}"),
-        },
-        command => panic!("expected daemon command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "daemon", "send", "session-1", "hello", "agent"]).unwrap();
-    match cli.command {
-        Some(Command::Daemon(args)) => match args.command {
-            DaemonCommand::Send(args) => {
-                assert_eq!(args.session, "session-1");
-                assert_eq!(args.text, ["hello", "agent"]);
-            }
-            command => panic!("expected daemon send command, got {command:?}"),
-        },
-        command => panic!("expected daemon command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "daemon", "run", "claude-code"]).unwrap();
-    match cli.command {
-        Some(Command::Daemon(args)) => match args.command {
-            DaemonCommand::Run(args) => assert_eq!(args.cli, AiCliArg::Claude),
-            command => panic!("expected daemon run command, got {command:?}"),
-        },
-        command => panic!("expected daemon command, got {command:?}"),
     }
 }
 

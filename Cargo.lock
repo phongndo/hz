@@ -574,14 +574,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hz-agent"
-version = "0.2.1"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "hz-bench"
 version = "0.2.1"
 dependencies = [
@@ -598,10 +590,8 @@ version = "0.2.1"
 dependencies = [
  "clap",
  "crossterm",
- "hz-agent",
  "hz-command",
  "hz-core",
- "hz-daemon",
  "hz-tui",
  "serde_json",
  "time",
@@ -625,16 +615,6 @@ dependencies = [
 name = "hz-core"
 version = "0.2.1"
 dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "hz-daemon"
-version = "0.2.1"
-dependencies = [
- "hz-agent",
- "hz-core",
  "serde",
  "serde_json",
 ]

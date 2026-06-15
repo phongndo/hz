@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+if ! command -v just >/dev/null 2>&1; then
+    printf '%s\n' 'error: just is required to run pre-commit checks' >&2
+    printf '%s\n' 'hint: enter nix develop or install just, then retry the commit' >&2
+    exit 1
+fi
+
+printf '%s\n' 'Running pre-commit checks...'
+just check
+printf '%s\n' 'Pre-commit checks passed.'

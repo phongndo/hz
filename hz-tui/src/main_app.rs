@@ -60,7 +60,7 @@ fn draw_main(frame: &mut ratatui::Frame<'_>) {
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from("hz agent management IDE foundation"),
+        Line::from("hz workspace dashboard foundation"),
     ])
     .alignment(Alignment::Center);
 
