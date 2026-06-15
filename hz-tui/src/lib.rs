@@ -6,6 +6,7 @@ mod main_app;
 mod model;
 mod render;
 mod run;
+mod search;
 mod syntax;
 #[cfg(test)]
 mod tests;

@@ -46,9 +46,7 @@ pub(crate) fn draw_diff(frame: &mut Frame<'_>, app: &mut DiffApp, area: Rect) {
     }
 
     let visible_rows = area.height as usize;
-    if !app.syntax_updates_paused() {
-        app.prepare_syntax_for_viewport(visible_rows);
-    }
+    app.prepare_syntax_for_viewport(visible_rows);
 
     let mut lines = Vec::with_capacity(visible_rows);
     let focused_hunk = app.focused_hunk_for_viewport(visible_rows);

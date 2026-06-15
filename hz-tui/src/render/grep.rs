@@ -6,7 +6,7 @@ use crate::{
     app::DiffApp,
     controls::{TextMatcher, diff_line_grep_prefix},
     model::UiRow,
-    render::text::{skip_display_prefix, status_code},
+    render::text::skip_display_prefix,
     theme::{DiffTheme, GUTTER_WIDTH, UNIFIED_GUTTER_WIDTH},
 };
 
@@ -118,21 +118,7 @@ pub(crate) fn grep_highlight_targets_for_row(
     width: usize,
 ) -> Vec<GrepHighlightTarget> {
     match row {
-        UiRow::FileHeader(file) => app
-            .changeset
-            .files
-            .get(file)
-            .and_then(|file| {
-                grep_highlight_target_for_columns(
-                    file.display_path().to_owned(),
-                    &line.spans,
-                    status_code(file.status).width().saturating_add(1),
-                    width,
-                    0,
-                )
-            })
-            .into_iter()
-            .collect(),
+        UiRow::FileHeader(_) => Vec::new(),
         UiRow::BinaryFile(file) => app
             .changeset
             .files
