@@ -67,7 +67,12 @@ pub(crate) fn spawn_detached_blocking<F>(function: F)
 where
     F: FnOnce() + Send + 'static,
 {
-    drop(spawn_blocking(function));
+    drop(
+        thread::Builder::new()
+            .name("hz-detached-blocking".to_owned())
+            .spawn(function)
+            .expect("detached blocking thread should start"),
+    );
 }
 
 pub(crate) async fn run_detached_blocking<F, R>(function: F) -> Result<R, oneshot::error::RecvError>
@@ -112,6 +117,7 @@ fn global_runtime() -> &'static Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc as std_mpsc;
 
     #[test]
     fn block_on_runs_without_current_tokio_runtime() {
@@ -128,5 +134,36 @@ mod tests {
         });
 
         assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn detached_blocking_does_not_hold_current_runtime_open() {
+        let (started_tx, started_rx) = std_mpsc::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        let (dropped_tx, dropped_rx) = std_mpsc::channel();
+
+        let runner = thread::spawn(move || {
+            let runtime = build_runtime().expect("runtime should start");
+            runtime.block_on(async move {
+                spawn_detached_blocking(move || {
+                    started_tx.send(()).expect("start signal should send");
+                    let _ = release_rx.recv();
+                });
+            });
+            drop(runtime);
+            dropped_tx.send(()).expect("drop signal should send");
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("detached worker should start");
+        if let Err(error) = dropped_rx.recv_timeout(Duration::from_secs(1)) {
+            let _ = release_tx.send(());
+            let _ = runner.join();
+            panic!("runtime waited for detached blocking worker: {error}");
+        }
+
+        let _ = release_tx.send(());
+        runner.join().expect("runtime thread should finish");
     }
 }
