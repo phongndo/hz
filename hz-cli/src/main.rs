@@ -26,7 +26,9 @@ use crate::{
     repo_shell::{init_repo_or_shell, install_shell, shell_script},
     tree_sitter::{diff_options, tree_sitter},
     update::update,
-    worktree_output::{StyleColor, create_worktree, list_worktrees, path_worktree, styled},
+    worktree_output::{
+        StyleColor, create_worktree, fork_worktree, list_worktrees, path_worktree, styled,
+    },
 };
 
 fn main() -> ExitCode {
@@ -113,12 +115,14 @@ fn run() -> CliResult<()> {
         },
         Some(Command::Worktree { command }) => match command {
             WorktreeCommand::New(args) => create_worktree(args),
+            WorktreeCommand::Fork(args) => fork_worktree(args),
             WorktreeCommand::Path(args) => path_worktree(args),
             WorktreeCommand::List(args) => list_worktrees(args),
             WorktreeCommand::Remove(args) => remove_worktree(args),
             WorktreeCommand::Handoff(args) => handoff_worktree(args),
         },
         Some(Command::New(args)) => create_worktree(args),
+        Some(Command::Fork(args)) => fork_worktree(args),
         Some(Command::Path(args)) => path_worktree(args),
         Some(Command::List(args)) => list_worktrees(args),
         Some(Command::Remove(args)) => remove_worktree(args),

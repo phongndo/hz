@@ -326,6 +326,7 @@ fn create_rolls_back_git_state_when_registry_save_fails() {
             path: Some(destination.clone()),
             base: None,
             branch: None,
+            detached: false,
             max_detached_worktrees: None,
             max_branch_worktrees: None,
         },
@@ -390,6 +391,7 @@ fn deferred_create_prune_does_not_remove_candidates_until_run() {
             path: Some(new_destination),
             base: None,
             branch: None,
+            detached: false,
             max_detached_worktrees: None,
             max_branch_worktrees: Some(1),
         },
@@ -416,6 +418,284 @@ fn deferred_create_prune_does_not_remove_candidates_until_run() {
     );
     assert!(!git_worktree_listed(&repo, &old_destination));
     assert!(git_worktree_listed(&repo, &created.path));
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn fork_copies_current_diff_to_named_detached_worktree() {
+    let test_dir = test_dir("hz-worktree-fork-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+
+    fs::write(repo.join("file.txt"), "base\nchanged\n").expect("tracked file should be changed");
+    fs::write(repo.join("new.txt"), "new\n").expect("untracked file should be written");
+
+    let forked = fork(ForkWorktree {
+        name: Some("copy".to_owned()),
+        repo: Some(repo.clone()),
+        path: Some(destination),
+        include_diff: true,
+        max_detached_worktrees: Some(0),
+    })
+    .unwrap();
+
+    assert_eq!(forked.worktree.handle, "copy");
+    assert_eq!(forked.worktree.branch, None);
+    assert!(forked.changed);
+    assert_eq!(hz_git::current_branch(&forked.worktree.path).unwrap(), None);
+    assert!(!hz_git::branch_exists(&repo, "copy").unwrap());
+    assert_eq!(
+        fs::read_to_string(forked.worktree.path.join("file.txt")).unwrap(),
+        "base\nchanged\n"
+    );
+    assert_eq!(
+        fs::read_to_string(forked.worktree.path.join("new.txt")).unwrap(),
+        "new\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("file.txt")).unwrap(),
+        "base\nchanged\n"
+    );
+    assert!(repo.join("new.txt").exists());
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn fork_copies_diff_from_linked_worktree() {
+    let test_dir = test_dir("hz-worktree-fork-linked-test");
+    let repo = test_dir.join("repo");
+    let linked = test_dir.join("linked");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+            "HEAD",
+        ],
+        &repo,
+    );
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+
+    fs::write(repo.join("file.txt"), "base\nmain\n").expect("main file should be changed");
+    fs::write(linked.join("file.txt"), "base\nlinked\n").expect("linked file should be changed");
+    fs::write(linked.join("linked-new.txt"), "linked new\n")
+        .expect("linked untracked file should be written");
+
+    let forked = fork(ForkWorktree {
+        name: Some("linked-copy".to_owned()),
+        repo: Some(linked.clone()),
+        path: Some(destination),
+        include_diff: true,
+        max_detached_worktrees: Some(0),
+    })
+    .unwrap();
+
+    assert!(forked.changed);
+    assert_eq!(
+        fs::read_to_string(forked.worktree.path.join("file.txt")).unwrap(),
+        "base\nlinked\n"
+    );
+    assert_eq!(
+        fs::read_to_string(forked.worktree.path.join("linked-new.txt")).unwrap(),
+        "linked new\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("file.txt")).unwrap(),
+        "base\nmain\n"
+    );
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn fork_can_leave_current_diff_behind() {
+    let test_dir = test_dir("hz-worktree-fork-no-diff-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    let mut registry = Registry::default();
+
+    fs::write(repo.join("file.txt"), "base\nchanged\n").expect("tracked file should be changed");
+    fs::write(repo.join("new.txt"), "new\n").expect("untracked file should be written");
+
+    let forked = fork_with_registry(
+        &mut registry,
+        ForkWorktree {
+            name: Some("clean-copy".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(destination),
+            include_diff: false,
+            max_detached_worktrees: Some(0),
+        },
+    )
+    .unwrap();
+
+    assert!(!forked.changed);
+    assert_eq!(
+        fs::read_to_string(forked.worktree.path.join("file.txt")).unwrap(),
+        "base\n"
+    );
+    assert!(!forked.worktree.path.join("new.txt").exists());
+    assert_eq!(
+        fs::read_to_string(repo.join("file.txt")).unwrap(),
+        "base\nchanged\n"
+    );
+    assert!(repo.join("new.txt").exists());
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn fork_removes_created_worktree_when_patch_apply_fails() {
+    let test_dir = test_dir("hz-worktree-fork-apply-failure-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    let mut registry = Registry::default();
+
+    fs::write(repo.join("file.txt"), "base\nchanged\n").expect("tracked file should be changed");
+
+    let error = fork_with_registry_and_patch_applier(
+        &mut registry,
+        ForkWorktree {
+            name: Some("broken-copy".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(destination.clone()),
+            include_diff: true,
+            max_detached_worktrees: Some(0),
+        },
+        |_, _| Err(HzError::Usage("apply failed".to_owned())),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "apply failed");
+    assert!(registry.entries.is_empty());
+    assert!(!destination.exists());
+    assert!(!git_worktree_listed(&repo, &destination));
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn fork_errors_when_destination_path_exists() {
+    let test_dir = test_dir("hz-worktree-fork-existing-path-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    fs::create_dir_all(&destination).expect("destination directory should be created");
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    let mut registry = Registry::default();
+
+    let error = fork_with_registry(
+        &mut registry,
+        ForkWorktree {
+            name: Some("copy".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(destination.clone()),
+            include_diff: false,
+            max_detached_worktrees: Some(0),
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!("worktree path already exists: {}", destination.display())
+    );
+    assert!(registry.entries.is_empty());
+    assert!(!git_worktree_listed(&repo, &destination));
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn fork_prunes_oldest_clean_detached_worktree() {
+    let test_dir = test_dir("hz-worktree-fork-prune-test");
+    let repo = test_dir.join("repo");
+    let old_destination = test_dir.join("old-destination");
+    let new_destination = test_dir.join("new-destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            old_destination.to_str().unwrap(),
+            "HEAD",
+        ],
+        &repo,
+    );
+    let old_destination = fs::canonicalize(old_destination).unwrap();
+    let old_entry = WorktreeEntry {
+        id: "old".to_owned(),
+        handle: "old".to_owned(),
+        repo: repo.clone(),
+        path: old_destination.clone(),
+        branch: None,
+        base: None,
+        source: WorktreeSource::Managed,
+        created_at_unix: 0,
+        modified_at_unix: 0,
+        status: WorktreeStatus::Unknown,
+    };
+    let mut registry = Registry {
+        entries: vec![old_entry.clone()],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    registry.save().expect("registry should be saved");
+
+    let forked = fork_with_registry(
+        &mut registry,
+        ForkWorktree {
+            name: Some("new".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(new_destination),
+            include_diff: false,
+            max_detached_worktrees: Some(1),
+        },
+    )
+    .unwrap();
+
+    assert!(forked.worktree.warnings.is_empty());
+    assert!(
+        !registry
+            .entries
+            .iter()
+            .any(|entry| entry.id == old_entry.id)
+    );
+    assert!(
+        registry
+            .entries
+            .iter()
+            .any(|entry| entry.id == forked.worktree.id)
+    );
+    assert!(!git_worktree_listed(&repo, &old_destination));
+    assert!(git_worktree_listed(&repo, &forked.worktree.path));
 
     fs::remove_dir_all(test_dir).expect("test directory should be removed");
 }

@@ -4,7 +4,8 @@ use std::{
 };
 
 use crate::{
-    Registry, WorktreeEntry, WorktreeSource, WorktreeStatus, find_target_worktree, same_path,
+    CreatedWorktree, Registry, WorktreeEntry, WorktreeSource, WorktreeStatus, find_target_worktree,
+    same_path,
 };
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
 
@@ -109,6 +110,24 @@ pub(crate) fn git_entry(repo: &Path, worktree: hz_git::GitWorktree) -> WorktreeE
         source: WorktreeSource::Git,
         created_at_unix,
         modified_at_unix: created_at_unix,
+        status: WorktreeStatus::Unknown,
+    }
+}
+
+pub(crate) fn worktree_entry_from_created_worktree(
+    created: &CreatedWorktree,
+    created_at_unix: u64,
+) -> WorktreeEntry {
+    WorktreeEntry {
+        id: created.id.clone(),
+        handle: created.handle.clone(),
+        repo: created.repo.clone(),
+        path: created.path.clone(),
+        branch: created.branch.clone(),
+        base: created.base.clone(),
+        source: created.source.clone(),
+        created_at_unix,
+        modified_at_unix: 0,
         status: WorktreeStatus::Unknown,
     }
 }

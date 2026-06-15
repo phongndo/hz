@@ -10,8 +10,18 @@ pub struct CreateWorktree {
     pub path: Option<PathBuf>,
     pub base: Option<String>,
     pub branch: Option<String>,
+    pub detached: bool,
     pub max_detached_worktrees: Option<usize>,
     pub max_branch_worktrees: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkWorktree {
+    pub name: Option<String>,
+    pub repo: Option<PathBuf>,
+    pub path: Option<PathBuf>,
+    pub include_diff: bool,
+    pub max_detached_worktrees: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +90,12 @@ pub struct CreatedWorktree {
     pub source: WorktreeSource,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ForkedWorktree {
+    pub worktree: CreatedWorktree,
+    pub changed: bool,
 }
 
 #[derive(Debug, Serialize)]

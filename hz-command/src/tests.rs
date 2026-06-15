@@ -340,6 +340,7 @@ fn create_worktree_defaults_base_from_repo_config() {
         path: None,
         base: None,
         branch: None,
+        detached: false,
         max_detached_worktrees: None,
         max_branch_worktrees: None,
     })
@@ -366,6 +367,7 @@ fn create_worktree_keeps_explicit_base_over_repo_config() {
         path: None,
         base: Some("main".to_owned()),
         branch: None,
+        detached: false,
         max_detached_worktrees: None,
         max_branch_worktrees: None,
     })
@@ -392,6 +394,7 @@ fn create_worktree_defaults_branch_limit_from_repo_config() {
         path: None,
         base: None,
         branch: None,
+        detached: false,
         max_detached_worktrees: None,
         max_branch_worktrees: None,
     })
@@ -424,6 +427,30 @@ fn handoff_new_defaults_branch_limit_from_repo_config() {
 
     assert_eq!(input.max_branch_worktrees, Some(7));
     assert_eq!(input.max_detached_worktrees, None);
+
+    fs::remove_dir_all(test_dir).unwrap();
+}
+
+#[test]
+fn fork_defaults_detached_limit_from_repo_config() {
+    let test_dir = test_repo("hz-fork-detached-limit-test");
+    fs::create_dir_all(test_dir.join(".hz")).unwrap();
+    fs::write(
+        test_dir.join(".hz").join("hz.toml"),
+        "[worktree]\nmax_detached = 6\n",
+    )
+    .unwrap();
+
+    let input = fork_worktree_with_config_defaults(ForkWorktree {
+        name: Some("copy".to_owned()),
+        repo: Some(test_dir.clone()),
+        path: None,
+        include_diff: true,
+        max_detached_worktrees: None,
+    })
+    .unwrap();
+
+    assert_eq!(input.max_detached_worktrees, Some(6));
 
     fs::remove_dir_all(test_dir).unwrap();
 }
@@ -697,6 +724,7 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("shift 2 words"));
     assert!(script.contains("'rm:remove one or more worktrees'"));
     assert!(script.contains("'install:install shell integration'"));
+    assert!(script.contains("'fork:fork the current worktree state'"));
     assert!(script.contains("'update:update hz from GitHub releases'"));
     assert!(script.contains("'diff:review a git diff'"));
     assert!(script.contains("'ts:manage diff syntax highlighting languages'"));
@@ -740,7 +768,7 @@ fn fish_integration_passes_json_short_flag_through() {
     assert!(script.contains("ts tree-sitter"));
     assert!(script.contains("__hz_needs_ts_subcommand"));
     assert!(script.contains("add update rm remove list ls available clean path doctor"));
-    assert!(script.contains("not __fish_seen_subcommand_from new path cd list ls"));
+    assert!(script.contains("not __fish_seen_subcommand_from new fork path cd list ls"));
     assert!(script.contains("-l installed"));
     assert!(script.contains("-l enabled"));
     assert!(script.contains("-l all"));
@@ -749,6 +777,7 @@ fn fish_integration_passes_json_short_flag_through() {
     assert!(script.contains("-l cleanup"));
     assert!(script.contains("-l no-cleanup"));
     assert!(script.contains("-l max-detached"));
+    assert!(script.contains("-l no-diff"));
     assert!(script.contains("-l target-version"));
     assert!(script.contains("-l force-self-update"));
     assert!(script.contains("-l pr"));

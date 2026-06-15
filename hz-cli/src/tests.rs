@@ -1181,6 +1181,38 @@ fn tree_sitter_commands_accept_language_args() {
 }
 
 #[test]
+fn fork_accepts_named_detached_options() {
+    let cli = Cli::try_parse_from([
+        "hz",
+        "fork",
+        "copy",
+        "-r",
+        "/repo",
+        "-p",
+        "/tmp/copy",
+        "--no-diff",
+        "--max-detached",
+        "3",
+        "-j",
+        "--path-only",
+    ])
+    .unwrap();
+
+    match cli.command {
+        Some(Command::Fork(args)) => {
+            assert_eq!(args.name.as_deref(), Some("copy"));
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert_eq!(args.path, Some(PathBuf::from("/tmp/copy")));
+            assert!(args.no_diff);
+            assert_eq!(args.max_detached, Some(3));
+            assert!(args.json);
+            assert!(args.path_only);
+        }
+        command => panic!("expected fork command, got {command:?}"),
+    }
+}
+
+#[test]
 fn path_and_list_accept_short_flags() {
     let cli = Cli::try_parse_from(["hz", "path", "-r", "/repo", "-j", "target"]).unwrap();
     match cli.command {

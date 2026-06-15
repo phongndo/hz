@@ -12,7 +12,7 @@ _hz() {
 
   local cmd="$1"
   case "$cmd" in
-    new)
+    new|fork)
       local arg
       for arg in "$@"; do
         case "$arg" in
@@ -133,6 +133,7 @@ _hz_complete_main() {
   local -a commands
   commands=(
     'new:create a worktree'
+    'fork:fork the current worktree state'
     'path:print a worktree path'
     'cd:change to a worktree'
     'list:list worktrees'
@@ -161,6 +162,7 @@ _hz_complete_worktree_subcommand() {
   local -a commands
   commands=(
     'new:create a worktree'
+    'fork:fork the current worktree state'
     'path:print a worktree path'
     'cd:change to a worktree'
     'list:list worktrees'
@@ -202,14 +204,14 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init|diff)
+        new|fork|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init|diff)
           _files -/
           return 0
           ;;
       esac
       ;;
     -p|--path)
-      if [[ "$cmd" == "new" ]]; then
+      if [[ "$cmd" == "new" || "$cmd" == "fork" ]]; then
         _files -/
         return 0
       fi
@@ -246,7 +248,15 @@ _hz_complete_option_value() {
           ;;
       esac
       ;;
-    --max-detached|--max-branch-worktrees)
+    --max-detached)
+      case "$cmd" in
+        new|fork|handoff)
+          _message 'count'
+          return 0
+          ;;
+      esac
+      ;;
+    --max-branch-worktrees)
       case "$cmd" in
         new|handoff)
           _message 'count'
@@ -289,6 +299,9 @@ _hz_complete_command_options() {
   case "$cmd" in
     new)
       compadd -- -r --repo -p --path -B --base -b --branch --max-detached --max-branch-worktrees -j --json -d --debug --setup --no-setup -h --help
+      ;;
+    fork)
+      compadd -- -r --repo -p --path --no-diff --max-detached -j --json -h --help
       ;;
     path|cd)
       compadd -- -r --repo -j --json -h --help

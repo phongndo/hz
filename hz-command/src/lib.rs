@@ -15,9 +15,9 @@ pub use hz_syntax::{
     SyntaxThemeConfig, SyntaxThemeSource, SyntaxUpdateResult,
 };
 pub use hz_worktree::{
-    CreateWorktree, CreatedWorktree, FindWorktree, FindWorktrees, HandoffMode, HandoffWorktree,
-    ListWorktrees, LocalWorktree, LocalWorktreeInfo, PathWorktree, RemoveWorktree, WorktreeEntry,
-    WorktreeHandoff, WorktreeSource, WorktreeStatus,
+    CreateWorktree, CreatedWorktree, FindWorktree, FindWorktrees, ForkWorktree, ForkedWorktree,
+    HandoffMode, HandoffWorktree, ListWorktrees, LocalWorktree, LocalWorktreeInfo, PathWorktree,
+    RemoveWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
 };
 
 pub use config::{
@@ -40,8 +40,8 @@ pub use syntax::{
 };
 pub use worktree::{
     create_worktree, create_worktree_with_lifecycle, current_worktree_path, find_worktree,
-    find_worktrees, handoff_worktree, is_user_managed_worktree_path, list_worktree_targets,
-    list_worktrees, local_worktree, path_worktree, remove_found_worktree,
+    find_worktrees, fork_worktree, handoff_worktree, is_user_managed_worktree_path,
+    list_worktree_targets, list_worktrees, local_worktree, path_worktree, remove_found_worktree,
     remove_found_worktree_with_force, remove_worktree,
 };
 

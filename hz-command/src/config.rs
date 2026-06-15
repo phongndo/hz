@@ -4,7 +4,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{CONFIG_FILE, CreateWorktree, HZ_DIR, HandoffMode, HandoffWorktree, LifecycleKind};
+use crate::{
+    CONFIG_FILE, CreateWorktree, ForkWorktree, HZ_DIR, HandoffMode, HandoffWorktree, LifecycleKind,
+};
 use hz_core::{HzError, HzResult, path_utils::normalize_lexically};
 use serde::Deserialize;
 
@@ -34,13 +36,20 @@ pub(crate) fn create_worktree_with_config_defaults(
             input.base = Some(base.to_owned());
         }
         if needs_detached_limit {
-            input.max_detached_worktrees = Some(config.max_detached_worktrees());
+            set_detached_limit_from_config(&config, &mut input.max_detached_worktrees);
         }
         if needs_branch_limit {
             input.max_branch_worktrees = Some(config.max_branch_worktrees());
         }
     }
 
+    Ok(input)
+}
+
+pub(crate) fn fork_worktree_with_config_defaults(
+    mut input: ForkWorktree,
+) -> HzResult<ForkWorktree> {
+    set_detached_limit_from_repo_config(input.repo.as_deref(), &mut input.max_detached_worktrees)?;
     Ok(input)
 }
 
@@ -193,7 +202,10 @@ pub(crate) fn with_configured_handoff_limits(
 ) -> HzResult<HandoffWorktree> {
     if input.mode == HandoffMode::Patch && input.create {
         if input.target.is_none() && input.max_detached_worktrees.is_none() {
-            input.max_detached_worktrees = Some(configured_detached_limit(input.repo.as_deref())?);
+            set_detached_limit_from_repo_config(
+                input.repo.as_deref(),
+                &mut input.max_detached_worktrees,
+            )?;
         }
         if input.target.is_some() && input.max_branch_worktrees.is_none() {
             input.max_branch_worktrees =
@@ -204,16 +216,31 @@ pub(crate) fn with_configured_handoff_limits(
 }
 
 pub(crate) fn creates_detached_worktree(input: &CreateWorktree) -> bool {
-    input.name.is_none() && input.branch.is_none()
+    input.detached || (input.name.is_none() && input.branch.is_none())
 }
 
 pub(crate) fn creates_branch_worktree(input: &CreateWorktree) -> bool {
-    input.name.is_some() || input.branch.is_some()
+    !input.detached && (input.name.is_some() || input.branch.is_some())
 }
 
-pub(crate) fn configured_detached_limit(repo: Option<&Path>) -> HzResult<usize> {
+fn set_detached_limit_from_repo_config(
+    repo: Option<&Path>,
+    max_detached_worktrees: &mut Option<usize>,
+) -> HzResult<()> {
+    if max_detached_worktrees.is_some() {
+        return Ok(());
+    }
+
     let repo = config_repo(repo)?;
-    Ok(HzConfig::load(&repo)?.max_detached_worktrees())
+    let config = HzConfig::load(&repo)?;
+    set_detached_limit_from_config(&config, max_detached_worktrees);
+    Ok(())
+}
+
+fn set_detached_limit_from_config(config: &HzConfig, max_detached_worktrees: &mut Option<usize>) {
+    if max_detached_worktrees.is_none() {
+        *max_detached_worktrees = Some(config.max_detached_worktrees());
+    }
 }
 
 pub(crate) fn configured_branch_worktree_limit(repo: Option<&Path>) -> HzResult<usize> {
