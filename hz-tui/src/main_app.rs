@@ -1,6 +1,6 @@
 use std::{io, time::Duration};
 
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use hz_core::HzResult;
 use ratatui::{
     Terminal,
@@ -11,37 +11,43 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::run::TerminalCleanup;
+use crate::{event_reader::TerminalEventReader, run::TerminalCleanup, runtime};
 
 const MAIN_EVENT_POLL: Duration = Duration::from_millis(50);
 
 pub fn run_main() -> HzResult<()> {
+    runtime::block_on(run_main_async())?
+}
+
+async fn run_main_async() -> HzResult<()> {
     let mut cleanup = TerminalCleanup::install()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     let mut dirty = true;
 
-    loop {
-        if dirty {
-            terminal.draw(draw_main)?;
-            dirty = false;
-        }
-
-        if !event::poll(MAIN_EVENT_POLL)? {
-            continue;
-        }
-
-        match event::read()? {
-            Event::Key(key)
-                if key.code == KeyCode::Esc
-                    || key.code == KeyCode::Char('q')
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)) =>
-            {
-                break;
+    {
+        let mut events = TerminalEventReader::start("hz-main-events")?;
+        loop {
+            if dirty {
+                terminal.draw(draw_main)?;
+                dirty = false;
             }
-            Event::Resize(_, _) => dirty = true,
-            _ => {}
+
+            let Some(event) = events.read_timeout(MAIN_EVENT_POLL).await? else {
+                continue;
+            };
+
+            match event {
+                Event::Key(key)
+                    if key.code == KeyCode::Char('q')
+                        || (key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)) =>
+                {
+                    break;
+                }
+                Event::Resize(_, _) => dirty = true,
+                _ => {}
+            }
         }
     }
 

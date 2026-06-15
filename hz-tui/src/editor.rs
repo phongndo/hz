@@ -3,18 +3,15 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
-    time::Duration,
 };
 
 use crossterm::{
     cursor::Show,
-    event::{self, DisableMouseCapture, EnableMouseCapture},
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use hz_core::HzResult;
-
-const EDITOR_EVENT_DRAIN_LIMIT: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EditorTarget {
@@ -124,14 +121,9 @@ impl SuspendedTerminal {
 }
 
 fn drain_pending_editor_events() -> io::Result<()> {
-    for _ in 0..EDITOR_EVENT_DRAIN_LIMIT {
-        if !event::poll(Duration::ZERO)? {
-            break;
-        }
-
-        let _ = event::read()?;
-    }
-
+    // The diff view owns terminal input while it is running. Avoid draining
+    // input here; transient editor quit keys are filtered by DiffApp after
+    // resume.
     Ok(())
 }
 

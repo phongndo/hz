@@ -1,11 +1,13 @@
 mod app;
 mod controls;
 mod editor;
+mod event_reader;
 mod live_diff;
 mod main_app;
 mod model;
 mod render;
 mod run;
+mod runtime;
 mod search;
 mod syntax;
 #[cfg(test)]

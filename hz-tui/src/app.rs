@@ -3,11 +3,7 @@ use std::{
     fs,
     ops::Range,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        mpsc::{self, Receiver, TryRecvError},
-    },
-    thread,
+    sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -15,11 +11,12 @@ use std::{
 use std::os::unix::fs::MetadataExt;
 
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use hz_core::HzResult;
 use hz_diff::{Changeset, DiffOptions, DiffScope, DiffSource, DiffStats};
 use hz_syntax::{HighlightedLine, SyntaxLimits, SyntaxSettings};
+use tokio::sync::mpsc::{self, UnboundedReceiver as Receiver, error::TryRecvError};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
@@ -30,6 +27,7 @@ use crate::{
         diff_choice_shortcut, diff_stats_for_files,
     },
     editor::{EditorTarget, configured_editor, open_editor, repo_file_path},
+    event_reader::TerminalEventReader,
     live_diff::{LiveDiff, LiveDiffReload, live_diff_supported},
     model::{
         ContextExpansionDirection, ContextKey, ContextSourceEntry, ContextSourceKey, UiModel,
@@ -41,6 +39,7 @@ use crate::{
         sidebar::max_file_sidebar_width,
         text::fit_padded,
     },
+    runtime,
     search::{DiffSearchIndex, DiffSearchResult, grep_match_rows},
     syntax::{
         DiffSide, InlineHunkEmphasisCache, InlineHunkKey, InlineRange, LruCache, SyntaxPosition,
@@ -86,6 +85,11 @@ pub(crate) enum EditorReloadBehavior {
     None,
     ScopedAsync,
     Sync,
+}
+
+struct FocusedEditorLaunch {
+    target: EditorTarget,
+    editor: String,
 }
 
 pub(crate) struct EditorReloadWorker {
@@ -166,18 +170,20 @@ pub(crate) fn file_changed_since(path: &Path, before: Option<FileFingerprint>) -
     }
 }
 
-pub(crate) fn run_loop(
+pub(crate) async fn run_loop(
     terminal: &mut CrosstermTerminal,
     app: &mut DiffApp,
     live_updates: bool,
     live_diff: &mut Option<LiveDiff>,
 ) -> HzResult<()> {
+    let mut events = TerminalEventReader::start("hz-diff-events")?;
+
     loop {
         sync_live_diff(live_diff, app, live_updates);
         app.expire_notice(Instant::now());
         drain_live_reloads(
             app,
-            live_diff.as_ref().map(|live_diff| &live_diff.reload_rx),
+            live_diff.as_mut().map(|live_diff| &mut live_diff.reload_rx),
         );
         app.drain_pending_diff_load();
         app.start_due_filter_apply();
@@ -196,28 +202,36 @@ pub(crate) fn run_loop(
             continue;
         }
 
-        if !event::poll(app.event_poll())? {
-            continue;
-        }
-
-        let mut should_quit = false;
-        for _ in 0..MAX_READY_EVENTS_PER_FRAME {
-            if handle_event(app, event::read()?, live_diff)? {
-                should_quit = true;
-                break;
-            }
-
-            if !event::poll(Duration::ZERO)? {
-                break;
-            }
-        }
-
-        if should_quit {
+        if let Some(event) = events.read_timeout(app.event_poll()).await?
+            && handle_ready_events(app, live_diff, event, &mut events)?
+        {
             break;
         }
     }
 
     Ok(())
+}
+
+fn handle_ready_events(
+    app: &mut DiffApp,
+    live_diff: &mut Option<LiveDiff>,
+    first_event: Event,
+    events: &mut TerminalEventReader,
+) -> HzResult<bool> {
+    if handle_event(app, first_event, live_diff, events)? {
+        return Ok(true);
+    }
+
+    for _ in 1..MAX_READY_EVENTS_PER_FRAME {
+        let Some(event) = events.try_read()? else {
+            break;
+        };
+        if handle_event(app, event, live_diff, events)? {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 pub(crate) fn sync_live_diff(
@@ -259,7 +273,7 @@ pub(crate) fn sync_live_diff(
 
 pub(crate) fn drain_live_reloads(
     app: &mut DiffApp,
-    live_reload_rx: Option<&Receiver<LiveDiffReload>>,
+    live_reload_rx: Option<&mut Receiver<LiveDiffReload>>,
 ) {
     let Some(live_reload_rx) = live_reload_rx else {
         return;
@@ -284,11 +298,16 @@ pub(crate) fn handle_event(
     app: &mut DiffApp,
     event: Event,
     live_diff: &mut Option<LiveDiff>,
+    events: &mut TerminalEventReader,
 ) -> HzResult<bool> {
     match event {
         Event::Key(key) if app.ignore_post_editor_quit_key(key, Instant::now()) => Ok(false),
         Event::Key(key) if is_ctrl_g_key(key) && app.editor_shortcut_available() => {
-            app.open_focused_hunk_in_editor_with_live_diff(live_diff);
+            if let Some(editor) = app.prepare_focused_hunk_editor() {
+                let paused_events = events.pause();
+                app.open_prepared_hunk_in_editor(editor, Some(live_diff));
+                paused_events.resume()?;
+            }
             Ok(false)
         }
         Event::Key(key) if app.handle_key(key)? => Ok(true),
@@ -310,7 +329,6 @@ pub(crate) fn is_ctrl_g_key(key: KeyEvent) -> bool {
 
 pub(crate) fn is_quit_key(key: KeyEvent) -> bool {
     is_plain_char_key(key, 'q')
-        || key.code == KeyCode::Esc
         || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
 }
 
@@ -807,7 +825,6 @@ impl DiffApp {
 
         match key.code {
             KeyCode::Esc if self.filters_active() => self.clear_all_filters(),
-            KeyCode::Esc => return Ok(true),
             KeyCode::Char('q') => return Ok(true),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_or_focus_hunk(1),
             KeyCode::Up | KeyCode::Char('k') => self.scroll_or_focus_hunk(-1),
@@ -827,10 +844,12 @@ impl DiffApp {
             KeyCode::Char('f') => self.open_filter_input(DiffFilterKind::File),
             KeyCode::Char('/') => self.open_filter_input(DiffFilterKind::Grep),
             KeyCode::Char('n') if !self.grep_filter.is_empty() => self.move_grep_match(1),
-            KeyCode::Char('p') if !self.grep_filter.is_empty() => self.move_grep_match(-1),
-            KeyCode::Char('N') if !self.grep_filter.is_empty() => self.move_grep_match(-1),
-            KeyCode::Char('n') | KeyCode::Char('J') => self.move_file(1),
-            KeyCode::Char('p') | KeyCode::Char('K') => self.move_file(-1),
+            KeyCode::Char('p') | KeyCode::Char('N') if !self.grep_filter.is_empty() => {
+                self.move_grep_match(-1);
+            }
+            KeyCode::Char('n') | KeyCode::Char('p') | KeyCode::Char('N') => {}
+            KeyCode::Char('J') => self.move_file(1),
+            KeyCode::Char('K') => self.move_file(-1),
             KeyCode::Char('b') => self.toggle_file_sidebar(),
             KeyCode::Char(']') => self.next_hunk(),
             KeyCode::Char('[') => self.previous_hunk(),
@@ -984,9 +1003,9 @@ impl DiffApp {
         success_notice: impl Into<String>,
         error_prefix: impl Into<String>,
     ) {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::unbounded_channel();
         let load_options = options.clone();
-        thread::spawn(move || {
+        runtime::spawn_detached_blocking(move || {
             let _ = tx.send(hz_diff::load_review_ref(&load_options));
         });
 
@@ -1002,7 +1021,7 @@ impl DiffApp {
     pub(crate) fn drain_pending_diff_load(&mut self) {
         let Some(outcome) =
             self.pending_diff_load
-                .as_ref()
+                .as_mut()
                 .and_then(|pending| match pending.rx.try_recv() {
                     Ok(result) => Some(Some(result)),
                     Err(TryRecvError::Empty) => None,
@@ -2187,26 +2206,30 @@ impl DiffApp {
     }
 
     pub(crate) fn open_focused_hunk_in_editor(&mut self) {
-        self.open_focused_hunk_in_editor_inner(None);
+        if let Some(editor) = self.prepare_focused_hunk_editor() {
+            self.open_prepared_hunk_in_editor(editor, None);
+        }
     }
 
-    pub(crate) fn open_focused_hunk_in_editor_with_live_diff(
-        &mut self,
-        live_diff: &mut Option<LiveDiff>,
-    ) {
-        self.open_focused_hunk_in_editor_inner(Some(live_diff));
-    }
-
-    fn open_focused_hunk_in_editor_inner(&mut self, mut live_diff: Option<&mut Option<LiveDiff>>) {
+    fn prepare_focused_hunk_editor(&mut self) -> Option<FocusedEditorLaunch> {
         let Some(target) = self.focused_hunk_editor_target() else {
             self.set_notice("no editable focused hunk");
-            return;
+            return None;
         };
         let Some(editor) = configured_editor() else {
             self.set_notice("set $EDITOR to edit focused hunk");
-            return;
+            return None;
         };
 
+        Some(FocusedEditorLaunch { target, editor })
+    }
+
+    fn open_prepared_hunk_in_editor(
+        &mut self,
+        editor: FocusedEditorLaunch,
+        mut live_diff: Option<&mut Option<LiveDiff>>,
+    ) {
+        let FocusedEditorLaunch { target, editor } = editor;
         self.diff_menu_open = false;
         self.close_branch_menu();
         self.terminal_clear_requested = true;
@@ -2283,8 +2306,8 @@ impl DiffApp {
         let options = self.options.clone();
         let path = request.path;
         let pathspecs = request.pathspecs;
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
+        let (tx, rx) = mpsc::unbounded_channel();
+        runtime::spawn_detached_blocking(move || {
             let changeset = hz_diff::load_review_ref_paths(&options, &pathspecs);
             let _ = tx.send(EditorScopedReload { path, changeset });
         });
@@ -2303,7 +2326,7 @@ impl DiffApp {
     }
 
     pub(crate) fn drain_editor_reload(&mut self) -> bool {
-        let Some(worker) = self.editor_reload.take() else {
+        let Some(mut worker) = self.editor_reload.take() else {
             return false;
         };
 
@@ -2325,11 +2348,11 @@ impl DiffApp {
                 }
                 true
             }
-            Err(mpsc::TryRecvError::Empty) => {
+            Err(TryRecvError::Empty) => {
                 self.editor_reload = Some(worker);
                 false
             }
-            Err(mpsc::TryRecvError::Disconnected) => {
+            Err(TryRecvError::Disconnected) => {
                 self.set_error_log("edited file reload failed");
                 true
             }
@@ -2348,12 +2371,24 @@ impl DiffApp {
 
     pub(crate) fn set_viewport_rows(&mut self, rows: usize) {
         let rows = rows.max(1);
-        if self.viewport_rows == rows {
+        let previous_rows = self.viewport_rows;
+        if previous_rows == rows {
             return;
         }
 
+        let centered_grep_match_row = self.selected_grep_match_row().filter(|row| {
+            let previous_centered_scroll = row
+                .saturating_sub(viewport_center_offset(previous_rows))
+                .min(max_scroll_for_viewport(self.model.len(), previous_rows));
+            self.scroll == previous_centered_scroll
+        });
+
         self.viewport_rows = rows;
-        self.set_scroll(self.scroll);
+        if let Some(row) = centered_grep_match_row {
+            self.set_scroll_centered_on(row);
+        } else {
+            self.set_scroll(self.scroll);
+        }
         self.clamp_file_sidebar_scroll(self.visible_file_sidebar_rows());
     }
 
@@ -2688,6 +2723,10 @@ impl DiffApp {
     }
 
     pub(crate) fn clear_all_filters(&mut self) {
+        self.grep_matches.clear();
+        self.grep_matches_truncated = false;
+        self.selected_grep_match = None;
+
         if self.file_filter.is_empty() && self.grep_filter.is_empty() {
             self.file_filter_input.clear();
             self.grep_filter_input.clear();
@@ -2775,8 +2814,8 @@ impl DiffApp {
         let worker_file_filter = file_filter.clone();
         let worker_grep_filter = grep_filter.clone();
         let search_index = Arc::clone(&self.search_index);
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
+        let (tx, rx) = mpsc::unbounded_channel();
+        runtime::spawn_detached_blocking(move || {
             let result = search_index.search_with_grep_match_limit(
                 &worker_file_filter,
                 &worker_grep_filter,
@@ -2799,7 +2838,7 @@ impl DiffApp {
     pub(crate) fn drain_filter_worker(&mut self) {
         let Some(outcome) =
             self.filter_worker
-                .as_ref()
+                .as_mut()
                 .and_then(|worker| match worker.rx.try_recv() {
                     Ok(result) => Some(Some(result)),
                     Err(TryRecvError::Empty) => None,
@@ -2914,6 +2953,14 @@ impl DiffApp {
 
     #[cfg(test)]
     pub(crate) fn current_grep_match_row(&self) -> Option<usize> {
+        self.selected_grep_match_row()
+    }
+
+    fn selected_grep_match_row(&self) -> Option<usize> {
+        if self.grep_filter.is_empty() {
+            return None;
+        }
+
         self.selected_grep_match
             .and_then(|index| self.grep_matches.get(index).copied())
     }
@@ -2932,6 +2979,11 @@ impl DiffApp {
     }
 
     pub(crate) fn move_grep_match(&mut self, delta: isize) {
+        if self.grep_filter.is_empty() {
+            self.selected_grep_match = None;
+            return;
+        }
+
         if self.grep_matches.is_empty() {
             self.selected_grep_match = None;
             self.set_notice("no grep matches");
@@ -2960,11 +3012,7 @@ impl DiffApp {
     }
 
     pub(crate) fn set_scroll_for_grep_navigation(&mut self, row: usize) {
-        if row >= self.scroll && row < self.scroll.saturating_add(self.viewport_rows) {
-            self.set_scroll_with_grep_sync(row, false, HunkFocusScrollBehavior::ClearOnScroll);
-        } else {
-            self.set_scroll_centered_on(row);
-        }
+        self.set_scroll_centered_on(row);
     }
 
     pub(crate) fn syntax_line(
