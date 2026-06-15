@@ -1,10 +1,8 @@
 [workspace]
 members = [
     "hz-cli",
-    "hz-agent",
     "hz-command",
     "hz-core",
-    "hz-daemon",
     "hz-diff",
     "hz-bench",
     "hz-git",
@@ -44,9 +42,7 @@ time = { version = "=0.3.45", default-features = false, features = ["local-offse
 unicode-width = "0.2"
 
 hz-core = { path = "hz-core" }
-hz-agent = { path = "hz-agent" }
 hz-command = { path = "hz-command" }
-hz-daemon = { path = "hz-daemon" }
 hz-diff = { path = "hz-diff" }
 hz-git = { path = "hz-git" }
 hz-syntax = { path = "hz-syntax" }

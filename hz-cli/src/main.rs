@@ -1,6 +1,5 @@
 mod args;
 mod complete;
-mod daemon;
 mod lifecycle;
 mod removal;
 mod repo_shell;
@@ -150,7 +149,6 @@ fn run() -> CliResult<()> {
                 stream_diff_to_stdout(options)
             }
         }
-        Some(Command::Daemon(args)) => daemon::daemon(args),
         Some(Command::TreeSitter { command }) => tree_sitter(command),
         Some(Command::Complete(args)) => complete(args),
     }
@@ -180,19 +178,7 @@ fn write_default_help(mut writer: impl Write) -> CliResult<()> {
 }
 
 fn run_main_tui() -> CliResult<()> {
-    let mut session = hz_daemon::attach_main_session()?;
-    let tui_result = hz_tui::run_main().map_err(CliError::from);
-    let detach_result = session.detach().map_err(CliError::from);
-
-    finish_main_tui(tui_result, detach_result)
-}
-
-fn finish_main_tui(tui_result: CliResult<()>, detach_result: CliResult<()>) -> CliResult<()> {
-    match (tui_result, detach_result) {
-        (Err(error), _) => Err(error),
-        (Ok(()), Err(error)) => Err(error),
-        (Ok(()), Ok(())) => Ok(()),
-    }
+    hz_tui::run_main().map_err(CliError::from)
 }
 
 fn stream_diff_to_stdout(options: hz_command::DiffOptions) -> CliResult<()> {

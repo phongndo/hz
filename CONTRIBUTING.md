@@ -53,12 +53,16 @@ Use the cheapest useful check first while developing:
 
 ```sh
 just setup
+just install-hooks
 just check
 just build
 just smoke
 just hz --help
 hz --help
 ```
+
+`just install-hooks` configures Git to use the repo's versioned hooks from
+`.githooks`. The pre-commit hook runs `just check` before each commit.
 
 The full local quality gate is:
 
