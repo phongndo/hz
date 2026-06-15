@@ -958,7 +958,7 @@ fn post_editor_quit_key_guard_ignores_only_transient_quit_keys() {
     assert!(
         app.ignore_post_editor_quit_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), now)
     );
-    assert!(!app.ignore_post_editor_quit_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), now));
+    assert!(app.ignore_post_editor_quit_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), now));
     assert!(!app.ignore_post_editor_quit_key(
         KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
         now
@@ -2006,7 +2006,7 @@ fn help_menu_esc_closes_without_quitting() {
 }
 
 #[test]
-fn esc_does_not_quit_diff_view() {
+fn esc_quits_diff_view_without_overlays_or_filters() {
     let changeset = changeset_with_context_lines(1);
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
 
@@ -2014,7 +2014,7 @@ fn esc_does_not_quit_diff_view() {
         .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
         .expect("Esc should be handled");
 
-    assert!(!should_quit);
+    assert!(should_quit);
 }
 
 #[test]
@@ -2032,6 +2032,22 @@ fn esc_closes_error_log_without_quitting() {
 
     assert!(!should_quit);
     assert!(app.error_log.is_none());
+}
+
+#[test]
+fn esc_closes_diff_menu_before_error_log() {
+    let changeset = changeset_with_context_lines(1);
+    let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
+    app.diff_menu_open = true;
+    app.set_error_log("reload failed");
+
+    let should_quit = app
+        .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .expect("Esc should close topmost menu");
+
+    assert!(!should_quit);
+    assert!(!app.diff_menu_open);
+    assert!(app.error_log.is_some());
 }
 
 #[test]

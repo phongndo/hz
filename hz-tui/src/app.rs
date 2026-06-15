@@ -310,6 +310,7 @@ pub(crate) fn is_ctrl_g_key(key: KeyEvent) -> bool {
 
 pub(crate) fn is_quit_key(key: KeyEvent) -> bool {
     is_plain_char_key(key, 'q')
+        || key.code == KeyCode::Esc
         || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
 }
 
@@ -777,10 +778,6 @@ impl DiffApp {
             }
         }
 
-        if key.code == KeyCode::Esc && self.close_error_log() {
-            return Ok(false);
-        }
-
         if self.diff_menu_open {
             if key.code == KeyCode::Esc {
                 self.diff_menu_open = false;
@@ -790,6 +787,10 @@ impl DiffApp {
             if key.code == KeyCode::Char('q') {
                 return Ok(true);
             }
+        }
+
+        if key.code == KeyCode::Esc && self.close_error_log() {
+            return Ok(false);
         }
 
         if let KeyCode::Char(character) = key.code {
@@ -806,7 +807,7 @@ impl DiffApp {
 
         match key.code {
             KeyCode::Esc if self.filters_active() => self.clear_all_filters(),
-            KeyCode::Esc => {}
+            KeyCode::Esc => return Ok(true),
             KeyCode::Char('q') => return Ok(true),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_or_focus_hunk(1),
             KeyCode::Up | KeyCode::Char('k') => self.scroll_or_focus_hunk(-1),
