@@ -4,7 +4,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{CONFIG_FILE, CreateWorktree, HZ_DIR, HandoffMode, HandoffWorktree, LifecycleKind};
+use crate::{
+    CONFIG_FILE, CreateWorktree, ForkWorktree, HZ_DIR, HandoffMode, HandoffWorktree, LifecycleKind,
+};
 use hz_core::{HzError, HzResult, path_utils::normalize_lexically};
 use serde::Deserialize;
 
@@ -41,6 +43,15 @@ pub(crate) fn create_worktree_with_config_defaults(
         }
     }
 
+    Ok(input)
+}
+
+pub(crate) fn fork_worktree_with_config_defaults(
+    mut input: ForkWorktree,
+) -> HzResult<ForkWorktree> {
+    if input.max_detached_worktrees.is_none() {
+        input.max_detached_worktrees = Some(configured_detached_limit(input.repo.as_deref())?);
+    }
     Ok(input)
 }
 
@@ -204,11 +215,11 @@ pub(crate) fn with_configured_handoff_limits(
 }
 
 pub(crate) fn creates_detached_worktree(input: &CreateWorktree) -> bool {
-    input.name.is_none() && input.branch.is_none()
+    input.detached || (input.name.is_none() && input.branch.is_none())
 }
 
 pub(crate) fn creates_branch_worktree(input: &CreateWorktree) -> bool {
-    input.name.is_some() || input.branch.is_some()
+    !input.detached && (input.name.is_some() || input.branch.is_some())
 }
 
 pub(crate) fn configured_detached_limit(repo: Option<&Path>) -> HzResult<usize> {

@@ -8,7 +8,7 @@ function hz
 
     set cmd $argv[1]
     switch $cmd
-        case new
+        case new fork
             for arg in $argv
                 switch $arg
                     case --json --path-only --help -h -j
@@ -223,8 +223,8 @@ complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt" -a "new path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt"
-complete -c hz -n "__hz_needs_worktree_subcommand" -a "new path cd list ls remove rm handoff"
+complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt" -a "new fork path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt"
+complete -c hz -n "__hz_needs_worktree_subcommand" -a "new fork path cd list ls remove rm handoff"
 complete -c hz -n "__hz_needs_ts_subcommand" -a "add update rm remove list ls available clean path doctor"
 complete -c hz -n "__hz_needs_daemon_subcommand" -a "start stop status run agents ls stop-agent logs send attach detach"
 complete -c hz -n "__hz_daemon_run_needs_cli" -a "pi codex claude"
@@ -233,15 +233,16 @@ complete -c hz -n "__hz_command_is cd path handoff setup cleanup" -a "(__hz_comp
 complete -c hz -n "__hz_command_is rm remove" -a "(__hz_complete_removable_worktrees)"
 complete -c hz -n "__hz_top_command_is init install shell" -a "zsh bash fish"
 complete -c hz -n "__hz_diff_position_is_revision" -a "(__hz_complete_git_refs)"
-complete -c hz -n "__hz_command_is new path cd list ls remove rm handoff init setup cleanup diff" -s r -l repo -r -F
-complete -c hz -n "__hz_command_is new" -s p -l path -r -F
+complete -c hz -n "__hz_command_is new fork path cd list ls remove rm handoff init setup cleanup diff" -s r -l repo -r -F
+complete -c hz -n "__hz_command_is new fork" -s p -l path -r -F
 complete -c hz -n "__hz_command_is new" -s B -l base -r -a "(__hz_complete_git_refs)"
 complete -c hz -n "__hz_command_is new" -s b -l branch -r -a "(__hz_complete_git_refs)"
-complete -c hz -n "__hz_command_is new handoff" -l max-detached -r
+complete -c hz -n "__hz_command_is new fork handoff" -l max-detached -r
 complete -c hz -n "__hz_command_is new handoff" -l max-branch-worktrees -r
 complete -c hz -n "__hz_command_is new" -l no-setup
 complete -c hz -n "__hz_command_is new" -l setup
-complete -c hz -n "__hz_command_is new path cd list ls remove rm handoff" -s j -l json
+complete -c hz -n "__hz_command_is fork" -l no-diff
+complete -c hz -n "__hz_command_is new fork path cd list ls remove rm handoff" -s j -l json
 complete -c hz -n "__hz_command_is new remove rm" -s d -l debug
 complete -c hz -n "__hz_command_is remove rm" -s f -l force
 complete -c hz -n "__hz_command_is remove rm" -l yes
@@ -270,7 +271,7 @@ complete -c hz -n "__hz_top_command_is update" -l target-version -r
 complete -c hz -n "__hz_top_command_is update" -l install-dir -r -F
 complete -c hz -n "__hz_top_command_is update" -l force-self-update
 complete -c hz -s h -l help
-complete -c hz -n "not __fish_seen_subcommand_from new path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt" -s V -l version
+complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt" -s V -l version
 
 complete -c hzcd -f
 complete -c hzcd -a "(__hz_complete_worktree_targets)"

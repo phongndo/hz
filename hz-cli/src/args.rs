@@ -22,6 +22,7 @@ examples:
   hz init
   hz install zsh
   hz new feature/ui
+  hz fork
   hz ls
   hz rm -f feature/ui
   hz setup feature/ui
@@ -65,6 +66,8 @@ pub(crate) enum Command {
     },
     #[command(about = "Create an isolated Git worktree for a task or agent")]
     New(NewWorktreeArgs),
+    #[command(about = "Fork the current worktree state into a detached worktree")]
+    Fork(ForkWorktreeArgs),
     #[command(alias = "cd", about = "Print the directory for a worktree")]
     Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
@@ -167,6 +170,8 @@ pub(crate) struct TreeSitterAvailableArgs {
 pub(crate) enum WorktreeCommand {
     #[command(about = "Create an isolated Git worktree for a task or agent")]
     New(NewWorktreeArgs),
+    #[command(about = "Fork the current worktree state into a detached worktree")]
+    Fork(ForkWorktreeArgs),
     #[command(alias = "cd", about = "Print the directory for a worktree")]
     Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
@@ -200,6 +205,23 @@ pub(crate) struct NewWorktreeArgs {
     pub(crate) setup: bool,
     #[arg(long)]
     pub(crate) no_setup: bool,
+    #[arg(long, hide = true)]
+    pub(crate) path_only: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ForkWorktreeArgs {
+    pub(crate) name: Option<String>,
+    #[arg(short = 'r', long)]
+    pub(crate) repo: Option<PathBuf>,
+    #[arg(short = 'p', long)]
+    pub(crate) path: Option<PathBuf>,
+    #[arg(long)]
+    pub(crate) no_diff: bool,
+    #[arg(long)]
+    pub(crate) max_detached: Option<usize>,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
     #[arg(long, hide = true)]
     pub(crate) path_only: bool,
 }

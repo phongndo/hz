@@ -25,8 +25,9 @@ See [docs/roadmap.md](docs/roadmap.md) for the product direction.
 ## What hz does today
 
 - Creates isolated Git worktrees for parallel human or AI-agent tasks.
-- Installs shell integration so `hz new`, `hz cd`, and `hz handoff` can change
-  your current directory.
+- Forks the current worktree state into a detached scratch worktree.
+- Installs shell integration so `hz new`, `hz fork`, `hz cd`, and `hz handoff`
+  can change your current directory.
 - Applies uncommitted changes between linked worktrees without forcing a commit.
 - Moves branch ownership between worktrees when both sides are clean.
 - Runs repo-local setup and cleanup hooks on explicit opt-in commands for reproducible agent workspaces.
@@ -168,6 +169,7 @@ to create a branch-backed worktree:
 
 ```sh
 hz new fix-login
+hz fork
 hz new
 hz ls
 hz path fix-login
@@ -181,6 +183,18 @@ hz rm fix-login
 `hz new` without a name generates a four-character lowercase alphanumeric handle
 and leaves the worktree on a detached `HEAD`. Managed worktrees are registered
 in `~/.hz/registry.json`.
+
+`hz fork` creates a new detached worktree at the current `HEAD` and applies the
+current worktree diff there, including untracked files. The source worktree is
+left unchanged. Pass an optional handle to name the detached fork, or
+`--no-diff` to fork only the current `HEAD` without copying local changes:
+
+```sh
+hz fork
+hz fork alt-try
+hz fork --no-diff
+```
+
 `hz ls`, `hz cd`, and `hz rm` also detect unmanaged Git worktrees created by
 other tools. Removing an unmanaged worktree outside `~/.hz/worktrees/<repo>/`
 asks for confirmation because the path is not in `hz`'s worktree namespace. Add
@@ -233,8 +247,9 @@ hz install fish
 ```
 
 For zsh, this updates `~/.zshrc`. Restart your shell or run `source ~/.zshrc`
-after install. With the integration loaded, plain `hz new ...` creates the
-worktree and changes into it, and `hz cd` returns to the local repo root.
+after install. With the integration loaded, plain `hz new ...` or `hz fork ...`
+creates the worktree and changes into it, and `hz cd` returns to the local repo
+root.
 `--json`, `--path-only`, and help calls still pass through to the real binary
 without changing directories.
 

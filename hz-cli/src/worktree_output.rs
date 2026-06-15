@@ -13,7 +13,7 @@ const MONTH_ABBREVIATIONS: [&str; 12] = [
 
 use crate::{
     CliResult,
-    args::{ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs},
+    args::{ForkWorktreeArgs, ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs},
     removal::worktree_branch_or_handle,
     write_stderr, write_stdout,
 };
@@ -28,6 +28,7 @@ pub(crate) fn create_worktree(args: NewWorktreeArgs) -> CliResult<()> {
             path: args.path,
             base: args.base,
             branch: args.branch,
+            detached: false,
             max_detached_worktrees: args.max_detached,
             max_branch_worktrees: args.max_branch_worktrees,
         },
@@ -49,6 +50,27 @@ pub(crate) fn create_worktree(args: NewWorktreeArgs) -> CliResult<()> {
         ))?;
     } else {
         print_warnings(&created.warnings, io::stderr().is_terminal())?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn fork_worktree(args: ForkWorktreeArgs) -> CliResult<()> {
+    let forked = hz_command::fork_worktree(hz_command::ForkWorktree {
+        name: args.name,
+        repo: args.repo,
+        path: args.path,
+        include_diff: !args.no_diff,
+        max_detached_worktrees: args.max_detached,
+    })?;
+
+    if args.json {
+        write_stdout(format_args!("{}\n", serde_json::to_string_pretty(&forked)?))?;
+    } else if args.path_only {
+        write_stdout(format_args!("{}\n", forked.worktree.path.display()))?;
+        print_warnings(&forked.worktree.warnings, io::stderr().is_terminal())?;
+    } else {
+        print_warnings(&forked.worktree.warnings, io::stderr().is_terminal())?;
     }
 
     Ok(())

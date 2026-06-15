@@ -8,7 +8,7 @@ hz() {
 
   local cmd="$1"
   case "$cmd" in
-    new)
+    new|fork)
       local arg
       for arg in "$@"; do
         case "$arg" in
@@ -68,8 +68,8 @@ hzlocal() {
   hz cd local "$@"
 }
 
-_hz_top_commands="new path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt"
-_hz_worktree_commands="new path cd list ls remove rm handoff"
+_hz_top_commands="new fork path cd list ls remove rm handoff init install setup cleanup shell update diff daemon ts tree-sitter worktree wt"
+_hz_worktree_commands="new fork path cd list ls remove rm handoff"
 _hz_ts_commands="add update rm remove list ls available clean path doctor"
 _hz_daemon_commands="start stop status run agents ls stop-agent logs send attach detach"
 _hz_ai_clis="pi codex claude"
@@ -148,14 +148,14 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init|diff)
+        new|fork|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init|diff)
           _hz_complete_dirs "$current"
           return 0
           ;;
       esac
       ;;
     -p|--path)
-      if [[ "$cmd" == "new" ]]; then
+      if [[ "$cmd" == "new" || "$cmd" == "fork" ]]; then
         _hz_complete_dirs "$current"
         return 0
       fi
@@ -210,7 +210,14 @@ _hz_complete_option_value() {
     --target-version)
       [[ "$cmd" == "update" ]] && return 0
       ;;
-    --max-detached|--max-branch-worktrees)
+    --max-detached)
+      case "$cmd" in
+        new|fork|handoff)
+          return 0
+          ;;
+      esac
+      ;;
+    --max-branch-worktrees)
       case "$cmd" in
         new|handoff)
           return 0
@@ -233,6 +240,9 @@ _hz_complete_command_args() {
   case "$cmd" in
     new)
       [[ "$current" == -* ]] && _hz_reply "-r --repo -p --path -B --base -b --branch --max-detached --max-branch-worktrees -j --json -d --debug --setup --no-setup -h --help" "$current"
+      ;;
+    fork)
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -p --path --no-diff --max-detached -j --json -h --help" "$current"
       ;;
     path|cd)
       if [[ "$current" == -* ]]; then

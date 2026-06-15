@@ -222,6 +222,7 @@ pub(crate) fn create_handoff_destination(
             path: None,
             base: None,
             branch: None,
+            detached: false,
             max_detached_worktrees,
             max_branch_worktrees,
         },

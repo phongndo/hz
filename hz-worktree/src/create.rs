@@ -33,7 +33,16 @@ pub(crate) fn create_with_registry_and_deferred_prune(
         Some(name) => name,
         None => generate_unique_handle(registry, &repo)?,
     };
-    let branch = derive_worktree_branch(name.as_deref(), input.branch.as_deref());
+    if input.detached && input.branch.is_some() {
+        return Err(HzError::Usage(
+            "detached worktree cannot also create a branch".to_owned(),
+        ));
+    }
+    let branch = if input.detached {
+        None
+    } else {
+        derive_worktree_branch(name.as_deref(), input.branch.as_deref())
+    };
     validate_worktree_name("worktree handle", &handle)?;
     if let Some(branch) = &branch {
         validate_worktree_name("worktree branch", branch)?;

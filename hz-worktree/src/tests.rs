@@ -326,6 +326,7 @@ fn create_rolls_back_git_state_when_registry_save_fails() {
             path: Some(destination.clone()),
             base: None,
             branch: None,
+            detached: false,
             max_detached_worktrees: None,
             max_branch_worktrees: None,
         },
@@ -390,6 +391,7 @@ fn deferred_create_prune_does_not_remove_candidates_until_run() {
             path: Some(new_destination),
             base: None,
             branch: None,
+            detached: false,
             max_detached_worktrees: None,
             max_branch_worktrees: Some(1),
         },
@@ -416,6 +418,54 @@ fn deferred_create_prune_does_not_remove_candidates_until_run() {
     );
     assert!(!git_worktree_listed(&repo, &old_destination));
     assert!(git_worktree_listed(&repo, &created.path));
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn fork_copies_current_diff_to_named_detached_worktree() {
+    let test_dir = test_dir("hz-worktree-fork-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    let mut registry = Registry::default();
+
+    fs::write(repo.join("file.txt"), "base\nchanged\n").expect("tracked file should be changed");
+    fs::write(repo.join("new.txt"), "new\n").expect("untracked file should be written");
+
+    let forked = fork_with_registry(
+        &mut registry,
+        ForkWorktree {
+            name: Some("copy".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(destination),
+            include_diff: true,
+            max_detached_worktrees: Some(0),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(forked.worktree.handle, "copy");
+    assert_eq!(forked.worktree.branch, None);
+    assert!(forked.changed);
+    assert_eq!(hz_git::current_branch(&forked.worktree.path).unwrap(), None);
+    assert!(!hz_git::branch_exists(&repo, "copy").unwrap());
+    assert_eq!(
+        fs::read_to_string(forked.worktree.path.join("file.txt")).unwrap(),
+        "base\nchanged\n"
+    );
+    assert_eq!(
+        fs::read_to_string(forked.worktree.path.join("new.txt")).unwrap(),
+        "new\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("file.txt")).unwrap(),
+        "base\nchanged\n"
+    );
+    assert!(repo.join("new.txt").exists());
 
     fs::remove_dir_all(test_dir).expect("test directory should be removed");
 }
