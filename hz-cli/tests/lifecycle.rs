@@ -225,8 +225,9 @@ fn fork_copies_dirty_changes_by_default() {
     fs::write(repo.join(".hz/hz.toml"), "# changed\n").expect("tracked file should be changed");
     fs::write(repo.join("untracked.txt"), "untracked\n").expect("untracked file should be written");
 
-    run_hz(
+    let output = run_hz_output(
         &home,
+        None,
         &[
             "fork",
             "dirty-copy",
@@ -234,9 +235,21 @@ fn fork_copies_dirty_changes_by_default() {
             repo.to_str().unwrap(),
             "--path",
             destination.to_str().unwrap(),
+            "--json",
         ],
     );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("fork output should be json");
 
+    assert_eq!(json["changed"], true);
+    assert_eq!(json["worktree"]["handle"], "dirty-copy");
+    assert_eq!(
+        json["worktree"]["path"],
+        fs::canonicalize(&destination)
+            .expect("destination should exist")
+            .to_string_lossy()
+            .as_ref()
+    );
     assert_eq!(
         fs::read_to_string(destination.join(".hz/hz.toml"))
             .expect("forked tracked file should exist"),
