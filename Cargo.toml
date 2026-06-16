@@ -1,13 +1,10 @@
 [workspace]
 members = [
     "hz-cli",
+    "hz-bench",
     "hz-command",
     "hz-core",
-    "hz-diff",
-    "hz-bench",
     "hz-git",
-    "hz-syntax",
-    "hz-tui",
     "hz-worktree",
 ]
 resolver = "3"
@@ -17,7 +14,7 @@ version = "0.3.3"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-description = "Fast terminal workflow for parallel development with agents."
+description = "Fast terminal workspace manager for parallel development with agents."
 repository = "https://github.com/phongndo/hz"
 keywords = ["ai", "agents", "cli", "terminal", "workflow"]
 categories = ["command-line-utilities", "development-tools"]
@@ -26,28 +23,14 @@ categories = ["command-line-utilities", "development-tools"]
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.28.1"
 fs2 = "0.4"
-fff-grep = "0.9.5-nightly.ec57eb0"
-memchr = "2.7"
 getrandom = "0.2.17"
-notify = "8"
-ratatui = "0.29"
-rustix = { version = "0.38.44", default-features = false, features = ["std", "termios"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.11"
-shlex = "2.0.1"
-toml = "1.1"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time"] }
-tree-sitter-highlight = "0.26.9"
-tree-sitter-language-pack = "1.9.0-rc.18"
-# time 0.3.47 raises MSRV above the workspace Rust 1.85.
 time = { version = "=0.3.45", default-features = false, features = ["local-offset", "std"] }
+toml = "1.1"
 unicode-width = "0.2"
 
 hz-core = { path = "hz-core" }
 hz-command = { path = "hz-command" }
-hz-diff = { path = "hz-diff" }
 hz-git = { path = "hz-git" }
-hz-syntax = { path = "hz-syntax" }
-hz-tui = { path = "hz-tui" }
 hz-worktree = { path = "hz-worktree" }

@@ -7,6 +7,8 @@ use crate::{
 };
 use hz_core::{HzError, HzResult};
 
+const MAX_STATUS_WORKERS: usize = 8;
+
 pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
     let mut entries = list_targets(input)?;
     refresh_worktree_state(&mut entries);
@@ -106,25 +108,80 @@ pub(crate) fn sort_worktree_entries(entries: &mut [WorktreeEntry]) {
 }
 
 pub(crate) fn refresh_worktree_state(entries: &mut [WorktreeEntry]) {
-    for entry in entries {
-        match hz_git::worktree_state(&entry.path) {
-            Ok(state) => {
-                entry.status = if state.dirty {
-                    WorktreeStatus::Dirty
-                } else {
-                    WorktreeStatus::Clean
-                };
-                entry.modified_at_unix = if state.modified_at_unix == 0 {
-                    entry.created_at_unix
-                } else {
-                    state.modified_at_unix
-                };
-            }
-            Err(_) => {
-                entry.status = WorktreeStatus::Unknown;
-                entry.modified_at_unix = worktree_path_timestamp(&entry.path);
+    let states = refreshed_worktree_states(entries);
+    for (entry, state) in entries.iter_mut().zip(states) {
+        entry.status = state.status;
+        entry.modified_at_unix = state.modified_at_unix;
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RefreshedWorktreeState {
+    status: WorktreeStatus,
+    modified_at_unix: u64,
+}
+
+fn refreshed_worktree_states(entries: &[WorktreeEntry]) -> Vec<RefreshedWorktreeState> {
+    let worker_count = status_worker_count(entries.len());
+    if worker_count == 1 {
+        return entries.iter().map(refresh_entry_state).collect();
+    }
+
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for worker_index in 0..worker_count {
+            handles.push(scope.spawn(move || {
+                entries
+                    .iter()
+                    .enumerate()
+                    .skip(worker_index)
+                    .step_by(worker_count)
+                    .map(|(index, entry)| (index, refresh_entry_state(entry)))
+                    .collect::<Vec<_>>()
+            }));
+        }
+
+        let mut states = vec![
+            RefreshedWorktreeState {
+                status: WorktreeStatus::Unknown,
+                modified_at_unix: 0,
+            };
+            entries.len()
+        ];
+        for handle in handles {
+            for (index, state) in handle.join().expect("worktree status worker panicked") {
+                states[index] = state;
             }
         }
+        states
+    })
+}
+
+fn status_worker_count(entry_count: usize) -> usize {
+    let available = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    entry_count.min(available).clamp(1, MAX_STATUS_WORKERS)
+}
+
+fn refresh_entry_state(entry: &WorktreeEntry) -> RefreshedWorktreeState {
+    match hz_git::worktree_state(&entry.path) {
+        Ok(state) => RefreshedWorktreeState {
+            status: if state.dirty {
+                WorktreeStatus::Dirty
+            } else {
+                WorktreeStatus::Clean
+            },
+            modified_at_unix: if state.modified_at_unix == 0 {
+                entry.created_at_unix
+            } else {
+                state.modified_at_unix
+            },
+        },
+        Err(_) => RefreshedWorktreeState {
+            status: WorktreeStatus::Unknown,
+            modified_at_unix: worktree_path_timestamp(&entry.path),
+        },
     }
 }
 

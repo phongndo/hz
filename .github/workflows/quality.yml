@@ -16,7 +16,6 @@ concurrency:
 env:
   ACTIONLINT_VERSION: 1.7.12
   CARGO_TERM_COLOR: always
-  TSLP_VERSION: 1.9.0-rc.18
 
 jobs:
   actionlint:
@@ -77,13 +76,6 @@ jobs:
       - name: Install Rust 1.85
         uses: dtolnay/rust-toolchain@1.85
 
-      - name: Fetch tree-sitter parser source bundle
-        uses: ./.github/actions/fetch-parser-bundle
-        with:
-          tslp-version: ${{ env.TSLP_VERSION }}
-          github-token: ${{ github.token }}
-          target-dir: .cache/tree-sitter-language-pack
-
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -107,13 +99,6 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Fetch tree-sitter parser source bundle
-        uses: ./.github/actions/fetch-parser-bundle
-        with:
-          tslp-version: ${{ env.TSLP_VERSION }}
-          github-token: ${{ github.token }}
-          target-dir: .cache/tree-sitter-language-pack
-
       - name: Check
         run: cargo check --workspace --all-targets --all-features --locked
 
@@ -126,19 +111,17 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets --all-features --locked
 
-      - name: Benchmark smoke
-        run: |
-          cargo run -p hz-bench --locked -- fixtures \
-            --out "$RUNNER_TEMP/hz-bench" \
-            --scenario many-small-files \
-            --force
-          cargo run -p hz-bench --locked -- measure \
-            --fixtures "$RUNNER_TEMP/hz-bench" \
-            --scenario many-small-files \
-            --json
-
       - name: Build
         run: cargo build --workspace --all-targets --all-features --locked
+
+      - name: Benchmark smoke
+        run: |
+          cargo run -p hz-bench --locked -- cmd \
+            --hz target/debug/hz \
+            --worktrees 2 \
+            --warmup 0 \
+            --iterations 1 \
+            --json
 
       - name: Smoke installer and update
         run: scripts/smoke-installer-update

@@ -68,9 +68,8 @@ hzlocal() {
   hz cd local "$@"
 }
 
-_hz_top_commands="new fork path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt"
+_hz_top_commands="new fork path cd list ls remove rm handoff init install setup cleanup shell update worktree wt"
 _hz_worktree_commands="new fork path cd list ls remove rm handoff"
-_hz_ts_commands="add update rm remove list ls available clean path doctor"
 _hz_shells="zsh bash fish"
 
 _hz_reply() {
@@ -146,7 +145,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init|diff)
+        new|fork|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init)
           _hz_complete_dirs "$current"
           return 0
           ;;
@@ -174,7 +173,7 @@ _hz_complete_option_value() {
       ;;
     -b)
       case "$cmd" in
-        new|diff)
+        new)
           _hz_git_ref_reply "$current"
           return 0
           ;;
@@ -182,7 +181,7 @@ _hz_complete_option_value() {
       ;;
     --base)
       case "$cmd" in
-        new|diff)
+        new)
           _hz_git_ref_reply "$current"
           return 0
           ;;
@@ -195,15 +194,6 @@ _hz_complete_option_value() {
           return 0
           ;;
       esac
-      ;;
-    --patch)
-      if [[ "$cmd" == "diff" ]]; then
-        _hz_complete_files "$current"
-        return 0
-      fi
-      ;;
-    --pr)
-      [[ "$cmd" == "diff" ]] && return 0
       ;;
     --target-version)
       [[ "$cmd" == "update" ]] && return 0
@@ -290,30 +280,6 @@ _hz_complete_command_args() {
     update)
       [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir --force-self-update -h --help" "$current"
       ;;
-    diff)
-      if [[ "$current" == -* ]]; then
-        _hz_reply "-r --repo -b --base --pr --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help" "$current"
-      else
-        _hz_git_ref_reply "$current"
-      fi
-      ;;
-  esac
-}
-
-_hz_complete_ts_args() {
-  local subcmd="$1"
-  local current="$2"
-
-  case "$subcmd" in
-    available)
-      [[ "$current" == -* ]] && _hz_reply "--installed --enabled -h --help" "$current"
-      ;;
-    update)
-      [[ "$current" == -* ]] && _hz_reply "--all -h --help" "$current"
-      ;;
-    add|rm|remove|list|ls|clean|path|doctor)
-      [[ "$current" == -* ]] && _hz_reply "-h --help" "$current"
-      ;;
   esac
 }
 
@@ -342,19 +308,6 @@ _hz_completion() {
       return
     fi
     _hz_complete_command_args "${COMP_WORDS[2]}" "$current"
-    return
-  fi
-
-  if [[ "$cmd" == "ts" || "$cmd" == "tree-sitter" ]]; then
-    if [[ "$COMP_CWORD" -eq 2 ]]; then
-      if [[ "$current" == -* ]]; then
-        _hz_reply "-h --help" "$current"
-      else
-        _hz_reply "$_hz_ts_commands" "$current"
-      fi
-      return
-    fi
-    _hz_complete_ts_args "${COMP_WORDS[2]}" "$current"
     return
   fi
 

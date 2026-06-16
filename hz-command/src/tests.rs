@@ -406,6 +406,89 @@ fn create_worktree_defaults_branch_limit_from_repo_config() {
 }
 
 #[test]
+fn create_worktree_disables_detached_prune_when_auto_prune_false() {
+    let test_dir = test_repo("hz-create-auto-prune-detached-test");
+    fs::create_dir_all(test_dir.join(".hz")).unwrap();
+    fs::write(
+        test_dir.join(".hz").join("hz.toml"),
+        "[worktree]\nauto_prune = false\nmax_detached = 7\n",
+    )
+    .unwrap();
+
+    let input = create_worktree_with_config_defaults(CreateWorktree {
+        name: None,
+        repo: Some(test_dir.clone()),
+        path: None,
+        base: None,
+        branch: None,
+        detached: false,
+        max_detached_worktrees: None,
+        max_branch_worktrees: None,
+    })
+    .unwrap();
+
+    assert_eq!(input.max_detached_worktrees, Some(0));
+    assert_eq!(input.max_branch_worktrees, None);
+
+    fs::remove_dir_all(test_dir).unwrap();
+}
+
+#[test]
+fn create_worktree_disables_branch_prune_when_auto_prune_false() {
+    let test_dir = test_repo("hz-create-auto-prune-branch-test");
+    fs::create_dir_all(test_dir.join(".hz")).unwrap();
+    fs::write(
+        test_dir.join(".hz").join("hz.toml"),
+        "[worktree]\nauto_prune = false\nmax_branch_worktrees = 7\n",
+    )
+    .unwrap();
+
+    let input = create_worktree_with_config_defaults(CreateWorktree {
+        name: Some("feature/ui".to_owned()),
+        repo: Some(test_dir.clone()),
+        path: None,
+        base: None,
+        branch: None,
+        detached: false,
+        max_detached_worktrees: None,
+        max_branch_worktrees: None,
+    })
+    .unwrap();
+
+    assert_eq!(input.max_detached_worktrees, None);
+    assert_eq!(input.max_branch_worktrees, Some(0));
+
+    fs::remove_dir_all(test_dir).unwrap();
+}
+
+#[test]
+fn create_worktree_keeps_explicit_prune_limit_when_auto_prune_false() {
+    let test_dir = test_repo("hz-create-auto-prune-explicit-limit-test");
+    fs::create_dir_all(test_dir.join(".hz")).unwrap();
+    fs::write(
+        test_dir.join(".hz").join("hz.toml"),
+        "[worktree]\nauto_prune = false\n",
+    )
+    .unwrap();
+
+    let input = create_worktree_with_config_defaults(CreateWorktree {
+        name: None,
+        repo: Some(test_dir.clone()),
+        path: None,
+        base: None,
+        branch: None,
+        detached: false,
+        max_detached_worktrees: Some(3),
+        max_branch_worktrees: None,
+    })
+    .unwrap();
+
+    assert_eq!(input.max_detached_worktrees, Some(3));
+
+    fs::remove_dir_all(test_dir).unwrap();
+}
+
+#[test]
 fn handoff_new_defaults_branch_limit_from_repo_config() {
     let test_dir = test_repo("hz-handoff-branch-limit-test");
     fs::create_dir_all(test_dir.join(".hz")).unwrap();
@@ -509,132 +592,6 @@ fn lifecycle_target_is_consistent_for_created_and_found_worktrees() {
 }
 
 #[test]
-fn github_pull_request_url_parses() {
-    assert_eq!(
-        github_pull_request_from_url("https://github.com/owner/repo/pull/123/files?plain=1"),
-        Some(GitHubPullRequest {
-            owner: "owner".to_owned(),
-            repo: "repo".to_owned(),
-            number: 123,
-        })
-    );
-    assert_eq!(
-        github_pull_request_from_url("github.com/owner/repo/pull/456"),
-        Some(GitHubPullRequest {
-            owner: "owner".to_owned(),
-            repo: "repo".to_owned(),
-            number: 456,
-        })
-    );
-
-    assert_eq!(
-        github_pull_request_from_url("https://example.com/owner/repo/pull/1"),
-        None
-    );
-    assert_eq!(
-        github_pull_request_from_url("https://github.com/owner/repo/issues/1"),
-        None
-    );
-    assert_eq!(
-        github_pull_request_from_url("https://github.com/owner/repo/pull/0"),
-        None
-    );
-}
-
-#[test]
-fn github_remote_url_parses_common_git_url_forms() {
-    for remote in [
-        "git@github.com:owner/repo.git",
-        "ssh://git@github.com/owner/repo.git",
-        "https://github.com/owner/repo.git",
-        "https://github.com/owner/repo",
-        "https://x-access-token:secret@github.com/owner/repo.git",
-        "https://user:password@github.com/owner/repo",
-    ] {
-        assert_eq!(
-            github_repo_from_remote_url(remote),
-            Some(("owner".to_owned(), "repo".to_owned()))
-        );
-    }
-
-    assert_eq!(
-        github_repo_from_remote_url("https://example.com/owner/repo.git"),
-        None
-    );
-    assert_eq!(
-        github_repo_from_remote_url("https://github.com/owner"),
-        None
-    );
-    assert_eq!(
-        github_repo_from_remote_url("https://token@example.com/owner/repo.git"),
-        None
-    );
-    assert_eq!(
-        github_repo_from_remote_url("https://example.com/path@github.com/owner/repo.git"),
-        None
-    );
-}
-
-#[test]
-fn github_remote_error_redacts_url_userinfo() {
-    let repo = test_repo("hz-github-pr-redact-origin-test");
-    git(
-        &[
-            "remote",
-            "add",
-            "origin",
-            "https://user:secret-token@example.com/owner/repo.git",
-        ],
-        &repo,
-    );
-
-    let error = github_pull_request_from_target(Some(&repo), "42")
-        .expect_err("non-GitHub origin should fail");
-    let message = error.to_string();
-
-    assert!(message.contains("https://<redacted>@example.com/owner/repo.git"));
-    assert!(!message.contains("secret-token"));
-    fs::remove_dir_all(repo).unwrap();
-}
-
-#[test]
-fn github_curl_config_includes_timeouts_and_escapes_values() {
-    let config = github_curl_config(
-        "https://github.com/owner/repo/pull/1.diff",
-        Some("tok\"en\n"),
-    );
-
-    assert!(config.contains("connect-timeout = \"10\"\n"));
-    assert!(config.contains("max-time = \"60\"\n"));
-    assert!(config.contains("header = \"User-Agent: hz\"\n"));
-    assert!(config.contains("header = \"Authorization: Bearer tok\\\"en\\n\"\n"));
-    assert!(config.contains("url = \"https://github.com/owner/repo/pull/1.diff\"\n"));
-}
-
-#[test]
-fn github_pull_request_number_uses_origin_remote() {
-    let repo = test_repo("hz-github-pr-origin-test");
-    git(
-        &["remote", "add", "origin", "git@github.com:owner/repo.git"],
-        &repo,
-    );
-
-    let pull_request = github_pull_request_from_target(Some(&repo), "42")
-        .expect("pull request should be inferred from origin");
-
-    assert_eq!(
-        pull_request,
-        GitHubPullRequest {
-            owner: "owner".to_owned(),
-            repo: "repo".to_owned(),
-            number: 42,
-        }
-    );
-
-    fs::remove_dir_all(repo).unwrap();
-}
-
-#[test]
 fn zsh_init_line_is_rc_file_friendly() {
     assert_eq!(shell_init_line(Shell::Zsh), r#"eval "$(hz shell zsh)""#);
 }
@@ -726,12 +683,9 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("'install:install shell integration'"));
     assert!(script.contains("'fork:fork the current worktree state'"));
     assert!(script.contains("'update:update hz from GitHub releases'"));
-    assert!(script.contains("'diff:review a git diff'"));
-    assert!(script.contains("'ts:manage diff syntax highlighting languages'"));
-    assert!(script.contains("'add:install and enable syntax highlighting languages'"));
-    assert!(script.contains("'update:update cached syntax highlighting parsers'"));
-    assert!(script.contains("--installed --enabled"));
-    assert!(script.contains("--all -h --help"));
+    assert!(!script.contains("'diff:review a git diff'"));
+    assert!(!script.contains("'ts:manage diff syntax highlighting languages'"));
+    assert!(!script.contains("tree-sitter"));
     assert!(!script.contains("tui:open the terminal UI"));
     assert!(script.contains("--setup"));
     assert!(script.contains("--no-setup"));
@@ -739,13 +693,13 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("--no-cleanup"));
     assert!(script.contains("--max-detached"));
     assert!(script.contains("--force-self-update"));
-    assert!(script.contains("--pr"));
-    assert!(script.contains("--patch"));
-    assert!(script.contains("--staged"));
-    assert!(script.contains("--unstaged"));
-    assert!(script.contains("--no-untracked"));
-    assert!(script.contains("--no-watch"));
-    assert!(script.contains("--no-syntax"));
+    assert!(!script.contains("--pr"));
+    assert!(!script.contains("--patch"));
+    assert!(!script.contains("--staged"));
+    assert!(!script.contains("--unstaged"));
+    assert!(!script.contains("--no-untracked"));
+    assert!(!script.contains("--no-watch"));
+    assert!(!script.contains("--no-syntax"));
     assert!(hzlocal_completion.contains("_hz_complete_command_options cd"));
     assert!(!hzlocal_completion.contains("_hz_complete_command_positionals cd"));
 }
@@ -760,18 +714,14 @@ fn fish_integration_passes_json_short_flag_through() {
     assert!(script.contains("command hz __complete removable-worktrees -r \"$repo\""));
     assert!(script.contains("__hz_command_is"));
     assert!(script.contains("__hz_top_command_is update"));
-    assert!(script.contains("__hz_diff_position_is_revision"));
     assert!(script.contains("__hz_complete_git_refs"));
     assert!(script.contains("complete -c hz -n \"__hz_command_is remove rm\""));
     assert!(script.contains("init install setup cleanup shell update"));
-    assert!(script.contains("diff ts"));
-    assert!(script.contains("ts tree-sitter"));
-    assert!(script.contains("__hz_needs_ts_subcommand"));
-    assert!(script.contains("add update rm remove list ls available clean path doctor"));
+    assert!(!script.contains(" diff "));
+    assert!(!script.contains("__hz_command_is diff"));
+    assert!(!script.contains("tree-sitter"));
+    assert!(!script.contains("__hz_needs_ts_subcommand"));
     assert!(script.contains("not __fish_seen_subcommand_from new fork path cd list ls"));
-    assert!(script.contains("-l installed"));
-    assert!(script.contains("-l enabled"));
-    assert!(script.contains("-l all"));
     assert!(script.contains("-l setup"));
     assert!(script.contains("-l no-setup"));
     assert!(script.contains("-l cleanup"));
@@ -780,13 +730,6 @@ fn fish_integration_passes_json_short_flag_through() {
     assert!(script.contains("-l no-diff"));
     assert!(script.contains("-l target-version"));
     assert!(script.contains("-l force-self-update"));
-    assert!(script.contains("-l pr"));
-    assert!(script.contains("-l patch"));
-    assert!(script.contains("-l staged"));
-    assert!(script.contains("-l unstaged"));
-    assert!(script.contains("-l no-untracked"));
-    assert!(script.contains("-l no-watch"));
-    assert!(script.contains("-l no-syntax"));
     assert!(!script.contains("tui"));
 }
 
@@ -796,17 +739,12 @@ fn bash_integration_registers_completion() {
     let worktree_completion = script
         .split("if [[ \"$cmd\" == \"worktree\" || \"$cmd\" == \"wt\" ]]; then")
         .nth(1)
-        .and_then(|completion| completion.split("if [[ \"$cmd\" == \"ts\"").next())
-        .expect("worktree completion branch should exist");
-    let ts_completion = script
-        .split("if [[ \"$cmd\" == \"ts\" || \"$cmd\" == \"tree-sitter\" ]]; then")
-        .nth(1)
         .and_then(|completion| {
             completion
                 .split("_hz_complete_command_args \"$cmd\"")
                 .next()
         })
-        .expect("tree-sitter completion branch should exist");
+        .expect("worktree completion branch should exist");
 
     assert!(script.contains("complete -F _hz_completion hz"));
     assert!(script.contains("_hz_dynamic_reply worktree-targets"));
@@ -818,12 +756,8 @@ fn bash_integration_registers_completion() {
     assert!(script.contains("--branch)"));
     assert!(!script.contains("-b|--branch"));
     assert!(script.contains("init install setup cleanup shell update"));
-    assert!(script.contains("diff ts"));
-    assert!(script.contains("ts tree-sitter"));
-    assert!(script.contains("_hz_complete_ts_args"));
-    assert!(script.contains("add update rm remove list ls available clean path doctor"));
-    assert!(script.contains("--installed --enabled"));
-    assert!(script.contains("--all -h --help"));
+    assert!(!script.contains("tree-sitter"));
+    assert!(!script.contains("_hz_complete_ts_args"));
     assert!(script.contains("--setup"));
     assert!(script.contains("--no-setup"));
     assert!(script.contains("--cleanup"));
@@ -831,17 +765,16 @@ fn bash_integration_registers_completion() {
     assert!(script.contains("--max-detached"));
     assert!(script.contains("--target-version"));
     assert!(script.contains("--force-self-update"));
-    assert!(script.contains("--pr"));
-    assert!(script.contains("--patch"));
-    assert!(script.contains("--staged"));
-    assert!(script.contains("--unstaged"));
-    assert!(script.contains("--no-untracked"));
-    assert!(script.contains("--no-watch"));
-    assert!(script.contains("--no-syntax"));
+    assert!(!script.contains("--pr"));
+    assert!(!script.contains("--patch"));
+    assert!(!script.contains("--staged"));
+    assert!(!script.contains("--unstaged"));
+    assert!(!script.contains("--no-untracked"));
+    assert!(!script.contains("--no-watch"));
+    assert!(!script.contains("--no-syntax"));
     assert!(
         worktree_completion.contains("_hz_complete_command_args \"${COMP_WORDS[2]}\" \"$current\"")
     );
-    assert!(ts_completion.contains("_hz_complete_ts_args \"${COMP_WORDS[2]}\" \"$current\""));
     assert!(!script.contains("tui"));
 }
 

@@ -147,9 +147,6 @@ _hz_complete_main() {
     'cleanup:run worktree cleanup'
     'shell:print shell integration'
     'update:update hz from GitHub releases'
-    'diff:review a git diff'
-    'ts:manage diff syntax highlighting languages'
-    'tree-sitter:manage diff syntax highlighting languages'
     'worktree:worktree commands'
     'wt:worktree commands'
   )
@@ -175,23 +172,6 @@ _hz_complete_worktree_subcommand() {
   _describe -t commands 'hz worktree command' commands
 }
 
-_hz_complete_ts_subcommand() {
-  local -a commands
-  commands=(
-    'add:install and enable syntax highlighting languages'
-    'update:update cached syntax highlighting parsers'
-    'rm:remove syntax highlighting languages'
-    'remove:remove syntax highlighting languages'
-    'list:list syntax highlighting languages'
-    'ls:list syntax highlighting languages'
-    'available:list syntax highlighting languages'
-    'clean:remove cached parser libraries'
-    'path:print tree-sitter cache and syntax config paths'
-    'doctor:validate enabled syntax highlighting languages'
-  )
-
-  _describe -t commands 'hz ts command' commands
-}
 
 _hz_complete_shells() {
   compadd zsh bash fish
@@ -204,7 +184,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init|diff)
+        new|fork|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init)
           _files -/
           return 0
           ;;
@@ -226,7 +206,7 @@ _hz_complete_option_value() {
       ;;
     -b)
       case "$cmd" in
-        new|diff)
+        new)
           _hz_git_refs
           return 0
           ;;
@@ -234,7 +214,7 @@ _hz_complete_option_value() {
       ;;
     --base)
       case "$cmd" in
-        new|diff)
+        new)
           _hz_git_refs
           return 0
           ;;
@@ -273,18 +253,6 @@ _hz_complete_option_value() {
     --install-dir)
       if [[ "$cmd" == "update" ]]; then
         _files -/
-        return 0
-      fi
-      ;;
-    --patch)
-      if [[ "$cmd" == "diff" ]]; then
-        _files
-        return 0
-      fi
-      ;;
-    --pr)
-      if [[ "$cmd" == "diff" ]]; then
-        _message 'pull request number or URL'
         return 0
       fi
       ;;
@@ -327,34 +295,6 @@ _hz_complete_command_options() {
     update)
       compadd -- --target-version --install-dir --force-self-update -h --help
       ;;
-    diff)
-      compadd -- -r --repo -b --base --pr --staged --unstaged --no-untracked --patch --no-watch --no-syntax -s --stat -h --help
-      ;;
-  esac
-}
-
-_hz_complete_ts_args() {
-  local subcmd="$1"
-
-  if [[ "$PREFIX" == -* ]]; then
-    case "$subcmd" in
-      available)
-        compadd -- --installed --enabled -h --help
-        ;;
-      update)
-        compadd -- --all -h --help
-        ;;
-      add|rm|remove|list|ls|clean|path|doctor)
-        compadd -- -h --help
-        ;;
-    esac
-    return
-  fi
-
-  case "$subcmd" in
-    add|update|rm|remove)
-      _message 'language'
-      ;;
   esac
 }
 
@@ -378,11 +318,6 @@ _hz_complete_command_positionals() {
     init|install|shell)
       _arguments \
         '1:shell:_hz_complete_shells'
-      ;;
-    diff)
-      _arguments \
-        '1:revision:_hz_git_refs' \
-        '2:revision:_hz_git_refs'
       ;;
   esac
 }
@@ -426,22 +361,6 @@ _hz_completion() {
     shift 2 words
     (( CURRENT -= 2 ))
     _hz_complete_command_args "$subcmd"
-    return
-  fi
-
-  if [[ "$cmd" == "ts" || "$cmd" == "tree-sitter" ]]; then
-    if (( CURRENT == 3 )); then
-      if [[ "$PREFIX" == -* ]]; then
-        compadd -- -h --help
-      else
-        _hz_complete_ts_subcommand
-      fi
-      return
-    fi
-    local subcmd="${words[3]}"
-    shift 2 words
-    (( CURRENT -= 2 ))
-    _hz_complete_ts_args "$subcmd"
     return
   fi
 

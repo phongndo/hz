@@ -58,20 +58,33 @@ set -eu
 
 repo="''${HZ_DEV_ROOT:?HZ_DEV_ROOT is not set}"
 binary="$repo/target/debug/hz"
+stamp="$repo/target/dev-bin/hz.stamp"
 
 needs_build=0
 if [ ! -x "$binary" ]; then
   needs_build=1
-else
-  newer_source="$(find "$repo" \( -path "$repo/target" -o -path "$repo/.git" \) -prune -o -type f \( -name '*.rs' -o -name Cargo.toml -o -name Cargo.lock \) -newer "$binary" -print | sed -n '1p')"
-  if [ -n "$newer_source" ]; then
+elif [ "''${HZ_DEV_AUTO_BUILD:-0}" = "1" ]; then
+  if [ ! -e "$stamp" ]; then
     needs_build=1
+  else
+    newer_source="$(find "$repo" \( -path "$repo/target" -o -path "$repo/.git" \) -prune -o -type f \( -name '*.rs' -o -name Cargo.toml -o -name Cargo.lock \) -newer "$stamp" -print | sed -n '1p')"
+    if [ -n "$newer_source" ]; then
+      needs_build=1
+    fi
   fi
 fi
 
 if [ "$needs_build" -eq 1 ]; then
-  echo "hz dev shim: building hz-cli..." >&2
-  (cd "$repo" && cargo build -p hz-cli --locked >&2)
+  if [ ! -x "$binary" ]; then
+    echo "hz dev shim: building hz-cli..." >&2
+  else
+    echo "hz dev shim: rebuilding hz-cli (HZ_DEV_AUTO_BUILD=1)..." >&2
+  fi
+  if (cd "$repo" && cargo build -p hz-cli --locked >&2); then
+    touch "$stamp"
+  else
+    exit 1
+  fi
 fi
 
 exec "$binary" "$@"

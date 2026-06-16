@@ -4,21 +4,17 @@
 [![Release](https://github.com/phongndo/hz/actions/workflows/release.yml/badge.svg)](https://github.com/phongndo/hz/actions/workflows/release.yml)
 
 `hz` is a fast terminal workflow for parallel development with agents. It
-creates isolated workspaces, makes it fast to move between them, hands off
-diffs safely, runs repo-local lifecycle hooks, and gives you a keyboard-first
-review loop without leaving the terminal.
+creates isolated Git workspaces, makes it fast to move between them, hands off
+diffs safely, and runs repo-local lifecycle hooks.
 
-The long-term vision is an all-in-one, provider-agnostic workflow for
-AI-assisted development: create isolated workspaces, run one or many agents,
-track their output, review changes, merge or hand off the useful work, and clean
-up safely from the terminal.
+Diff review has moved to [`dx`](https://github.com/phongndo/dx) so workspace
+isolation and diff review can evolve as separate tools.
 
 ## Status
 
 `hz` is pre-1.0. The current release is usable for local Git worktree, handoff,
-lifecycle, shell integration, install/update, and diff review workflows. Built-
-provider adapters and the broader dashboard/runtime are on the roadmap. Prefer
-`--json` for scripts, and expect command shapes to keep tightening before 1.0.
+lifecycle, shell integration, and install/update workflows. Prefer `--json` for
+scripts, and expect command shapes to keep tightening before 1.0.
 
 See [docs/roadmap.md](docs/roadmap.md) for the product direction.
 
@@ -31,8 +27,6 @@ See [docs/roadmap.md](docs/roadmap.md) for the product direction.
 - Applies uncommitted changes between linked worktrees without forcing a commit.
 - Moves branch ownership between worktrees when both sides are clean.
 - Runs repo-local setup and cleanup hooks on explicit opt-in commands for reproducible agent workspaces.
-- Reviews worktree or patch diffs in a terminal UI, with plain output for pipes.
-- Opens a placeholder dashboard TUI with `hz`.
 - Lists, finds, prunes, and removes managed and unmanaged worktrees.
 - Installs and updates release binaries from GitHub releases.
 
@@ -54,8 +48,8 @@ hz new fix-login
 # hand the diff back to the linked local worktree and return there
 hz handoff
 
-# review and clean up
-hz diff
+# review with dx if desired, then clean up
+dx
 hz rm -f fix-login    # force is needed if the source worktree still has handed-off changes
 ```
 
@@ -194,12 +188,17 @@ auto-removed. Set `[worktree].max_branch_worktrees` in `.hz/hz.toml`, or pass
 `--max-branch-worktrees <count>` to `hz new` or branch-backed
 `hz handoff --new`; `0` disables auto-pruning.
 
+Auto-pruning is enabled by default. Set `[worktree].auto_prune = false` to opt
+into keeping managed worktrees instead of deleting them at the configured
+limits. Dirty and current worktrees are still protected from auto-removal.
+
 Repo config can set the default base branch for new worktrees and additional
 user-managed worktree roots:
 
 ```toml
 # .hz/hz.toml
 [worktree]
+auto_prune = true
 max_detached = 15
 max_branch_worktrees = 15
 default_base = "dev"
@@ -255,83 +254,17 @@ applying a patch. Branch handoff is clean-only on both sides.
 
 ### Diff review
 
-`hz diff` opens a read-only terminal diff viewer when stdout is an interactive
-terminal. It falls back to plain patch output for pipes, and `--stat` prints a
-summary without opening the viewer.
+Diff review now lives in the separate [`dx`](https://github.com/phongndo/dx) CLI.
+Use `dx` from any `hz` worktree when you want the terminal review UI or plain
+diff output:
 
 ```sh
-hz diff
-hz diff --staged
-hz diff --unstaged
-hz diff --no-untracked
-hz diff --base main
-hz diff main feature
-hz diff --pr 123
-hz diff --pr https://github.com/owner/repo/pull/123
-hz diff --patch changes.diff
-cat changes.diff | hz diff --patch -
-hz diff --no-watch
-hz diff --no-syntax
-hz diff --stat
-hz ts add ruby elixir
-hz ts update --all
-hz ts available --installed
-hz ts rm ruby
+dx
+dx --staged
+dx --base main
+dx --pr 123
+dx --patch changes.diff
 ```
-
-The default view is all working tree changes against `HEAD`, including
-untracked files. `hz diff --pr <number>` reviews a pull request from the current
-repository's `origin` GitHub remote. `hz diff --pr <url>` reviews any GitHub pull
-request URL without requiring a local repository. Positional revisions remain
-literal, so refs named `pr` can still be compared normally. Patch mode reads an
-existing unified diff from a file or stdin without requiring a Git repository.
-The viewer uses split mode on wide terminals and unified mode on narrower
-terminals, and switches as the terminal is resized.
-GitHub PR fetching uses `curl`; set `GH_TOKEN` or `GITHUB_TOKEN` for private
-repositories or higher GitHub rate limits.
-Working tree diffs live-reload as files or Git state change; use `--no-watch` to
-disable filesystem watching. Use `b` to toggle the file sidebar, drag its
-divider to resize it, `s` to toggle split/unified, `j/k` to scroll, `h/l` or
-`←/→` to scroll long lines horizontally, `J/K` for files, `]/[` for hunks, `f`
-to filter files, `/` to grep changed diff content, `Ctrl-G` to open `$EDITOR` at
-the focused hunk, `r` to reload, `?` to show keybindings, and `q` to quit. When
-a grep filter is active, `n`/`p` move between grep matches; without one, they
-are ignored. Active filters stay visible in the bottom bar. In filter prompts,
-`Enter` closes the prompt and keeps the filter, `Esc` clears active filters, and
-`Ctrl-U` clears the current input.
-
-Syntax highlighting is Tree-sitter based. Common languages are bundled for
-zero-config highlighting; `hz ts add <language>` installs extra languages.
-`hz ts add` seeds a shipped parser-release lockfile, verifies the downloaded
-release bundle against that lock before loading, and records the resulting
-parser checksum. `hz diff` never downloads parsers while rendering and verifies
-recorded parser checksums before loading user-cache parser libraries. Use
-`--no-syntax` to force plain diff text, and `hz ts rm <language>`, `hz ts ls`,
-`hz ts doctor`, or `hz ts clean` to maintain the parser cache. `hz ts update
-<language>` refreshes cached parsers, and `hz ts available --installed` /
-`--enabled` filters the
-language list. Repo-backed diffs highlight full old/new file sides and map spans
-back to diff lines; patch input and unavailable file contents fall back to
-hunk-local highlighting. Highlighting stays lazy and cached, and falls back to
-plain diff text for missing languages, missing queries, or very large
-hunks/lines.
-
-Syntax mode, diff styling, colorscheme, and performance limits are user-local in
-`~/.config/hz/config.toml`; repo `.hz/hz.toml` does not control parser loading.
-The default colorscheme is the built-in, read-only `system` scheme: terminal
-foreground/background and ANSI syntax colors stay system-driven, while hz owns
-the hunk-style diff red/green accents and changed-line backgrounds. Put
-Base16/Tinted scheme files in
-`~/.config/hz/colorscheme/` and set `colorscheme = "name"` for cross-tool
-compatibility with editors such as Neovim. Built-in colorscheme names are
-resolved before user files, so custom files cannot replace the default `system`
-scheme; layer `bg`, `addition_bg`, `deletion_bg`, and related overrides in
-`config.toml`, or use a new colorscheme name for a full custom scheme.
-Built-in diff colorschemes include
-`hz-dark`, `catppuccin-mocha`, `gruvbox-dark`, `tokyonight`, and `dracula`. Set
-`transparent_background = true` to let the terminal background show through diff
-and inline backgrounds for non-system colorschemes. `hz ts path` prints the cache,
-registry, user config, and colorscheme paths.
 
 ### Repo lifecycle
 
@@ -400,20 +333,17 @@ For compatibility, `hz init <shell>` still installs shell integration, but
 
 ```text
 hz-cli       command parsing, terminal output, install/update, and CLI UX
-hz-command   command facade shared by CLI and future TUI/runtime callers
+hz-bench     headless command benchmark utilities
+hz-command   command facade shared by CLI and future runtime callers
 hz-core      shared errors and common models
 hz-git       low-level Git integration boundary
 hz-worktree  worktree domain boundary: new, path, list, handoff, remove
-hz-diff      diff loading and rendering boundary
-hz-syntax    tree-sitter syntax highlighting and parser cache management
-hz-tui       ratatui/crossterm main and diff review UI boundary
-hz-bench     local benchmark fixture generation
 ```
 
-The command crate is the main extension seam. CLI, TUI, and future runtime code
-should call `hz-command` instead of duplicating workflow logic. Provider or
-agent-runtime integrations can sit beside these crates without forcing the
-existing command surface to depend on plugin machinery.
+The command crate is the main extension seam. CLI and future runtime code should
+call `hz-command` instead of duplicating workflow logic. Provider or agent-runtime
+integrations can sit beside these crates without forcing the existing command
+surface to depend on plugin machinery.
 
 ## Development
 
@@ -444,8 +374,8 @@ For contribution guidelines, dev-shell details, and CI expectations, see
 ## CI and releases
 
 `.github/workflows/quality.yml` runs rust-analyzer diagnostics, formatter,
-Clippy, workspace tests, a full workspace build, and installer/update smoke
-tests against a local release fixture.
+Clippy, workspace tests, a full workspace build, a headless `hz-bench` smoke,
+and installer/update smoke tests against a local release fixture.
 `.github/workflows/release.yml` builds release archives with SHA-256 checksum
 files for supported macOS and Linux targets when a `v*.*.*` tag is pushed.
 

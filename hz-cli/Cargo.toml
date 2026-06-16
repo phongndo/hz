@@ -18,7 +18,6 @@ clap.workspace = true
 crossterm.workspace = true
 hz-command.workspace = true
 hz-core.workspace = true
-hz-tui.workspace = true
 serde_json.workspace = true
 time.workspace = true
 unicode-width.workspace = true
