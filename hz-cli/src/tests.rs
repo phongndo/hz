@@ -1000,6 +1000,44 @@ fn path_and_list_accept_short_flags() {
         }
         command => panic!("expected list command, got {command:?}"),
     }
+
+    let cli = Cli::try_parse_from(["hz", "pwd", "-r", "/repo", "-j"]).unwrap();
+    match cli.command {
+        Some(Command::Pwd(args)) => {
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert!(args.json);
+        }
+        command => panic!("expected pwd command, got {command:?}"),
+    }
+}
+
+#[test]
+fn worktree_pwd_is_available_under_worktree_group() {
+    let cli = Cli::try_parse_from(["hz", "worktree", "pwd", "--repo", "/repo"]).unwrap();
+
+    match cli.command {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Pwd(args),
+        }) => assert_eq!(args.repo, Some(PathBuf::from("/repo"))),
+        command => panic!("expected worktree pwd command, got {command:?}"),
+    }
+}
+
+#[test]
+fn current_worktree_entry_matches_current_path() {
+    let mut current = test_entry(hz_command::WorktreeSource::Managed);
+    current.path = PathBuf::from("/worktrees/current");
+
+    let mut other = test_entry(hz_command::WorktreeSource::Managed);
+    other.path = PathBuf::from("/worktrees/other");
+    other.branch = Some("feature/other".to_owned());
+
+    let entries = vec![other, current];
+
+    let found = current_worktree_entry(&entries, Path::new("/worktrees/current"))
+        .expect("current worktree should be found");
+
+    assert_eq!(worktree_branch_or_handle(found), "feature/ui");
 }
 
 #[test]

@@ -5,6 +5,7 @@ use std::{
 };
 
 use crossterm::terminal as crossterm_terminal;
+use hz_core::HzError;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const MONTH_ABBREVIATIONS: [&str; 12] = [
@@ -13,7 +14,9 @@ const MONTH_ABBREVIATIONS: [&str; 12] = [
 
 use crate::{
     CliResult,
-    args::{ForkWorktreeArgs, ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs},
+    args::{
+        ForkWorktreeArgs, ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs, PwdWorktreeArgs,
+    },
     removal::worktree_branch_or_handle,
     write_stderr, write_stdout,
 };
@@ -90,6 +93,68 @@ pub(crate) fn path_worktree(args: PathWorktreeArgs) -> CliResult<()> {
     }
 
     Ok(())
+}
+
+pub(crate) fn pwd_worktree(args: PwdWorktreeArgs) -> CliResult<()> {
+    let current = current_worktree(args.repo.clone())?;
+
+    if args.json {
+        write_stdout(format_args!(
+            "{}\n",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "target": current.target,
+                "repo": current.repo,
+                "path": current.path,
+            }))?
+        ))?;
+    } else {
+        write_stdout(format_args!("{}\n", current.target))?;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CurrentWorktree {
+    pub(crate) target: String,
+    pub(crate) repo: PathBuf,
+    pub(crate) path: PathBuf,
+}
+
+pub(crate) fn current_worktree(repo: Option<PathBuf>) -> CliResult<CurrentWorktree> {
+    let current_path = hz_command::current_worktree_path(hz_command::ListWorktrees { repo: None })?;
+    let local = hz_command::local_worktree(hz_command::LocalWorktree { repo: repo.clone() })?;
+
+    if same_path(&current_path, &local.path) {
+        return Ok(CurrentWorktree {
+            target: "local".to_owned(),
+            repo: local.repo,
+            path: local.path,
+        });
+    }
+
+    let worktrees = hz_command::list_worktree_targets(hz_command::ListWorktrees { repo })?;
+    let worktree = current_worktree_entry(&worktrees, &current_path).ok_or_else(|| {
+        HzError::Usage(format!(
+            "current worktree is not linked to {}",
+            local.repo.display()
+        ))
+    })?;
+
+    Ok(CurrentWorktree {
+        target: worktree_branch_or_handle(worktree).to_owned(),
+        repo: worktree.repo.clone(),
+        path: worktree.path.clone(),
+    })
+}
+
+pub(crate) fn current_worktree_entry<'a>(
+    worktrees: &'a [hz_command::WorktreeEntry],
+    current_path: &Path,
+) -> Option<&'a hz_command::WorktreeEntry> {
+    worktrees
+        .iter()
+        .find(|worktree| same_path(&worktree.path, current_path))
 }
 
 pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> CliResult<()> {

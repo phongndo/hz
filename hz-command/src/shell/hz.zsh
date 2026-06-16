@@ -138,6 +138,7 @@ _hz_complete_main() {
     'cd:change to a worktree'
     'list:list worktrees'
     'ls:list worktrees'
+    'pwd:print the current worktree target'
     'remove:remove one or more worktrees'
     'rm:remove one or more worktrees'
     'handoff:apply changes between linked worktrees'
@@ -164,6 +165,7 @@ _hz_complete_worktree_subcommand() {
     'cd:change to a worktree'
     'list:list worktrees'
     'ls:list worktrees'
+    'pwd:print the current worktree target'
     'remove:remove one or more worktrees'
     'rm:remove one or more worktrees'
     'handoff:apply changes between linked worktrees'
@@ -184,7 +186,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init)
+        new|fork|path|cd|list|ls|pwd|remove|rm|handoff|setup|cleanup|init)
           _files -/
           return 0
           ;;
@@ -275,6 +277,9 @@ _hz_complete_command_options() {
       compadd -- -r --repo -j --json -h --help
       ;;
     list|ls)
+      compadd -- -r --repo -j --json -h --help
+      ;;
+    pwd)
       compadd -- -r --repo -j --json -h --help
       ;;
     remove|rm)

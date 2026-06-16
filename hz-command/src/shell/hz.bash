@@ -68,8 +68,8 @@ hzlocal() {
   hz cd local "$@"
 }
 
-_hz_top_commands="new fork path cd list ls remove rm handoff init install setup cleanup shell update worktree wt"
-_hz_worktree_commands="new fork path cd list ls remove rm handoff"
+_hz_top_commands="new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt"
+_hz_worktree_commands="new fork path cd list ls pwd remove rm handoff"
 _hz_shells="zsh bash fish"
 
 _hz_reply() {
@@ -145,7 +145,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|remove|rm|handoff|setup|cleanup|init)
+        new|fork|path|cd|list|ls|pwd|remove|rm|handoff|setup|cleanup|init)
           _hz_complete_dirs "$current"
           return 0
           ;;
@@ -240,6 +240,9 @@ _hz_complete_command_args() {
       fi
       ;;
     list|ls)
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json -h --help" "$current"
+      ;;
+    pwd)
       [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json -h --help" "$current"
       ;;
     remove|rm)
