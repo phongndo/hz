@@ -24,6 +24,7 @@ examples:
   hz new feature/ui
   hz fork
   hz ls
+  hz pwd
   hz rm -f feature/ui
   hz setup feature/ui
   hz cleanup feature/ui
@@ -71,6 +72,8 @@ pub(crate) enum Command {
     Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
+    #[command(about = "Print the current worktree target")]
+    Pwd(PwdWorktreeArgs),
     #[command(alias = "rm", about = "Remove one or more worktrees")]
     Remove(RemoveWorktreeArgs),
     #[command(about = "Apply changes between local and a linked worktree")]
@@ -109,6 +112,8 @@ pub(crate) enum WorktreeCommand {
     Path(PathWorktreeArgs),
     #[command(alias = "ls", about = "List worktrees")]
     List(ListWorktreeArgs),
+    #[command(about = "Print the current worktree target")]
+    Pwd(PwdWorktreeArgs),
     #[command(alias = "rm", about = "Remove one or more worktrees")]
     Remove(RemoveWorktreeArgs),
     #[command(about = "Apply changes between local and a linked worktree")]
@@ -172,6 +177,14 @@ pub(crate) struct PathWorktreeArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct ListWorktreeArgs {
+    #[arg(short = 'r', long)]
+    pub(crate) repo: Option<PathBuf>,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PwdWorktreeArgs {
     #[arg(short = 'r', long)]
     pub(crate) repo: Option<PathBuf>,
     #[arg(short = 'j', long)]

@@ -160,13 +160,13 @@ complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls remove rm handoff init install setup cleanup shell update worktree wt" -a "new fork path cd list ls remove rm handoff init install setup cleanup shell update worktree wt"
-complete -c hz -n "__hz_needs_worktree_subcommand" -a "new fork path cd list ls remove rm handoff"
+complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt" -a "new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt"
+complete -c hz -n "__hz_needs_worktree_subcommand" -a "new fork path cd list ls pwd remove rm handoff"
 
 complete -c hz -n "__hz_command_is cd path handoff setup cleanup" -a "(__hz_complete_worktree_targets)"
 complete -c hz -n "__hz_command_is rm remove" -a "(__hz_complete_removable_worktrees)"
 complete -c hz -n "__hz_top_command_is init install shell" -a "zsh bash fish"
-complete -c hz -n "__hz_command_is new fork path cd list ls remove rm handoff init setup cleanup" -s r -l repo -r -F
+complete -c hz -n "__hz_command_is new fork path cd list ls pwd remove rm handoff init setup cleanup" -s r -l repo -r -F
 complete -c hz -n "__hz_command_is new fork" -s p -l path -r -F
 complete -c hz -n "__hz_command_is new" -s B -l base -r -a "(__hz_complete_git_refs)"
 complete -c hz -n "__hz_command_is new" -s b -l branch -r -a "(__hz_complete_git_refs)"
@@ -175,7 +175,7 @@ complete -c hz -n "__hz_command_is new handoff" -l max-branch-worktrees -r
 complete -c hz -n "__hz_command_is new" -l no-setup
 complete -c hz -n "__hz_command_is new" -l setup
 complete -c hz -n "__hz_command_is fork" -l no-diff
-complete -c hz -n "__hz_command_is new fork path cd list ls remove rm handoff" -s j -l json
+complete -c hz -n "__hz_command_is new fork path cd list ls pwd remove rm handoff" -s j -l json
 complete -c hz -n "__hz_command_is new remove rm" -s d -l debug
 complete -c hz -n "__hz_command_is remove rm" -s f -l force
 complete -c hz -n "__hz_command_is remove rm" -l yes
@@ -198,4 +198,4 @@ complete -c hzlocal -f
 complete -c hzlocal -s r -l repo -r -F
 complete -c hzlocal -s j -l json
 complete -c hzlocal -s h -l help
-complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls remove rm handoff init install setup cleanup shell update worktree wt" -s V -l version
+complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt" -s V -l version
