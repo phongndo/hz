@@ -278,7 +278,7 @@ _hz_complete_command_args() {
       fi
       ;;
     update)
-      [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir --force-self-update -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir -h --help" "$current"
       ;;
   esac
 }

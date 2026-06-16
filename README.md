@@ -63,17 +63,15 @@ not need lifecycle hooks, skip `hz init`.
 
 ## Installation
 
-Install the latest release with Homebrew:
-
-```sh
-brew install phongndo/tap/hz-cli
-```
-
-Or use the shell installer:
+Install the latest release with the shell installer:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh
 ```
+
+The curl installer is the only supported install path for now. Homebrew, mise,
+Cargo, and other package-manager installs are deprecated; reinstall with the
+command above if you used one of those paths before.
 
 The installer downloads the matching GitHub release archive for macOS or Linux,
 verifies its SHA-256 file with `shasum` or `sha256sum`, and installs `hz` to
@@ -95,30 +93,11 @@ hz --version
 The default curl install path is `~/.local/bin/hz`; if you set
 `HZ_INSTALL_DIR`, the first `hz` on `PATH` should come from that directory.
 
-Update an installer-managed binary in place:
+Update a curl-installed binary in place:
 
 ```sh
 hz update
 hz update --target-version 0.1.11
-```
-
-`hz update` refuses to infer common package-manager-managed locations (for
-example Homebrew, mise, Cargo, or Nix paths). Update those installs with their
-package manager instead, pass `--install-dir` for an installer-managed target, or
-use `--force-self-update` if you intentionally want to overwrite the detected
-binary.
-
-With mise, use the GitHub backend until `hz` has a mise registry shorthand:
-
-```sh
-mise use -g github:phongndo/hz@latest
-hz --version
-```
-
-With Cargo, install the package `hz-cli`; it provides the `hz` binary:
-
-```sh
-cargo install --locked --git https://github.com/phongndo/hz --tag v0.1.11 hz-cli
 ```
 
 After installing the binary, install shell integration for auto-cd and

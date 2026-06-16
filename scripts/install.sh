@@ -14,6 +14,103 @@ case "$action" in
     ;;
 esac
 
+print_plan() {
+  if [ "$action" = "update" ]; then
+    printf 'Updating %s\n' "$binary"
+    if [ -n "${HZ_CURRENT_VERSION:-}" ]; then
+      printf '  from: v%s\n' "${HZ_CURRENT_VERSION#v}"
+    fi
+    printf '  to:   %s\n' "$tag"
+    printf '  path: %s\n' "$install_dir/$binary"
+  else
+    printf 'Installing %s\n' "$binary"
+    printf '  version: %s\n' "$tag"
+    printf '  target:  %s\n' "$target"
+    printf '  path:    %s\n' "$install_dir/$binary"
+  fi
+  printf '\n'
+}
+
+print_success() {
+  printf '✓ %s\n' "$1"
+}
+
+print_path_hint() {
+  active_binary="$(command -v "$binary" 2>/dev/null || true)"
+  if [ "$active_binary" = "$install_dir/$binary" ]; then
+    return 0
+  fi
+
+  printf '\n%s was installed, but your shell may not find it yet.\n' "$binary"
+  printf 'Add this to your shell profile:\n\n'
+  printf '  export PATH="%s:$PATH"\n' "$install_dir"
+}
+
+managed_install_name() {
+  case "$1" in
+    /opt/homebrew/* | /home/linuxbrew/.linuxbrew/* | */.linuxbrew/* | */Cellar/*)
+      printf 'Homebrew'
+      return 0
+      ;;
+    */.cargo/bin | */.cargo/bin/*)
+      printf 'Cargo'
+      return 0
+      ;;
+    */.local/share/mise/shims | */.local/share/mise/shims/* | */.local/share/mise/installs | */.local/share/mise/installs/* | */.mise/shims | */.mise/shims/* | */.mise/installs | */.mise/installs/*)
+      printf 'mise'
+      return 0
+      ;;
+    /nix/store/* | */.nix-profile/bin | */.nix-profile/bin/* | */.local/state/nix/profile/bin | */.local/state/nix/profile/bin/* | /run/current-system/sw/bin | /run/current-system/sw/bin/*)
+      printf 'Nix'
+      return 0
+      ;;
+    */.asdf/shims | */.asdf/shims/* | */.asdf/installs | */.asdf/installs/*)
+      printf 'asdf'
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+refuse_managed_path() {
+  path="$1"
+  label="$2"
+  manager="$(managed_install_name "$path" || true)"
+  if [ -z "$manager" ]; then
+    return 0
+  fi
+
+  echo "hz $action: refusing to write to $manager-managed $label: $path" >&2
+  echo "hz $action: choose an unmanaged directory, for example: $HOME/.local/bin" >&2
+  exit 1
+}
+
+refuse_managed_install_dir() {
+  install_target="$install_dir/$binary"
+
+  refuse_managed_path "$install_dir" "install directory"
+  refuse_managed_path "$install_target" "install target"
+
+  if [ -L "$install_target" ] && command -v readlink >/dev/null 2>&1; then
+    link_target="$(readlink "$install_target" || true)"
+    if [ -n "$link_target" ]; then
+      case "$link_target" in
+        /*) resolved_target="$link_target" ;;
+        *) resolved_target="$install_dir/$link_target" ;;
+      esac
+      refuse_managed_path "$resolved_target" "install target symlink"
+    fi
+  fi
+
+  if [ -e "$install_target" ] && command -v realpath >/dev/null 2>&1; then
+    real_target="$(realpath "$install_target" 2>/dev/null || true)"
+    if [ -n "$real_target" ]; then
+      refuse_managed_path "$real_target" "install target"
+    fi
+  fi
+}
+
 curl_download() {
   curl -fsSL "$1" -o "$2"
 }
@@ -66,6 +163,9 @@ case "$(uname -m)" in
     ;;
 esac
 
+target="$arch-$platform"
+refuse_managed_install_dir
+
 if [ "$version" = "latest" ]; then
   tag="$(
     curl -fsSL "https://api.github.com/repos/$repo/releases/latest" \
@@ -83,11 +183,12 @@ else
   esac
 fi
 
-target="$arch-$platform"
 package="hz-$tag-$target"
 asset="$package.tar.gz"
 base_url="https://github.com/$repo/releases/download/$tag"
 tmp_dir="$(mktemp -d)"
+
+print_plan
 
 cleanup() {
   rm -rf "$tmp_dir"
@@ -134,8 +235,9 @@ mkdir -p "$install_dir"
 install -m 755 "$install_source" "$install_dir/$binary"
 
 if [ "$action" = "update" ]; then
-  echo "updated $binary to $tag at $install_dir/$binary"
+  print_success "Updated $binary to $tag"
 else
-  echo "installed $binary $tag to $install_dir/$binary"
-  echo "run: $binary --version"
+  print_success "Installed $binary $tag"
+  printf 'Run: %s\n' "$binary"
+  print_path_hint
 fi

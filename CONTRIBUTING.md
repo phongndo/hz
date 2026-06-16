@@ -100,9 +100,8 @@ Use `hz install zsh` only when you want to update your real shell rc file for an
 installed `hz` binary. `just smoke-zsh` verifies the zsh integration in an
 isolated shell, including branch names such as `fix(scope)/name` that zsh would
 otherwise treat as globs. `just smoke` also runs the installer/update smoke
-against a temporary local release fixture. `just smoke-curl-install` and
-`just smoke-mise` exercise the published curl and mise install paths when you
-want live release coverage.
+against a temporary local release fixture. `just smoke-curl-install` exercises
+the published curl install path when you want live release coverage.
 
 Bash cannot run unquoted branch names containing parentheses, such as
 `fix(scope)/name`, because bash parses `(` as syntax before `hz` can receive the

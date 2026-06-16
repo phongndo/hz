@@ -185,7 +185,6 @@ complete -c hz -n "__hz_command_is handoff" -s b -l branch
 complete -c hz -n "__hz_command_is handoff" -s n -l new
 complete -c hz -n "__hz_top_command_is update" -l target-version -r
 complete -c hz -n "__hz_top_command_is update" -l install-dir -r -F
-complete -c hz -n "__hz_top_command_is update" -l force-self-update
 complete -c hz -s h -l help
 
 complete -c hzcd -f

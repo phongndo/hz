@@ -126,16 +126,10 @@ jobs:
           cat > release-notes.md <<EOF
           Release $GITHUB_REF_NAME.
 
-          Install with Homebrew:
+          Install with curl:
 
           \`\`\`sh
-          brew install phongndo/tap/hz-cli
-          \`\`\`
-
-          Install with mise:
-
-          \`\`\`sh
-          mise use -g github:phongndo/hz@$version
+          curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh
           \`\`\`
           EOF
 
@@ -143,30 +137,3 @@ jobs:
             --verify-tag \
             --title "hz $version" \
             --notes-file release-notes.md
-
-      - name: Update Homebrew tap
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        shell: bash
-        run: |
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "HOMEBREW_TAP_TOKEN is not configured; skipping Homebrew tap update" >&2
-            exit 0
-          fi
-
-          version="${GITHUB_REF_NAME#v}"
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          gh repo clone phongndo/homebrew-tap homebrew-tap
-          scripts/render-homebrew-formula "$version" dist homebrew-tap/Formula/hz-cli.rb
-
-          cd homebrew-tap
-          if git diff --quiet -- Formula/hz-cli.rb; then
-            echo "Homebrew formula is already up to date"
-            exit 0
-          fi
-
-          git add Formula/hz-cli.rb
-          git commit -m "Update hz-cli to $version"
-          git push

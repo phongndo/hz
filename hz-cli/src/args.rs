@@ -86,13 +86,12 @@ pub(crate) enum Command {
     #[command(about = "Print shell integration script")]
     Shell(ShellArgs),
     #[command(
-        about = "Update this hz binary from GitHub releases",
+        about = "Update this curl-installed hz binary from GitHub releases",
         after_help = "\
 examples:
   hz update
   hz update --target-version 0.1.5
-  hz update --install-dir ~/.local/bin
-  hz update --force-self-update"
+  hz update --install-dir ~/.local/bin"
     )]
     Update(UpdateArgs),
     #[command(name = "__complete", hide = true)]
@@ -243,9 +242,6 @@ pub(crate) struct UpdateArgs {
     /// Directory to update. Defaults to the directory containing the invoked hz.
     #[arg(long, value_name = "DIR")]
     pub(crate) install_dir: Option<PathBuf>,
-    /// Allow hz update to overwrite a package-manager-managed binary.
-    #[arg(long)]
-    pub(crate) force_self_update: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

@@ -12,7 +12,6 @@ use hz_core::HzResult;
 use crate::{
     CliResult,
     args::{INSTALL_SCRIPT, RELEASE_REPO, UpdateArgs},
-    write_stderr,
 };
 
 pub(crate) fn update(args: UpdateArgs) -> CliResult<()> {
@@ -20,23 +19,11 @@ pub(crate) fn update(args: UpdateArgs) -> CliResult<()> {
         hz_core::HzError::Usage("could not determine current executable".to_owned())
     })?;
     let binary = update_binary_name(&argv0)?;
-    let explicit_install_dir = args.install_dir.is_some();
-    let force_self_update = args.force_self_update;
     let install_dir = match args.install_dir {
         Some(path) => absolute_path(path)?,
         None => default_update_install_dir(&argv0)?,
     };
-    if let Some(manager) = check_update_install_dir(
-        &install_dir,
-        &binary,
-        explicit_install_dir,
-        force_self_update,
-    )? {
-        write_stderr(format_args!(
-            "{}\n",
-            managed_update_warning(manager, &install_dir, binary.as_os_str())
-        ))?;
-    }
+    check_update_install_dir(&install_dir, &binary)?;
     let version = args.version.unwrap_or_else(|| "latest".to_owned());
     let repo = update_repo(env::var_os("HZ_REPO"));
 
@@ -45,6 +32,7 @@ pub(crate) fn update(args: UpdateArgs) -> CliResult<()> {
         .env("HZ_REPO", repo)
         .env("HZ_INSTALL_DIR", install_dir)
         .env("HZ_VERSION", version)
+        .env("HZ_CURRENT_VERSION", env!("CARGO_PKG_VERSION"))
         .env("HZ_BINARY", binary)
         .env("HZ_INSTALL_ACTION", "update")
         .stdin(Stdio::piped())
@@ -105,50 +93,18 @@ impl ManagedUpdateInstall {
             Self::Asdf => "asdf",
         }
     }
-
-    pub(crate) fn update_hint(self) -> &'static str {
-        match self {
-            Self::Homebrew => "update it with Homebrew",
-            Self::Mise => "update it with mise",
-            Self::Cargo => "reinstall it with Cargo",
-            Self::Nix => "update it with Nix",
-            Self::Asdf => "update it with asdf",
-        }
-    }
 }
 
-pub(crate) fn check_update_install_dir(
-    install_dir: &Path,
-    binary: &OsStr,
-    explicit_install_dir: bool,
-    force_self_update: bool,
-) -> HzResult<Option<ManagedUpdateInstall>> {
+pub(crate) fn check_update_install_dir(install_dir: &Path, binary: &OsStr) -> HzResult<()> {
     let Some(manager) = managed_update_install(install_dir, binary) else {
-        return Ok(None);
+        return Ok(());
     };
 
-    if explicit_install_dir || force_self_update {
-        return Ok(Some(manager));
-    }
-
     Err(hz_core::HzError::Usage(format!(
-        "refusing to update {} because it looks {}-managed; {}; pass --install-dir DIR to update an installer-managed binary explicitly, or --force-self-update to overwrite the detected target",
-        install_dir.join(binary).display(),
+        "hz update only supports curl-installed hz binaries.\n\nThis path looks {}-managed:\n  {}\n\nReinstall with:\n  curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh\n\nUse --install-dir DIR only for curl-installed targets outside package-manager directories.",
         manager.name(),
-        manager.update_hint()
-    )))
-}
-
-pub(crate) fn managed_update_warning(
-    manager: ManagedUpdateInstall,
-    install_dir: &Path,
-    binary: &OsStr,
-) -> String {
-    format!(
-        "hz: warning: updating {} even though it looks {}-managed",
         install_dir.join(binary).display(),
-        manager.name()
-    )
+    )))
 }
 
 pub(crate) fn managed_update_install(

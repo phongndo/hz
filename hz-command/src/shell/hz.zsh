@@ -293,7 +293,7 @@ _hz_complete_command_options() {
       compadd -- -h --help
       ;;
     update)
-      compadd -- --target-version --install-dir --force-self-update -h --help
+      compadd -- --target-version --install-dir -h --help
       ;;
   esac
 }

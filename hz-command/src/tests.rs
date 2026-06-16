@@ -692,7 +692,7 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("--cleanup"));
     assert!(script.contains("--no-cleanup"));
     assert!(script.contains("--max-detached"));
-    assert!(script.contains("--force-self-update"));
+    assert!(!script.contains("--force-self-update"));
     assert!(!script.contains("--pr"));
     assert!(!script.contains("--patch"));
     assert!(!script.contains("--staged"));
@@ -729,7 +729,7 @@ fn fish_integration_passes_json_short_flag_through() {
     assert!(script.contains("-l max-detached"));
     assert!(script.contains("-l no-diff"));
     assert!(script.contains("-l target-version"));
-    assert!(script.contains("-l force-self-update"));
+    assert!(!script.contains("-l force-self-update"));
     assert!(!script.contains("tui"));
 }
 
@@ -764,7 +764,7 @@ fn bash_integration_registers_completion() {
     assert!(script.contains("--no-cleanup"));
     assert!(script.contains("--max-detached"));
     assert!(script.contains("--target-version"));
-    assert!(script.contains("--force-self-update"));
+    assert!(!script.contains("--force-self-update"));
     assert!(!script.contains("--pr"));
     assert!(!script.contains("--patch"));
     assert!(!script.contains("--staged"));

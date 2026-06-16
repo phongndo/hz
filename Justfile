@@ -39,11 +39,5 @@ smoke-curl-install version="latest":
 smoke-update version="latest":
     scripts/smoke-update {{version}}
 
-smoke-mise version="latest":
-    scripts/smoke-mise {{version}}
-
-homebrew-formula version dist="dist":
-    scripts/render-homebrew-formula {{version}} {{dist}}
-
 hz *args:
     ./target/debug/hz {{ args }}

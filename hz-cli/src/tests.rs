@@ -1176,14 +1176,12 @@ fn init_install_and_lifecycle_commands_parse() {
         "0.1.1",
         "--install-dir",
         "/tmp/hz-bin",
-        "--force-self-update",
     ])
     .unwrap();
     match cli.command {
         Some(Command::Update(args)) => {
             assert_eq!(args.version.as_deref(), Some("0.1.1"));
             assert_eq!(args.install_dir, Some(PathBuf::from("/tmp/hz-bin")));
-            assert!(args.force_self_update);
         }
         command => panic!("expected update command, got {command:?}"),
     }
@@ -1240,49 +1238,15 @@ fn update_detects_package_manager_install_dirs() {
 }
 
 #[test]
-fn update_requires_explicit_override_for_managed_install_dirs() {
-    let error = check_update_install_dir(
-        Path::new("/Users/me/.cargo/bin"),
-        OsStr::new("hz"),
-        false,
-        false,
-    )
-    .unwrap_err()
-    .to_string();
+fn update_rejects_managed_install_dirs() {
+    let error = check_update_install_dir(Path::new("/Users/me/.cargo/bin"), OsStr::new("hz"))
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("Cargo-managed"));
     assert!(error.contains("--install-dir DIR"));
-    assert!(error.contains("--force-self-update"));
+    assert!(!error.contains("--force-self-update"));
 
-    assert_eq!(
-        check_update_install_dir(
-            Path::new("/Users/me/.cargo/bin"),
-            OsStr::new("hz"),
-            true,
-            false,
-        )
-        .unwrap(),
-        Some(ManagedUpdateInstall::Cargo)
-    );
-    assert_eq!(
-        check_update_install_dir(
-            Path::new("/Users/me/.cargo/bin"),
-            OsStr::new("hz"),
-            false,
-            true,
-        )
-        .unwrap(),
-        Some(ManagedUpdateInstall::Cargo)
-    );
-    assert_eq!(
-        check_update_install_dir(
-            Path::new("hz-unmanaged-test-bin"),
-            OsStr::new("hz"),
-            false,
-            false,
-        )
-        .unwrap(),
-        None
-    );
+    assert!(check_update_install_dir(Path::new("hz-unmanaged-test-bin"), OsStr::new("hz")).is_ok());
 }
 
 #[test]
