@@ -76,8 +76,16 @@ fn pwd_prints_current_worktree_target() {
 
     assert_eq!(hz_stdout(&home, &repo, &["pwd"]), "local\n");
     assert_eq!(hz_stdout(&home, &worktree, &["pwd"]), "feature\n");
+    assert_eq!(
+        hz_stdout(&home, &worktree, &["pwd", "--repo", repo.to_str().unwrap()]),
+        "feature\n"
+    );
 
-    let json = hz_stdout(&home, &worktree, &["pwd", "--json"]);
+    let json = hz_stdout(
+        &home,
+        &worktree,
+        &["pwd", "--repo", repo.to_str().unwrap(), "--json"],
+    );
     let value: serde_json::Value = serde_json::from_str(&json).expect("json should parse");
     assert_eq!(value["target"], "feature");
     assert_eq!(

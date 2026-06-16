@@ -122,8 +122,7 @@ pub(crate) struct CurrentWorktree {
 }
 
 pub(crate) fn current_worktree(repo: Option<PathBuf>) -> CliResult<CurrentWorktree> {
-    let current_path =
-        hz_command::current_worktree_path(hz_command::ListWorktrees { repo: repo.clone() })?;
+    let current_path = hz_command::current_worktree_path(hz_command::ListWorktrees { repo: None })?;
     let local = hz_command::local_worktree(hz_command::LocalWorktree { repo: repo.clone() })?;
 
     if same_path(&current_path, &local.path) {
