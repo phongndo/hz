@@ -10,7 +10,7 @@ use std::{
 };
 
 use super::*;
-use crate::{args::*, complete::*, removal::*, tree_sitter::*, update::*, worktree_output::*};
+use crate::{args::*, complete::*, removal::*, update::*, worktree_output::*};
 
 struct FailingWriter(io::ErrorKind);
 
@@ -91,13 +91,7 @@ fn non_stdout_or_non_broken_pipe_errors_do_not_exit_cleanly() {
 }
 
 #[test]
-fn default_command_uses_tui_only_for_terminal_stdout() {
-    assert_eq!(default_action(true), DefaultAction::MainTui);
-    assert_eq!(default_action(false), DefaultAction::Help);
-}
-
-#[test]
-fn default_help_renders_usage_for_non_terminal_stdout() {
+fn default_help_renders_usage() {
     let mut output = Vec::new();
 
     write_default_help(&mut output).unwrap();
@@ -131,80 +125,6 @@ fn list_output_uses_branch_as_display_identifier() {
 #[test]
 fn list_output_is_empty_when_there_are_no_worktrees() {
     assert_eq!(render_worktree_list(&[]), "");
-}
-
-#[test]
-fn tree_sitter_list_output_uses_compact_table() {
-    let output = render_tree_sitter_statuses(
-        &[
-            hz_command::SyntaxLanguageStatus {
-                language: "rust".to_owned(),
-                enabled: true,
-                installed: true,
-                trusted: true,
-                has_highlights: true,
-                version: Some("1.9.0-rc.18".to_owned()),
-                artifact: None,
-                source: Some("bundled".to_owned()),
-            },
-            hz_command::SyntaxLanguageStatus {
-                language: "typescript".to_owned(),
-                enabled: true,
-                installed: true,
-                trusted: true,
-                has_highlights: false,
-                version: Some("1.9.0-rc.18".to_owned()),
-                artifact: None,
-                source: Some("bundled".to_owned()),
-            },
-        ],
-        false,
-        list_glyphs(false),
-        None,
-    );
-
-    assert!(output.contains("language"));
-    assert!(output.contains("status"));
-    assert!(output.contains("version"));
-    let headers = output
-        .lines()
-        .next()
-        .expect("header should render")
-        .split_whitespace()
-        .collect::<Vec<_>>();
-    assert_eq!(headers[1], "status");
-    assert!(output.contains("rust"));
-    assert!(output.contains("ok"));
-    assert!(output.contains("1.9.0-rc.18"));
-    assert!(!output.contains("note"));
-    assert!(!output.contains("no query"));
-    assert!(!output.contains("enabled=yes"));
-}
-
-#[test]
-fn tree_sitter_list_output_centers_unicode_status() {
-    let output = render_tree_sitter_statuses(
-        &[hz_command::SyntaxLanguageStatus {
-            language: "rust".to_owned(),
-            enabled: true,
-            installed: true,
-            trusted: true,
-            has_highlights: true,
-            version: Some("1.9.0-rc.18".to_owned()),
-            artifact: None,
-            source: Some("bundled".to_owned()),
-        }],
-        false,
-        list_glyphs(true),
-        None,
-    );
-
-    let rust_line = output
-        .lines()
-        .find(|line| line.starts_with("rust"))
-        .expect("rust status row should render");
-
-    assert!(rust_line.contains("  ✓   "));
 }
 
 #[test]
@@ -987,7 +907,7 @@ fn handoff_accepts_optional_branch_and_path_only() {
 }
 
 #[test]
-fn creation_and_diff_accept_short_flags() {
+fn creation_accepts_short_flags() {
     let cli = Cli::try_parse_from([
         "hz",
         "new",
@@ -1026,158 +946,6 @@ fn creation_and_diff_accept_short_flags() {
         }
         command => panic!("expected new command, got {command:?}"),
     }
-
-    let cli = Cli::try_parse_from([
-        "hz",
-        "diff",
-        "-r",
-        "/repo",
-        "--unstaged",
-        "--no-untracked",
-        "--no-watch",
-        "--no-syntax",
-        "-s",
-    ])
-    .unwrap();
-    match cli.command {
-        Some(Command::Diff(args)) => {
-            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
-            assert!(args.unstaged);
-            assert!(args.no_untracked);
-            assert!(args.no_watch);
-            assert!(args.no_syntax);
-            assert!(args.stat);
-        }
-        command => panic!("expected diff command, got {command:?}"),
-    }
-
-    assert!(Cli::try_parse_from(["hz", "ts", "add", "ruby", "--no-syntax"]).is_err());
-    assert!(Cli::try_parse_from(["hz", "--no-syntax", "ts", "add", "ruby"]).is_err());
-
-    let cli = Cli::try_parse_from(["hz", "diff", "-b", "main"]).unwrap();
-    match cli.command {
-        Some(Command::Diff(args)) => assert_eq!(args.base.as_deref(), Some("main")),
-        command => panic!("expected diff command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "diff", "main", "feature"]).unwrap();
-    match cli.command {
-        Some(Command::Diff(args)) => assert_eq!(args.revs, ["main", "feature"]),
-        command => panic!("expected diff command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "diff", "--pr", "123", "--stat"]).unwrap();
-    match cli.command {
-        Some(Command::Diff(args)) => {
-            assert_eq!(args.pr.as_deref(), Some("123"));
-            assert!(args.revs.is_empty());
-            assert!(args.stat);
-        }
-        command => panic!("expected diff command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "diff", "pr", "feature"]).unwrap();
-    match cli.command {
-        Some(Command::Diff(args)) => {
-            assert_eq!(args.revs, ["pr", "feature"]);
-            assert_eq!(args.pr, None);
-        }
-        command => panic!("expected diff command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "diff", "--patch", "changes.diff", "--stat"]).unwrap();
-    match cli.command {
-        Some(Command::Diff(args)) => {
-            assert_eq!(args.patch, Some(PathBuf::from("changes.diff")));
-            assert!(args.stat);
-        }
-        command => panic!("expected diff command, got {command:?}"),
-    }
-}
-
-#[test]
-fn diff_scope_flags_conflict_with_revisions_at_parse_time() {
-    assert!(Cli::try_parse_from(["hz", "diff", "--staged", "main"]).is_err());
-    assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "main"]).is_err());
-    assert!(Cli::try_parse_from(["hz", "diff", "--staged", "--base", "main"]).is_err());
-    assert!(Cli::try_parse_from(["hz", "diff", "--unstaged", "--base", "main"]).is_err());
-    assert!(Cli::try_parse_from(["hz", "diff", "--pr", "123", "main"]).is_err());
-    assert!(Cli::try_parse_from(["hz", "diff", "--pr", "123", "--patch", "x.diff"]).is_err());
-}
-
-#[test]
-fn tree_sitter_commands_accept_language_args() {
-    let cli = Cli::try_parse_from(["hz", "ts", "add", "rust", "ruby", "elixir"]).unwrap();
-    match cli.command {
-        Some(Command::TreeSitter {
-            command: TreeSitterCommand::Add(args),
-        }) => assert_eq!(args.languages, ["rust", "ruby", "elixir"]),
-        command => panic!("expected tree-sitter add command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "ts", "update", "rust", "ruby"]).unwrap();
-    match cli.command {
-        Some(Command::TreeSitter {
-            command: TreeSitterCommand::Update(args),
-        }) => {
-            assert_eq!(args.languages, ["rust", "ruby"]);
-            assert!(!args.all);
-        }
-        command => panic!("expected tree-sitter update command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "ts", "update", "--all"]).unwrap();
-    match cli.command {
-        Some(Command::TreeSitter {
-            command: TreeSitterCommand::Update(args),
-        }) => {
-            assert!(args.languages.is_empty());
-            assert!(args.all);
-        }
-        command => panic!("expected tree-sitter update --all command, got {command:?}"),
-    }
-
-    assert!(Cli::try_parse_from(["hz", "ts", "update", "--all", "rust"]).is_err());
-
-    let cli = Cli::try_parse_from(["hz", "tree-sitter", "rm", "rust"]).unwrap();
-    match cli.command {
-        Some(Command::TreeSitter {
-            command: TreeSitterCommand::Rm(args),
-        }) => assert_eq!(args.languages, ["rust"]),
-        command => panic!("expected tree-sitter rm command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "ts", "ls"]).unwrap();
-    match cli.command {
-        Some(Command::TreeSitter {
-            command: TreeSitterCommand::List,
-        }) => {}
-        command => panic!("expected tree-sitter list command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "ts", "available", "--installed"]).unwrap();
-    match cli.command {
-        Some(Command::TreeSitter {
-            command: TreeSitterCommand::Available(args),
-        }) => {
-            assert!(args.installed);
-            assert!(!args.enabled);
-        }
-        command => panic!("expected tree-sitter available command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "ts", "available", "--enabled"]).unwrap();
-    match cli.command {
-        Some(Command::TreeSitter {
-            command: TreeSitterCommand::Available(args),
-        }) => {
-            assert!(!args.installed);
-            assert!(args.enabled);
-        }
-        command => panic!("expected tree-sitter available command, got {command:?}"),
-    }
-
-    assert!(Cli::try_parse_from(["hz", "ts", "available", "--installed", "--enabled"]).is_err());
 }
 
 #[test]
@@ -1281,19 +1049,9 @@ fn shell_completion_command_lists_match_clap() {
         worktree_commands
     );
 
-    let tree_sitter_commands = clap_completion_subcommands(&["ts"]);
-    assert_eq!(
-        bash_words_variable(bash, "_hz_ts_commands"),
-        tree_sitter_commands
-    );
-    assert_eq!(
-        zsh_described_commands(zsh, "_hz_complete_ts_subcommand"),
-        tree_sitter_commands
-    );
-    assert_eq!(
-        fish_argument_words(fish, "__hz_needs_ts_subcommand"),
-        tree_sitter_commands
-    );
+    assert!(!bash.contains("_hz_ts_commands"));
+    assert!(!zsh.contains("_hz_complete_ts_subcommand"));
+    assert!(!fish.contains("__hz_needs_ts_subcommand"));
 }
 
 #[test]
@@ -1311,7 +1069,7 @@ fn shell_completion_option_flags_match_clap() {
         "fish options for hz"
     );
 
-    for group in ["worktree", "wt", "ts", "tree-sitter"] {
+    for group in ["worktree", "wt"] {
         let expected = clap_completion_flags(&[group]);
         assert_eq!(
             bash_group_flags(bash, group),
@@ -1331,7 +1089,7 @@ fn shell_completion_option_flags_match_clap() {
     }
 
     for command in clap_completion_subcommands(&[]) {
-        if matches!(command.as_str(), "worktree" | "wt" | "ts" | "tree-sitter") {
+        if matches!(command.as_str(), "worktree" | "wt") {
             continue;
         }
 
@@ -1369,25 +1127,6 @@ fn shell_completion_option_flags_match_clap() {
             fish_completion_flags(fish, FishCompletionContext::Worktree(&command)),
             expected,
             "fish options for hz worktree {command}"
-        );
-    }
-
-    for command in clap_completion_subcommands(&["ts"]) {
-        let expected = clap_completion_flags(&["ts", &command]);
-        assert_eq!(
-            bash_tree_sitter_flags(bash, &command),
-            expected,
-            "bash options for hz ts {command}"
-        );
-        assert_eq!(
-            zsh_tree_sitter_flags(zsh, &command),
-            expected,
-            "zsh options for hz ts {command}"
-        );
-        assert_eq!(
-            fish_completion_flags(fish, FishCompletionContext::TreeSitter(&command)),
-            expected,
-            "fish options for hz ts {command}"
         );
     }
 }
@@ -1803,7 +1542,6 @@ enum FishCompletionContext<'a> {
     Root,
     Top(&'a str),
     Worktree(&'a str),
-    TreeSitter(&'a str),
 }
 
 fn clap_completion_subcommands(path: &[&str]) -> BTreeSet<String> {
@@ -1932,7 +1670,6 @@ fn shell_group_flags(script: &str, group: &str) -> BTreeSet<String> {
     let body = shell_function_body(script, "_hz_completion");
     let marker = match group {
         "worktree" | "wt" => "if [[ \"$cmd\" == \"worktree\" || \"$cmd\" == \"wt\" ]]; then",
-        "ts" | "tree-sitter" => "if [[ \"$cmd\" == \"ts\" || \"$cmd\" == \"tree-sitter\" ]]; then",
         _ => panic!("unsupported shell group: {group}"),
     };
     let branch = shell_branch_body(body, marker);
@@ -1946,14 +1683,6 @@ fn bash_command_flags(script: &str, command: &str) -> BTreeSet<String> {
 
 fn zsh_command_flags(script: &str, command: &str) -> BTreeSet<String> {
     shell_case_flags(script, "_hz_complete_command_options", command)
-}
-
-fn bash_tree_sitter_flags(script: &str, command: &str) -> BTreeSet<String> {
-    shell_case_flags(script, "_hz_complete_ts_args", command)
-}
-
-fn zsh_tree_sitter_flags(script: &str, command: &str) -> BTreeSet<String> {
-    shell_case_flags(script, "_hz_complete_ts_args", command)
 }
 
 fn shell_case_flags(script: &str, function: &str, command: &str) -> BTreeSet<String> {
@@ -2084,9 +1813,6 @@ fn fish_line_applies(line: &str, context: FishCompletionContext<'_>) -> bool {
         }),
         FishCompletionContext::Worktree(command) => condition
             .is_none_or(|condition| fish_condition_contains(condition, "__hz_command_is", command)),
-        FishCompletionContext::TreeSitter(command) => condition.is_none_or(|condition| {
-            fish_condition_contains(condition, "__hz_ts_subcommand_is", command)
-        }),
     }
 }
 

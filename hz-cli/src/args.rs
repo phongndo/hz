@@ -28,8 +28,7 @@ examples:
   hz setup feature/ui
   hz cleanup feature/ui
   hz cd feature/ui
-  hz handoff feature/ui
-  hz ts add ruby elixir";
+  hz handoff feature/ui";
 
 pub(crate) const INSTALL_SCRIPT: &str = include_str!("../../scripts/install.sh");
 pub(crate) const RELEASE_REPO: &str = "phongndo/hz";
@@ -96,72 +95,8 @@ examples:
   hz update --force-self-update"
     )]
     Update(UpdateArgs),
-    #[command(
-        about = "Review a Git diff",
-        after_help = "\
-examples:
-  hz diff
-  hz diff --base main
-  hz diff --pr 123
-  hz diff --pr https://github.com/owner/repo/pull/123"
-    )]
-    Diff(DiffArgs),
-    #[command(
-        name = "ts",
-        alias = "tree-sitter",
-        about = "Manage diff syntax highlighting languages"
-    )]
-    TreeSitter {
-        #[command(subcommand)]
-        command: TreeSitterCommand,
-    },
     #[command(name = "__complete", hide = true)]
     Complete(CompleteArgs),
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum TreeSitterCommand {
-    #[command(about = "Install and enable syntax highlighting languages")]
-    Add(TreeSitterLanguagesArgs),
-    #[command(about = "Update cached syntax highlighting parsers")]
-    Update(TreeSitterUpdateArgs),
-    #[command(alias = "remove", about = "Remove syntax highlighting languages")]
-    Rm(TreeSitterLanguagesArgs),
-    #[command(
-        visible_alias = "ls",
-        about = "List installed and enabled syntax highlighting languages"
-    )]
-    List,
-    #[command(about = "List syntax highlighting languages")]
-    Available(TreeSitterAvailableArgs),
-    #[command(about = "Remove cached tree-sitter parser libraries")]
-    Clean,
-    #[command(about = "Print tree-sitter cache and syntax config paths")]
-    Path,
-    #[command(about = "Validate enabled syntax highlighting languages")]
-    Doctor,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct TreeSitterLanguagesArgs {
-    #[arg(value_name = "LANG", required = true)]
-    pub(crate) languages: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct TreeSitterUpdateArgs {
-    #[arg(value_name = "LANG", required_unless_present = "all")]
-    pub(crate) languages: Vec<String>,
-    #[arg(long, conflicts_with = "languages")]
-    pub(crate) all: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct TreeSitterAvailableArgs {
-    #[arg(long, conflicts_with = "enabled")]
-    pub(crate) installed: bool,
-    #[arg(long, conflicts_with = "installed")]
-    pub(crate) enabled: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -318,40 +253,6 @@ pub(crate) enum ShellArg {
     Zsh,
     Bash,
     Fish,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct DiffArgs {
-    #[arg(value_name = "REV", num_args = 0..=2)]
-    pub(crate) revs: Vec<String>,
-    /// Fetch and review a GitHub pull request by number or URL.
-    #[arg(
-        long,
-        value_name = "NUMBER|URL",
-        conflicts_with_all = ["base", "revs", "staged", "unstaged", "no_untracked", "patch"]
-    )]
-    pub(crate) pr: Option<String>,
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
-    #[arg(short = 'b', long)]
-    pub(crate) base: Option<String>,
-    #[arg(long, conflicts_with = "unstaged", conflicts_with_all = ["base", "revs"])]
-    pub(crate) staged: bool,
-    #[arg(long, conflicts_with_all = ["base", "revs"])]
-    pub(crate) unstaged: bool,
-    #[arg(long = "no-untracked")]
-    pub(crate) no_untracked: bool,
-    /// Read an existing unified diff from FILE, or stdin when FILE is `-`.
-    #[arg(long, value_name = "FILE")]
-    pub(crate) patch: Option<PathBuf>,
-    /// Disable live reload in the interactive diff viewer.
-    #[arg(long = "no-watch")]
-    pub(crate) no_watch: bool,
-    /// Disable syntax highlighting in the interactive diff viewer.
-    #[arg(long = "no-syntax")]
-    pub(crate) no_syntax: bool,
-    #[arg(short = 's', long)]
-    pub(crate) stat: bool,
 }
 
 #[derive(Debug, Args)]

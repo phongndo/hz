@@ -8,7 +8,7 @@ use crate::{
     CONFIG_FILE, CreateWorktree, ForkWorktree, HZ_DIR, HandoffMode, HandoffWorktree, LifecycleKind,
 };
 use hz_core::{HzError, HzResult, path_utils::normalize_lexically};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadRepoConfig {
@@ -72,12 +72,46 @@ pub struct LifecycleConfig {
     pub cleanup: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct WorktreeConfig {
     pub default_base: Option<String>,
     pub max_detached: Option<usize>,
     pub user_managed_roots: Option<Vec<String>>,
     pub max_branch_worktrees: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct RawWorktreeConfig {
+    auto_prune: Option<bool>,
+    default_base: Option<String>,
+    max_detached: Option<usize>,
+    user_managed_roots: Option<Vec<String>>,
+    max_branch_worktrees: Option<usize>,
+}
+
+impl<'de> Deserialize<'de> for WorktreeConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawWorktreeConfig::deserialize(deserializer)?;
+        let auto_prune = raw.auto_prune.unwrap_or(true);
+
+        Ok(Self {
+            default_base: raw.default_base,
+            max_detached: if auto_prune {
+                raw.max_detached
+            } else {
+                Some(0)
+            },
+            user_managed_roots: raw.user_managed_roots,
+            max_branch_worktrees: if auto_prune {
+                raw.max_branch_worktrees
+            } else {
+                Some(0)
+            },
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

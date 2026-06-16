@@ -13,6 +13,17 @@ mkdir -p "$tmp_dir/bin" "$tmp_dir/target"
 cat > "$tmp_dir/bin/hz" <<'SH'
 #!/usr/bin/env sh
 set -eu
+if [ "${1:-}" = "__complete" ]; then
+  case "${2:-}" in
+    worktree-targets)
+      printf '%s\n' alpha beta
+      ;;
+    removable-worktrees)
+      printf '%s\n' alpha
+      ;;
+  esac
+  exit 0
+fi
 printf '%s\n' "$@" > "$HZ_ARGS"
 printf '%s\n' "$HZ_TARGET"
 SH
@@ -22,6 +33,7 @@ chmod +x "$tmp_dir/bin/hz"
 
 HZ_ARGS="$tmp_dir/args" \
 HZ_TARGET="$tmp_dir/target" \
+HZ_COMPLETIONS="$tmp_dir/completions" \
 PATH="$tmp_dir/bin:$PATH" \
 HZ_INTEGRATION="$tmp_dir/hz.zsh" \
 zsh -fc '
@@ -49,4 +61,38 @@ zsh -fc '
   [[ "${_comps[_hzcd]:-}" == "_hzcd_completion" ]]
   [[ "${_comps[hzlocal]:-}" == "_hzlocal_completion" ]]
   [[ "${_comps[_hzlocal]:-}" == "_hzlocal_completion" ]]
+
+  compadd() {
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        -a)
+          shift
+          eval "print -rl -- \"\${${1}[@]}\"" >> "$HZ_COMPLETIONS"
+          ;;
+        --)
+          shift
+          print -rl -- "$@" >> "$HZ_COMPLETIONS"
+          return
+          ;;
+        -*)
+          ;;
+        *)
+          print -r -- "$1" >> "$HZ_COMPLETIONS"
+          ;;
+      esac
+      shift
+    done
+  }
+
+  : > "$HZ_COMPLETIONS"
+  _hz_complete_command_options ls
+  grep -qx -- "--json" "$HZ_COMPLETIONS"
+
+  : > "$HZ_COMPLETIONS"
+  words=(hz cd "")
+  CURRENT=3
+  PREFIX=""
+  _hz_worktree_targets
+  grep -qx -- "alpha" "$HZ_COMPLETIONS"
+  grep -qx -- "beta" "$HZ_COMPLETIONS"
 '

@@ -14,7 +14,7 @@ check:
 build:
     cargo build -p hz-cli --locked
 
-smoke: smoke-cli smoke-zsh smoke-installer-update
+smoke: smoke-cli smoke-zsh smoke-bench smoke-installer-update
 
 smoke-cli:
     cargo build -p hz-cli --locked
@@ -25,6 +25,10 @@ smoke-cli:
 
 smoke-zsh:
     zsh scripts/smoke-zsh
+
+smoke-bench:
+    cargo build -p hz-cli --locked
+    cargo run -p hz-bench --locked -- cmd --hz target/debug/hz --worktrees 2 --warmup 0 --iterations 1 --json >/dev/null
 
 smoke-installer-update version="latest":
     scripts/smoke-installer-update {{version}}

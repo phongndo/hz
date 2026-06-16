@@ -1,85 +1,35 @@
 # Benchmarks
 
-`hz diff` performance work starts with deterministic fixtures that can be reused
-by hz benchmarks and by competitor runs against Hunk or other diff viewers.
+`hz-bench` contains headless benchmark utilities for the workspace CLI. It does
+not benchmark the old diff/TUI product; diff review benchmarks live with
+[`dx`](https://github.com/phongndo/dx).
 
-Generate the standard fixture suite into `target/`:
-
-```sh
-cargo run -p hz-bench -- fixtures --out target/bench-fixtures --force
-```
-
-Generate one scenario:
+Build `hz`, then run the command benchmark:
 
 ```sh
-cargo run -p hz-bench -- fixtures \
-  --out target/bench-fixtures \
-  --scenario many-small-files \
-  --force
+cargo build -p hz-cli --locked
+cargo run -p hz-bench -- cmd --hz target/debug/hz --worktrees 12 --iterations 10
 ```
 
-Add the opt-in larger stress fixture:
+The benchmark creates an isolated temporary Git repo and HOME, creates synthetic
+`hz` worktrees, then measures end-to-end CLI latency for commands such as
+`hz list`, `hz path`, shell generation, and dynamic completion candidate lookup.
+
+Use JSON for machine-readable results:
 
 ```sh
-cargo run -p hz-bench -- fixtures --out target/bench-fixtures --stress --force
+cargo run -p hz-bench -- cmd \
+  --hz target/debug/hz \
+  --worktrees 50 \
+  --iterations 25 \
+  --json
 ```
 
-Add syntax-oriented Rust fixtures for syntax-enabled diff runs:
+Use `--mutating` when you also want to measure create/remove latency:
 
 ```sh
-cargo run -p hz-bench -- fixtures --out target/bench-fixtures --syntax --force
+cargo run -p hz-bench -- cmd --hz target/debug/hz --mutating
 ```
 
-Each scenario directory contains:
-
-```text
-repo/            git repository with benchmark working-tree state
-patch.diff       primary all-changes patch, including synthetic untracked files
-head.patch       same all-changes patch for HEAD-vs-worktree mode
-unstaged.patch   unstaged patch, including synthetic untracked files
-staged.patch     staged patch
-pair/            before/after files for direct file comparison benchmarks
-manifest.json    scenario metadata and expected text stats
-```
-
-Patch-mode benchmarks can bypass Git setup and isolate parser/viewer costs:
-
-```sh
-hz diff --patch target/bench-fixtures/balanced-changeset/patch.diff >/dev/null
-hz diff --patch target/bench-fixtures/balanced-changeset/patch.diff --stat >/dev/null
-```
-
-Measure patch loading, synthetic TUI open/render/scroll latency, syntax cache
-hit rate, queue depth, and memory growth:
-
-```sh
-cargo run --release -p hz-bench -- measure \
-  --fixtures target/bench-fixtures \
-  --syntax \
-  --syntax-language rust
-```
-
-Use `--json` to capture machine-readable metrics. When `--syntax` is passed
-without `--syntax-language`, `rust` is used by default so the Rust syntax
-fixtures can run without mutating the user's `hz ts` config.
-
-Standard scenarios:
-
-- `many-small-files`
-- `balanced-changeset`
-- `large-single-file`
-- `many-untracked-small`
-- `few-untracked-large`
-- `minified-one-line`
-- `binary-files`
-- `staged-unstaged`
-
-The opt-in `huge-mixed-stress` scenario is intentionally larger and should be
-used for max-size, memory, and scroll-latency work rather than default local
-smoke checks.
-
-Syntax-oriented scenarios:
-
-- `syntax-many-small-rust`
-- `syntax-large-rust`
-- `syntax-minified-rust`
+By default, fixtures are removed after the run. Pass `--keep <new-dir>` to keep
+the generated repo and isolated HOME for inspection.

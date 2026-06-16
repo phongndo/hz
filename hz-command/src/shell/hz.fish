@@ -92,19 +92,6 @@ function __hz_needs_worktree_subcommand
     test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
 end
 
-function __hz_needs_ts_subcommand
-    set -l tokens (commandline -opc)
-    test (count $tokens) -ge 2; or return 1
-    contains -- $tokens[2] ts tree-sitter; or return 1
-
-    if test (count $tokens) -eq 2
-        return 0
-    end
-
-    set -l current (commandline -ct)
-    test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
-end
-
 
 function __hz_top_command_is
     set -l tokens (commandline -opc)
@@ -120,18 +107,9 @@ function __hz_command_is
     if contains -- $cmd worktree wt
         test (count $tokens) -ge 3; or return 1
         set cmd $tokens[3]
-    else if contains -- $cmd ts tree-sitter
-        return 1
     end
 
     contains -- $cmd $argv
-end
-
-function __hz_ts_subcommand_is
-    set -l tokens (commandline -opc)
-    test (count $tokens) -ge 3; or return 1
-    contains -- $tokens[2] ts tree-sitter; or return 1
-    contains -- $tokens[3] $argv
 end
 
 
@@ -177,31 +155,18 @@ function __hz_previous_token
     test $count -gt 0; and echo $tokens[$count]
 end
 
-function __hz_diff_position_is_revision
-    __hz_command_is diff; or return 1
-
-    set -l current (commandline -ct)
-    string match -q -- '-*' "$current"; and return 1
-
-    set -l previous (__hz_previous_token)
-    contains -- "$previous" -r --repo -b --base --pr --patch; and return 1
-    return 0
-end
-
 complete -c hz -e
 complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt" -a "new fork path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt"
+complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls remove rm handoff init install setup cleanup shell update worktree wt" -a "new fork path cd list ls remove rm handoff init install setup cleanup shell update worktree wt"
 complete -c hz -n "__hz_needs_worktree_subcommand" -a "new fork path cd list ls remove rm handoff"
-complete -c hz -n "__hz_needs_ts_subcommand" -a "add update rm remove list ls available clean path doctor"
 
 complete -c hz -n "__hz_command_is cd path handoff setup cleanup" -a "(__hz_complete_worktree_targets)"
 complete -c hz -n "__hz_command_is rm remove" -a "(__hz_complete_removable_worktrees)"
 complete -c hz -n "__hz_top_command_is init install shell" -a "zsh bash fish"
-complete -c hz -n "__hz_diff_position_is_revision" -a "(__hz_complete_git_refs)"
-complete -c hz -n "__hz_command_is new fork path cd list ls remove rm handoff init setup cleanup diff" -s r -l repo -r -F
+complete -c hz -n "__hz_command_is new fork path cd list ls remove rm handoff init setup cleanup" -s r -l repo -r -F
 complete -c hz -n "__hz_command_is new fork" -s p -l path -r -F
 complete -c hz -n "__hz_command_is new" -s B -l base -r -a "(__hz_complete_git_refs)"
 complete -c hz -n "__hz_command_is new" -s b -l branch -r -a "(__hz_complete_git_refs)"
@@ -218,24 +183,10 @@ complete -c hz -n "__hz_command_is remove rm" -l no-cleanup
 complete -c hz -n "__hz_command_is remove rm" -l cleanup
 complete -c hz -n "__hz_command_is handoff" -s b -l branch
 complete -c hz -n "__hz_command_is handoff" -s n -l new
-complete -c hz -n "__hz_command_is diff" -s b -l base -r -a "(__hz_complete_git_refs)"
-complete -c hz -n "__hz_command_is diff" -l pr -r
-complete -c hz -n "__hz_command_is diff" -l staged
-complete -c hz -n "__hz_command_is diff" -l unstaged
-complete -c hz -n "__hz_command_is diff" -l no-untracked
-complete -c hz -n "__hz_command_is diff" -l patch -r -F
-complete -c hz -n "__hz_command_is diff" -l no-watch
-complete -c hz -n "__hz_command_is diff" -l no-syntax
-complete -c hz -n "__hz_command_is diff" -s s -l stat
-complete -c hz -n "__hz_top_command_is ts tree-sitter" -s h -l help
-complete -c hz -n "__hz_ts_subcommand_is available" -l installed
-complete -c hz -n "__hz_ts_subcommand_is available" -l enabled
-complete -c hz -n "__hz_ts_subcommand_is update" -l all
 complete -c hz -n "__hz_top_command_is update" -l target-version -r
 complete -c hz -n "__hz_top_command_is update" -l install-dir -r -F
 complete -c hz -n "__hz_top_command_is update" -l force-self-update
 complete -c hz -s h -l help
-complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls remove rm handoff init install setup cleanup shell update diff ts tree-sitter worktree wt" -s V -l version
 
 complete -c hzcd -f
 complete -c hzcd -a "(__hz_complete_worktree_targets)"
@@ -247,3 +198,4 @@ complete -c hzlocal -f
 complete -c hzlocal -s r -l repo -r -F
 complete -c hzlocal -s j -l json
 complete -c hzlocal -s h -l help
+complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls remove rm handoff init install setup cleanup shell update worktree wt" -s V -l version

@@ -5,7 +5,6 @@ mod removal;
 mod repo_shell;
 #[cfg(test)]
 mod tests;
-mod tree_sitter;
 mod update;
 mod worktree_output;
 
@@ -24,7 +23,6 @@ use crate::{
     lifecycle::run_lifecycle,
     removal::{handoff_worktree, remove_worktree},
     repo_shell::{init_repo_or_shell, install_shell, shell_script},
-    tree_sitter::{diff_options, tree_sitter},
     update::update,
     worktree_output::{
         StyleColor, create_worktree, fork_worktree, list_worktrees, path_worktree, styled,
@@ -109,10 +107,7 @@ fn run() -> CliResult<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        None => match default_action(io::stdout().is_terminal()) {
-            DefaultAction::MainTui => run_main_tui(),
-            DefaultAction::Help => write_default_help(io::stdout().lock()),
-        },
+        None => write_default_help(io::stdout().lock()),
         Some(Command::Worktree { command }) => match command {
             WorktreeCommand::New(args) => create_worktree(args),
             WorktreeCommand::Fork(args) => fork_worktree(args),
@@ -133,38 +128,7 @@ fn run() -> CliResult<()> {
         Some(Command::Cleanup(args)) => run_lifecycle(args, hz_command::LifecycleKind::Cleanup),
         Some(Command::Shell(args)) => shell_script(args),
         Some(Command::Update(args)) => update(args),
-        Some(Command::Diff(args)) => {
-            let stat = args.stat;
-            let live_updates = !args.no_watch;
-            let syntax_enabled = !args.no_syntax;
-            let options = diff_options(args)?;
-            if io::stdout().is_terminal() && !stat {
-                hz_tui::run_diff_with_live_updates_and_syntax(
-                    options,
-                    live_updates,
-                    syntax_enabled,
-                )?;
-                Ok(())
-            } else {
-                stream_diff_to_stdout(options)
-            }
-        }
-        Some(Command::TreeSitter { command }) => tree_sitter(command),
         Some(Command::Complete(args)) => complete(args),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DefaultAction {
-    MainTui,
-    Help,
-}
-
-fn default_action(stdout_is_terminal: bool) -> DefaultAction {
-    if stdout_is_terminal {
-        DefaultAction::MainTui
-    } else {
-        DefaultAction::Help
     }
 }
 
@@ -175,18 +139,6 @@ fn write_default_help(mut writer: impl Write) -> CliResult<()> {
         .map_err(stdout_write_error)?;
     writer.write_all(b"\n").map_err(stdout_write_error)?;
     Ok(())
-}
-
-fn run_main_tui() -> CliResult<()> {
-    hz_tui::run_main().map_err(CliError::from)
-}
-
-fn stream_diff_to_stdout(options: hz_command::DiffOptions) -> CliResult<()> {
-    match hz_command::diff_to_writer(options, io::stdout().lock()) {
-        Ok(()) => Ok(()),
-        Err(HzError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }
 
 #[cfg(test)]
