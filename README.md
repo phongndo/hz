@@ -121,6 +121,7 @@ hz new fix-login
 hz fork
 hz new
 hz ls
+hz pwd
 hz path fix-login
 hz cd fix-login
 hz setup fix-login
@@ -132,6 +133,9 @@ hz rm fix-login
 `hz new` without a name generates a four-character lowercase alphanumeric handle
 and leaves the worktree on a detached `HEAD`. Managed worktrees are registered
 in `~/.hz/registry.json`.
+
+`hz pwd` prints the current worktree target (`local`, a branch name, or a
+detached handle). Pass `--json` to include the target, repo, and path.
 
 `hz fork` creates a new detached worktree at the current `HEAD` and applies the
 current worktree diff there, including untracked files. The source worktree is
