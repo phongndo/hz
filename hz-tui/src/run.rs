@@ -61,16 +61,21 @@ async fn run_diff_with_live_updates_and_syntax_async(
             )))
         })??;
 
-    let mut cleanup = TerminalCleanup::install()?;
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend)?;
-    let layout = default_layout_for_width(terminal.size()?.width);
+    let layout = default_layout_for_width(crossterm::terminal::size()?.0);
     let syntax_mode = if syntax_enabled {
         SyntaxStartupMode::Config
     } else {
         SyntaxStartupMode::Disabled
     };
     let mut app = DiffApp::new_with_syntax(options, changeset, layout, syntax_mode);
+
+    let mut cleanup = TerminalCleanup::install()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    let terminal_width = terminal.size()?.width;
+    if default_layout_for_width(terminal_width) != app.layout {
+        app.apply_responsive_layout(terminal_width);
+    }
     let mut live_diff = None;
     sync_live_diff(&mut live_diff, &mut app, live_updates);
 

@@ -974,8 +974,8 @@ fn ctrl_g_without_editor_launch_preserves_queued_events() {
     changeset.files[0].new_path = None;
     let mut app = DiffApp::new(DiffOptions::default(), changeset, DiffLayoutMode::Unified);
     let queued_quit = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
-    let (tx, rx) = mpsc::unbounded_channel();
-    tx.send(Ok(queued_quit.clone())).unwrap();
+    let (tx, rx) = mpsc::channel(1);
+    tx.try_send(Ok(queued_quit.clone())).unwrap();
     let mut events = crate::event_reader::TerminalEventReader::from_receiver(rx);
     let mut live_diff = None;
 
@@ -1594,10 +1594,10 @@ fn live_reload_started_state_marks_pending_until_loaded() {
         changeset.clone(),
         DiffLayoutMode::Unified,
     );
-    let (reload_tx, mut reload_rx) = mpsc::unbounded_channel();
+    let (reload_tx, mut reload_rx) = mpsc::channel(2);
 
     reload_tx
-        .send(LiveDiffReload::Started)
+        .try_send(LiveDiffReload::Started)
         .expect("started reload should send");
     drain_live_reloads(&mut app, Some(&mut reload_rx));
 
@@ -1605,7 +1605,7 @@ fn live_reload_started_state_marks_pending_until_loaded() {
     app.dirty = false;
 
     reload_tx
-        .send(LiveDiffReload::Loaded(Ok(changeset)))
+        .try_send(LiveDiffReload::Loaded(Ok(changeset)))
         .expect("loaded reload should send");
     drain_live_reloads(&mut app, Some(&mut reload_rx));
 
@@ -4468,7 +4468,7 @@ fn full_file_syntax_job_source() -> SyntaxJobSource {
 }
 
 fn syntax_runtime_with_queue(queue: SyntaxWorkerQueue) -> SyntaxRuntime {
-    let (_result_tx, result_rx) = mpsc::unbounded_channel();
+    let (_result_tx, result_rx) = mpsc::channel(1);
     SyntaxRuntime {
         languages: SyntaxLanguageSet::from_enabled_languages(&[]),
         limits: SyntaxLimits::default(),

@@ -1739,7 +1739,6 @@ impl DiffHunkBuilder {
             return;
         };
 
-        let text = raw.get(1..).unwrap_or_default().to_owned();
         match prefix {
             b'+' => {
                 let new_line = self.new_line;
@@ -1749,7 +1748,7 @@ impl DiffHunkBuilder {
                     kind: DiffLineKind::Addition,
                     old_line: None,
                     new_line: Some(new_line),
-                    text,
+                    text: raw.get(1..).unwrap_or_default().to_owned(),
                 });
             }
             b'-' => {
@@ -1760,10 +1759,10 @@ impl DiffHunkBuilder {
                     kind: DiffLineKind::Deletion,
                     old_line: Some(old_line),
                     new_line: None,
-                    text,
+                    text: raw.get(1..).unwrap_or_default().to_owned(),
                 });
             }
-            b' ' => self.push_context(&text),
+            b' ' => self.push_context_owned(raw.get(1..).unwrap_or_default().to_owned()),
             b'\\' => self.lines.push(DiffLine {
                 kind: DiffLineKind::Meta,
                 old_line: None,
@@ -1780,6 +1779,10 @@ impl DiffHunkBuilder {
     }
 
     fn push_context(&mut self, text: &str) {
+        self.push_context_owned(text.to_owned());
+    }
+
+    fn push_context_owned(&mut self, text: String) {
         let old_line = self.old_line;
         let new_line = self.new_line;
         self.old_line += 1;
@@ -1788,7 +1791,7 @@ impl DiffHunkBuilder {
             kind: DiffLineKind::Context,
             old_line: Some(old_line),
             new_line: Some(new_line),
-            text: text.to_owned(),
+            text,
         });
     }
 

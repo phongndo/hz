@@ -1,12 +1,25 @@
 use hz_diff::FileStatus;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use std::borrow::Cow;
+use unicode_width::UnicodeWidthChar;
+
+const STATIC_SPACES: &str = concat!(
+    "                                                                ",
+    "                                                                ",
+    "                                                                ",
+    "                                                                ",
+    "                                                                ",
+    "                                                                ",
+    "                                                                ",
+    "                                                                ",
+);
 
 pub(crate) fn fit_with_ellipsis(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
-    if text.width() <= width {
-        return fit(text, width);
+    let (fitted, _, complete) = fit_with_width(text, width);
+    if complete {
+        return fitted;
     }
     if width <= 3 {
         return fit("...", width);
@@ -65,8 +78,12 @@ pub(crate) fn fit_padded_from(text: &str, horizontal_scroll: usize, width: usize
     } else {
         text
     };
-    if is_single_width_ascii(visible) {
-        let used = visible.len().min(width);
+
+    let ascii_prefix = single_width_ascii_prefix_len(visible, width);
+    if ascii_prefix == visible.len()
+        || (ascii_prefix == width && next_byte_is_single_width_ascii(visible, ascii_prefix))
+    {
+        let used = ascii_prefix;
         let mut out = String::with_capacity(width);
         out.push_str(&visible[..used]);
         if used < width {
@@ -75,8 +92,7 @@ pub(crate) fn fit_padded_from(text: &str, horizontal_scroll: usize, width: usize
         return out;
     }
 
-    let mut out = fit(visible, width);
-    let len = UnicodeWidthStr::width(out.as_str());
+    let (mut out, len, _) = fit_with_width(visible, width);
     if len < width {
         out.reserve(width - len);
         out.extend(std::iter::repeat_n(' ', width - len));
@@ -88,8 +104,12 @@ pub(crate) fn skip_display_prefix(text: &str, columns: usize) -> (&str, usize) {
     if columns == 0 {
         return (text, 0);
     }
-    if is_single_width_ascii(text) {
-        let skipped = columns.min(text.len());
+
+    let ascii_prefix = single_width_ascii_prefix_len(text, columns);
+    if ascii_prefix == text.len()
+        || (ascii_prefix == columns && next_byte_is_single_width_ascii(text, ascii_prefix))
+    {
+        let skipped = ascii_prefix;
         return (&text[skipped..], skipped);
     }
 
@@ -113,26 +133,58 @@ pub(crate) fn skip_display_prefix(text: &str, columns: usize) -> (&str, usize) {
 }
 
 pub(crate) fn fit(text: &str, width: usize) -> String {
+    fit_with_width(text, width).0
+}
+
+pub(crate) fn fit_with_width(text: &str, width: usize) -> (String, usize, bool) {
     if width == 0 {
-        return String::new();
-    }
-    if is_single_width_ascii(text) {
-        return text[..text.len().min(width)].to_owned();
+        return (String::new(), 0, text.is_empty());
     }
 
-    let mut out = String::new();
+    let ascii_prefix = single_width_ascii_prefix_len(text, width);
+    if ascii_prefix == text.len()
+        || (ascii_prefix == width && next_byte_is_single_width_ascii(text, ascii_prefix))
+    {
+        return (
+            text[..ascii_prefix].to_owned(),
+            ascii_prefix,
+            ascii_prefix == text.len(),
+        );
+    }
+
+    let mut out = String::with_capacity(text.len().min(width.saturating_mul(4)));
     let mut used = 0;
-    for ch in text.chars() {
+    let mut byte_end = 0;
+    for (index, ch) in text.char_indices() {
         let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
         if used + ch_width > width {
             break;
         }
         used += ch_width;
+        byte_end = index + ch.len_utf8();
         out.push(ch);
     }
-    out
+    (out, used, byte_end == text.len())
 }
 
-pub(crate) fn is_single_width_ascii(text: &str) -> bool {
-    text.bytes().all(|byte| (b' '..=b'~').contains(&byte))
+pub(crate) fn spaces(width: usize) -> Cow<'static, str> {
+    if width <= STATIC_SPACES.len() {
+        Cow::Borrowed(&STATIC_SPACES[..width])
+    } else {
+        Cow::Owned(" ".repeat(width))
+    }
+}
+
+fn single_width_ascii_prefix_len(text: &str, max_bytes: usize) -> usize {
+    text.as_bytes()
+        .iter()
+        .take(max_bytes)
+        .take_while(|&&byte| (b' '..=b'~').contains(&byte))
+        .count()
+}
+
+fn next_byte_is_single_width_ascii(text: &str, index: usize) -> bool {
+    text.as_bytes()
+        .get(index)
+        .is_some_and(|byte| (b' '..=b'~').contains(byte))
 }

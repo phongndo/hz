@@ -12,18 +12,36 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SearchLineRef {
-    FileBody {
-        file: usize,
-    },
-    HunkHeader {
-        file: usize,
-        hunk: usize,
-    },
-    DiffLine {
-        file: usize,
-        hunk: usize,
-        line: usize,
-    },
+    FileBody { file: u32 },
+    HunkHeader { file: u32, hunk: u32 },
+    DiffLine { file: u32, hunk: u32, line: u32 },
+}
+
+impl SearchLineRef {
+    fn file_body(file: usize) -> Self {
+        Self::FileBody {
+            file: compact_index(file),
+        }
+    }
+
+    fn hunk_header(file: usize, hunk: usize) -> Self {
+        Self::HunkHeader {
+            file: compact_index(file),
+            hunk: compact_index(hunk),
+        }
+    }
+
+    fn diff_line(file: usize, hunk: usize, line: usize) -> Self {
+        Self::DiffLine {
+            file: compact_index(file),
+            hunk: compact_index(hunk),
+            line: compact_index(line),
+        }
+    }
+}
+
+fn compact_index(index: usize) -> u32 {
+    u32::try_from(index).expect("diff search indices should fit in u32")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,31 +86,42 @@ impl DiffSearchIndex {
                 }
                 filter_texts.push(file.status.label().to_ascii_lowercase());
 
-                let mut grep_text = Vec::new();
-                let mut grep_lines = Vec::new();
+                let grep_line_count = file
+                    .hunks
+                    .iter()
+                    .map(|hunk| hunk.lines.len().saturating_add(1))
+                    .sum::<usize>()
+                    .saturating_add(usize::from(file.is_binary || file.hunks.is_empty()));
+                let grep_text_bytes = file
+                    .hunks
+                    .iter()
+                    .map(|hunk| {
+                        hunk.header.len().saturating_add(1).saturating_add(
+                            hunk.lines
+                                .iter()
+                                .map(|line| line.text.len().saturating_add(2))
+                                .sum::<usize>(),
+                        )
+                    })
+                    .sum::<usize>();
+                let mut grep_text = Vec::with_capacity(grep_text_bytes);
+                let mut grep_lines = Vec::with_capacity(grep_line_count);
                 let mut max_line_width = 0usize;
 
                 for (hunk_index, hunk) in file.hunks.iter().enumerate() {
                     push_search_line(
                         &mut grep_text,
                         &mut grep_lines,
-                        SearchLineRef::HunkHeader {
-                            file: file_index,
-                            hunk: hunk_index,
-                        },
+                        SearchLineRef::hunk_header(file_index, hunk_index),
                         hunk.header.as_bytes(),
                     );
                     for (line_index, line) in hunk.lines.iter().enumerate() {
-                        max_line_width = max_line_width.max(line.text.width());
+                        max_line_width = max_line_width.max(display_width(&line.text));
                         let prefix = diff_line_grep_prefix(line.kind) as u8;
                         push_prefixed_search_line(
                             &mut grep_text,
                             &mut grep_lines,
-                            SearchLineRef::DiffLine {
-                                file: file_index,
-                                hunk: hunk_index,
-                                line: line_index,
-                            },
+                            SearchLineRef::diff_line(file_index, hunk_index, line_index),
                             prefix,
                             line.text.as_bytes(),
                         );
@@ -103,14 +132,14 @@ impl DiffSearchIndex {
                     push_search_line(
                         &mut grep_text,
                         &mut grep_lines,
-                        SearchLineRef::FileBody { file: file_index },
+                        SearchLineRef::file_body(file_index),
                         b"binary file",
                     );
                 } else if file.hunks.is_empty() {
                     push_search_line(
                         &mut grep_text,
                         &mut grep_lines,
-                        SearchLineRef::FileBody { file: file_index },
+                        SearchLineRef::file_body(file_index),
                         b"no textual changes",
                     );
                 }
@@ -208,6 +237,14 @@ impl DiffSearchIndex {
             .map(|file| file.max_line_width)
             .max()
             .unwrap_or_default()
+    }
+}
+
+fn display_width(text: &str) -> usize {
+    if text.bytes().all(|byte| (b' '..=b'~').contains(&byte)) {
+        text.len()
+    } else {
+        text.width()
     }
 }
 
@@ -432,12 +469,12 @@ fn row_matches_grep_refs(row: UiRow, matches: &HashSet<SearchLineRef>) -> bool {
         | UiRow::Collapsed { .. }
         | UiRow::ContextLine { .. }
         | UiRow::ContextHide { .. } => false,
-        UiRow::BinaryFile(file) => matches.contains(&SearchLineRef::FileBody { file }),
+        UiRow::BinaryFile(file) => matches.contains(&SearchLineRef::file_body(file)),
         UiRow::HunkHeader { file, hunk } => {
-            matches.contains(&SearchLineRef::HunkHeader { file, hunk })
+            matches.contains(&SearchLineRef::hunk_header(file, hunk))
         }
         UiRow::UnifiedLine { file, hunk, line } | UiRow::MetaLine { file, hunk, line } => {
-            matches.contains(&SearchLineRef::DiffLine { file, hunk, line })
+            matches.contains(&SearchLineRef::diff_line(file, hunk, line))
         }
         UiRow::SplitLine {
             file,
@@ -445,9 +482,9 @@ fn row_matches_grep_refs(row: UiRow, matches: &HashSet<SearchLineRef>) -> bool {
             left,
             right,
         } => {
-            left.is_some_and(|line| matches.contains(&SearchLineRef::DiffLine { file, hunk, line }))
+            left.is_some_and(|line| matches.contains(&SearchLineRef::diff_line(file, hunk, line)))
                 || right.is_some_and(|line| {
-                    matches.contains(&SearchLineRef::DiffLine { file, hunk, line })
+                    matches.contains(&SearchLineRef::diff_line(file, hunk, line))
                 })
         }
     }

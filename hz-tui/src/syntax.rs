@@ -14,7 +14,7 @@ use hz_diff::{Changeset, DiffLine, DiffLineKind, DiffOptions, DiffScope, DiffSou
 use hz_syntax::{
     HighlightedLine, SyntaxHighlighter, SyntaxLanguageSet, SyntaxLimits, SyntaxSettings,
 };
-use tokio::sync::mpsc::{self, UnboundedReceiver as Receiver, UnboundedSender as Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::theme::{
     MAX_INLINE_DIFF_LINE_BYTES, MAX_INLINE_DIFF_TOKENS, SYNTAX_THEME_ID, SyntaxBenchmarkReport,
@@ -553,7 +553,7 @@ impl SyntaxRuntime {
             return None;
         }
 
-        let (result_tx, result_rx) = mpsc::unbounded_channel();
+        let (result_tx, result_rx) = mpsc::channel(limits.queue_entries.max(1));
         let queue = SyntaxWorkerQueue::new(limits.queue_entries, 0);
         let worker_queue = queue.clone();
         let worker = thread::spawn(move || run_syntax_worker(worker_queue, result_tx));
@@ -1005,6 +1005,8 @@ impl SyntaxRuntime {
 
 impl Drop for SyntaxRuntime {
     fn drop(&mut self) {
+        self.result_rx.close();
+        while self.result_rx.try_recv().is_ok() {}
         self.queue.close();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -1110,7 +1112,10 @@ pub(crate) fn run_syntax_worker(queue: SyntaxWorkerQueue, result_tx: Sender<Synt
                 .map_err(|_| SyntaxJobFailure::HighlightError)
         }))
         .unwrap_or(Err(SyntaxJobFailure::HighlightError));
-        if result_tx.send(SyntaxResult { key: job.key, side }).is_err() {
+        if result_tx
+            .blocking_send(SyntaxResult { key: job.key, side })
+            .is_err()
+        {
             break;
         }
     }
@@ -1699,4 +1704,98 @@ pub(crate) fn inline_ranges_from_tokens(
         });
     }
     ranges
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        sync::mpsc as std_mpsc,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn drop_closes_full_result_channel_before_joining_worker() {
+        let queue = SyntaxWorkerQueue::new(1, 0);
+        let worker_queue = queue.clone();
+        let (result_tx, result_rx) = mpsc::channel(1);
+        result_tx
+            .try_send(SyntaxResult {
+                key: syntax_key(0),
+                side: Err(SyntaxJobFailure::HighlightError),
+            })
+            .expect("result channel should be prefilled");
+        queue
+            .try_push(syntax_job(syntax_key(1)), SyntaxPriority::Visible)
+            .expect("syntax job should queue");
+
+        let worker = thread::spawn(move || run_syntax_worker(worker_queue, result_tx));
+        wait_until(Duration::from_secs(1), || queue.len() == 0)
+            .expect("worker should take queued job");
+
+        let syntax = SyntaxRuntime {
+            languages: SyntaxLanguageSet::from_enabled_languages(&[]),
+            limits: SyntaxLimits::default(),
+            result_rx,
+            queue,
+            cache: LruCache::new(8),
+            pending: HashSet::new(),
+            source_keys: HashMap::new(),
+            position_keys: HashMap::new(),
+            line_maps: HashMap::new(),
+            skipped: HashMap::new(),
+            skipped_sources: HashSet::new(),
+            unavailable_full_files: HashSet::new(),
+            failed: HashSet::new(),
+            stats: SyntaxBenchmarkReport::default(),
+            worker: Some(worker),
+        };
+        let (done_tx, done_rx) = std_mpsc::channel();
+        let dropper = thread::spawn(move || {
+            drop(syntax);
+            done_tx.send(()).expect("drop signal should send");
+        });
+
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("syntax runtime drop should not wait on a full result channel");
+        dropper.join().expect("dropper thread should finish");
+    }
+
+    fn wait_until(timeout: Duration, condition: impl Fn() -> bool) -> Result<(), ()> {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if condition() {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        Err(())
+    }
+
+    fn syntax_key(file: usize) -> SyntaxKey {
+        SyntaxKey {
+            source: SyntaxSourceId {
+                generation: 0,
+                file,
+                side: DiffSide::New,
+                kind: SyntaxSourceKind::HunkSide { hunk: 0 },
+            },
+            language_hash: 1,
+            theme_id: SYNTAX_THEME_ID,
+        }
+    }
+
+    fn syntax_job(key: SyntaxKey) -> SyntaxJob {
+        SyntaxJob {
+            key,
+            language: "rust".to_owned(),
+            source: SyntaxJobSource::Hunk(HunkSource {
+                text: "fn main() {}".to_owned(),
+                line_map: vec![Some(0)],
+                source_lines: 1,
+            }),
+            limits: SyntaxLimits::default(),
+        }
+    }
 }
