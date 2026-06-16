@@ -16,7 +16,7 @@ use crossterm::event::{
 use hz_core::HzResult;
 use hz_diff::{Changeset, DiffOptions, DiffScope, DiffSource, DiffStats};
 use hz_syntax::{HighlightedLine, SyntaxLimits, SyntaxSettings};
-use tokio::sync::mpsc::{self, Receiver, error::TryRecvError};
+use tokio::sync::{mpsc::Receiver, oneshot};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
@@ -62,7 +62,6 @@ const MOUSE_HUNK_FOCUS_SCROLL_TICKS: isize = 3;
 const EDITOR_RELOAD_POLL: Duration = Duration::from_millis(8);
 const FILTER_DEBOUNCE: Duration = Duration::from_millis(120);
 const FILTER_WORKER_POLL: Duration = Duration::from_millis(8);
-const WORKER_RESULT_CHANNEL_CAPACITY: usize = 1;
 const MAX_LIVE_GREP_MATCHES: usize = 10_000;
 pub(crate) const ERROR_LOG_DEFAULT_HEIGHT: u16 = 6;
 pub(crate) const ERROR_LOG_MIN_HEIGHT: u16 = 3;
@@ -95,7 +94,7 @@ struct FocusedEditorLaunch {
 
 pub(crate) struct EditorReloadWorker {
     generation: u64,
-    rx: Receiver<EditorScopedReload>,
+    rx: oneshot::Receiver<EditorScopedReload>,
 }
 
 impl std::fmt::Debug for EditorReloadWorker {
@@ -121,7 +120,7 @@ pub(crate) struct FilterWorker {
     file_filter: String,
     grep_filter: String,
     jump_to_grep: bool,
-    rx: Receiver<DiffSearchResult>,
+    rx: oneshot::Receiver<DiffSearchResult>,
 }
 
 impl std::fmt::Debug for FilterWorker {
@@ -451,7 +450,7 @@ pub(crate) struct PendingDiffLoad {
     pub(crate) options: DiffOptions,
     pub(crate) success_notice: String,
     pub(crate) error_prefix: String,
-    pub(crate) rx: Receiver<HzResult<Changeset>>,
+    pub(crate) rx: oneshot::Receiver<HzResult<Changeset>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1004,10 +1003,10 @@ impl DiffApp {
         success_notice: impl Into<String>,
         error_prefix: impl Into<String>,
     ) {
-        let (tx, rx) = mpsc::channel(WORKER_RESULT_CHANNEL_CAPACITY);
+        let (tx, rx) = oneshot::channel();
         let load_options = options.clone();
         runtime::spawn_detached_blocking(move || {
-            let _ = runtime::send_with_timeout(&tx, hz_diff::load_review_ref(&load_options));
+            let _ = tx.send(hz_diff::load_review_ref(&load_options));
         });
 
         self.pending_diff_load = Some(PendingDiffLoad {
@@ -1025,8 +1024,8 @@ impl DiffApp {
                 .as_mut()
                 .and_then(|pending| match pending.rx.try_recv() {
                     Ok(result) => Some(Some(result)),
-                    Err(TryRecvError::Empty) => None,
-                    Err(TryRecvError::Disconnected) => Some(None),
+                    Err(oneshot::error::TryRecvError::Empty) => None,
+                    Err(oneshot::error::TryRecvError::Closed) => Some(None),
                 })
         else {
             return;
@@ -2307,10 +2306,10 @@ impl DiffApp {
         let options = self.options.clone();
         let path = request.path;
         let pathspecs = request.pathspecs;
-        let (tx, rx) = mpsc::channel(WORKER_RESULT_CHANNEL_CAPACITY);
+        let (tx, rx) = oneshot::channel();
         runtime::spawn_detached_blocking(move || {
             let changeset = hz_diff::load_review_ref_paths(&options, &pathspecs);
-            let _ = runtime::send_with_timeout(&tx, EditorScopedReload { path, changeset });
+            let _ = tx.send(EditorScopedReload { path, changeset });
         });
         self.editor_reload = Some(EditorReloadWorker {
             generation: self.generation,
@@ -2349,11 +2348,11 @@ impl DiffApp {
                 }
                 true
             }
-            Err(TryRecvError::Empty) => {
+            Err(oneshot::error::TryRecvError::Empty) => {
                 self.editor_reload = Some(worker);
                 false
             }
-            Err(TryRecvError::Disconnected) => {
+            Err(oneshot::error::TryRecvError::Closed) => {
                 self.set_error_log("edited file reload failed");
                 true
             }
@@ -2815,14 +2814,14 @@ impl DiffApp {
         let worker_file_filter = file_filter.clone();
         let worker_grep_filter = grep_filter.clone();
         let search_index = Arc::clone(&self.search_index);
-        let (tx, rx) = mpsc::channel(WORKER_RESULT_CHANNEL_CAPACITY);
+        let (tx, rx) = oneshot::channel();
         runtime::spawn_detached_blocking(move || {
             let result = search_index.search_with_grep_match_limit(
                 &worker_file_filter,
                 &worker_grep_filter,
                 MAX_LIVE_GREP_MATCHES,
             );
-            let _ = runtime::send_with_timeout(&tx, result);
+            let _ = tx.send(result);
         });
 
         self.filter_worker = Some(FilterWorker {
@@ -2842,8 +2841,8 @@ impl DiffApp {
                 .as_mut()
                 .and_then(|worker| match worker.rx.try_recv() {
                     Ok(result) => Some(Some(result)),
-                    Err(TryRecvError::Empty) => None,
-                    Err(TryRecvError::Disconnected) => Some(None),
+                    Err(oneshot::error::TryRecvError::Empty) => None,
+                    Err(oneshot::error::TryRecvError::Closed) => Some(None),
                 })
         else {
             return;
