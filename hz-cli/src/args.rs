@@ -6,7 +6,6 @@ use clap::{
 };
 
 pub(crate) const HELP_TEMPLATE: &str = "\
-{before-help}{name} {version}
 {about-with-newline}
 usage:
   {usage}
