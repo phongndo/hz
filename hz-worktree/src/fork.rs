@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::{
     CreateWorktree, ForkWorktree, ForkedWorktree, Registry, WorktreeEntry,
     create_with_registry_and_deferred_prune, remove_registered_entry_with_force_from_registry,
-    resolve_repo, same_path, worktree_entry_from_created_worktree,
+    same_path, worktree_entry_from_created_worktree,
 };
 use hz_core::{HzError, HzResult};
 
@@ -25,7 +25,6 @@ pub(crate) fn fork_with_registry_and_patch_applier(
     apply_patch: impl FnOnce(&Path, &[u8]) -> HzResult<bool>,
 ) -> HzResult<ForkedWorktree> {
     let current = fork_source_worktree(input.repo.as_deref())?;
-    let repo = resolve_repo(input.repo.as_deref(), registry)?;
     let head = hz_git::current_head(&current)?;
     let patch = if input.include_diff {
         Some(hz_git::diff_patch(&current)?)
@@ -37,7 +36,7 @@ pub(crate) fn fork_with_registry_and_patch_applier(
         registry,
         CreateWorktree {
             name: input.name,
-            repo: Some(repo),
+            repo: Some(current),
             path: input.path,
             base: Some(head),
             branch: None,

@@ -10,6 +10,7 @@ mod target;
 #[cfg(test)]
 mod tests;
 mod types;
+mod worktree_include;
 
 pub use create::{create, path};
 pub use fork::fork;
@@ -35,3 +36,4 @@ pub(crate) use registry::*;
 pub(crate) use remove::*;
 pub(crate) use target::*;
 pub(crate) use types::*;
+pub(crate) use worktree_include::*;

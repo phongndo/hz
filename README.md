@@ -192,6 +192,21 @@ With that config, `hz new feature/ui` behaves like
 `hz new feature/ui --base dev`. Passing `--base main` still wins for deliberate
 main-based work.
 
+Ignored local files are not present in a fresh Git worktree. To copy selected
+ignored setup files into new managed `hz` worktrees, add a root
+`.worktreeinclude` file using Gitignore-style patterns:
+
+```text
+# .worktreeinclude
+.env
+.env.local
+config/secrets.json
+```
+
+`hz` copies only ignored files that match `.worktreeinclude`; tracked files and
+other untracked files are left alone. Source symlinks are skipped, and existing
+destination files are never overwritten.
+
 ### Shell integration
 
 `hz cd` prints a path for scripts. To make `hz new` and `hz cd` change the
