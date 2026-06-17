@@ -3,9 +3,10 @@ use std::{fs, path::Path};
 use crate::{
     CreateWorktree, CreatedWorktree, DEFAULT_MAX_BRANCH_WORKTREES, DEFAULT_MAX_DETACHED_WORKTREES,
     PathWorktree, Registry, WorktreeEntry, WorktreeSource, WorktreeStatus, branch_prune_warning,
-    branch_worktree_prune_candidates, default_worktree_path, detached_prune_warning,
-    detached_worktree_prune_candidates, generate_unique_handle, new_uuid_v4, prune_worktrees,
-    resolve_repo, resolve_target, resolve_worktree_path, unix_now, validate_worktree_name,
+    branch_worktree_prune_candidates, copy_worktree_includes, default_worktree_path,
+    detached_prune_warning, detached_worktree_prune_candidates, generate_unique_handle,
+    new_uuid_v4, prune_worktrees, resolve_repo, resolve_target, resolve_worktree_path, unix_now,
+    validate_worktree_name,
 };
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
 
@@ -27,6 +28,7 @@ pub(crate) fn create_with_registry_and_deferred_prune(
     registry: &mut Registry,
     input: CreateWorktree,
 ) -> HzResult<(CreatedWorktree, PendingWorktreePrune)> {
+    let include_source = hz_git::repository_root(input.repo.as_deref())?;
     let repo = resolve_repo(input.repo.as_deref(), registry)?;
     let name = input.name;
     let handle = match name.clone() {
@@ -94,6 +96,14 @@ pub(crate) fn create_with_registry_and_deferred_prune(
 
     hz_git::add_worktree(&repo, &path, branch.as_deref(), input.base.as_deref())?;
     let path = fs::canonicalize(&path)?;
+    if let Err(error) = copy_worktree_includes(&include_source, &path) {
+        return Err(rollback_created_worktree(
+            &repo,
+            &path,
+            branch.as_deref(),
+            error,
+        ));
+    }
 
     let entry = WorktreeEntry {
         id: id.clone(),

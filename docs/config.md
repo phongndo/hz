@@ -70,6 +70,23 @@ Relative roots are resolved from the repository root. `~/` expands to `$HOME`.
 Configured roots are not auto-pruned; auto-pruning still only removes clean
 registry-managed worktrees covered by the configured limits.
 
+### Ignored local files
+
+`hz` also reads an optional root `.worktreeinclude` file when creating managed
+worktrees. List ignored local setup files or Gitignore-style patterns that a new
+worktree should receive:
+
+```text
+# .worktreeinclude
+.env
+.env.local
+config/secrets.json
+```
+
+Only files already ignored by Git and matched by `.worktreeinclude` are copied.
+Tracked files and other untracked files are not copied. Source symlinks are
+skipped, and existing destination files are not overwritten.
+
 ## List
 
 ```toml

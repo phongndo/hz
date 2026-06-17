@@ -406,6 +406,50 @@ fn untracked_paths(repo: &Path) -> HzResult<Vec<PathBuf>> {
     Ok(parse_untracked_paths(&output.stdout))
 }
 
+pub fn ignored_paths_matching(repo: &Path, pathspecs: &[String]) -> HzResult<Vec<PathBuf>> {
+    if pathspecs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+            "--",
+        ])
+        .args(pathspecs)
+        .output()?;
+
+    if !output.status.success() {
+        return Err(git_error("failed to list ignored files", &output));
+    }
+
+    Ok(parse_untracked_paths(&output.stdout))
+}
+
+pub fn path_is_ignored(repo: &Path, path: &Path) -> HzResult<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["check-ignore", "--quiet", "--"])
+        .arg(path)
+        .output()?;
+
+    if output.status.success() {
+        return Ok(true);
+    }
+    if output.status.code() == Some(1) {
+        return Ok(false);
+    }
+
+    Err(git_error("failed to check ignored path", &output))
+}
+
 pub fn git_path(repo: &Path, path: &str) -> HzResult<PathBuf> {
     let output = Command::new("git")
         .arg("-C")

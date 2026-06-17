@@ -343,6 +343,215 @@ fn create_rolls_back_git_state_when_registry_save_fails() {
 }
 
 #[test]
+fn create_copies_included_ignored_files_to_managed_worktree() {
+    let test_dir = test_dir("hz-worktree-create-include-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    fs::write(
+        repo.join(".gitignore"),
+        ".env\n.env.local\nconfig\n*.pem\n.cache/\n",
+    )
+    .expect("gitignore should be written");
+    fs::write(
+        repo.join(".worktreeinclude"),
+        ".env\nconfig\n*.pem\n.cache/keep.txt\nfile.txt\n",
+    )
+    .expect("worktree include should be written");
+    git(["add", ".gitignore", ".worktreeinclude"], &repo);
+    git(["commit", "-q", "-m", "add worktree include"], &repo);
+
+    fs::write(repo.join(".env"), "token=local\n").expect("env file should be written");
+    fs::write(repo.join(".env.local"), "not copied\n")
+        .expect("unlisted env file should be written");
+    fs::create_dir_all(repo.join("config")).expect("config directory should be created");
+    fs::write(repo.join("config/secrets.json"), "{\"token\":true}\n")
+        .expect("secret file should be written");
+    fs::create_dir_all(repo.join("nested")).expect("nested directory should be created");
+    fs::write(repo.join("nested/key.pem"), "pem\n").expect("pem file should be written");
+    fs::create_dir_all(repo.join(".cache")).expect("cache directory should be created");
+    fs::write(repo.join(".cache/keep.txt"), "cache\n").expect("cache file should be written");
+    fs::write(repo.join("notes.txt"), "untracked\n").expect("untracked file should be written");
+    fs::write(repo.join("file.txt"), "dirty tracked\n").expect("tracked file should be dirtied");
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    let mut registry = Registry::default();
+
+    let created = create_with_registry(
+        &mut registry,
+        CreateWorktree {
+            name: Some("include-copy".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(destination),
+            base: None,
+            branch: None,
+            detached: false,
+            max_detached_worktrees: None,
+            max_branch_worktrees: Some(0),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(created.path.join(".env")).unwrap(),
+        "token=local\n"
+    );
+    assert_eq!(
+        fs::read_to_string(created.path.join("config/secrets.json")).unwrap(),
+        "{\"token\":true}\n"
+    );
+    assert_eq!(
+        fs::read_to_string(created.path.join("nested/key.pem")).unwrap(),
+        "pem\n"
+    );
+    assert_eq!(
+        fs::read_to_string(created.path.join(".cache/keep.txt")).unwrap(),
+        "cache\n"
+    );
+    assert!(!created.path.join(".env.local").exists());
+    assert!(!created.path.join("notes.txt").exists());
+    assert_eq!(
+        fs::read_to_string(created.path.join("file.txt")).unwrap(),
+        "base\n"
+    );
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn create_skips_included_files_not_ignored_by_destination_base() {
+    let test_dir = test_dir("hz-worktree-create-include-destination-ignore-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    fs::write(repo.join(".gitignore"), ".env\n").expect("gitignore should be written");
+    fs::write(repo.join(".worktreeinclude"), ".env\n").expect("worktree include should be written");
+    git(["add", ".gitignore", ".worktreeinclude"], &repo);
+    git(["commit", "-q", "-m", "add worktree include"], &repo);
+    git(["branch", "old-base", "HEAD~1"], &repo);
+
+    fs::write(repo.join(".env"), "token=local\n").expect("env file should be written");
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    let mut registry = Registry::default();
+
+    let created = create_with_registry(
+        &mut registry,
+        CreateWorktree {
+            name: Some("destination-ignore".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(destination),
+            base: Some("old-base".to_owned()),
+            branch: None,
+            detached: false,
+            max_detached_worktrees: None,
+            max_branch_worktrees: Some(0),
+        },
+    )
+    .unwrap();
+
+    assert!(!created.path.join(".env").exists());
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[cfg(unix)]
+#[test]
+fn create_skips_included_source_symlinks() {
+    let test_dir = test_dir("hz-worktree-create-include-symlink-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    fs::write(repo.join(".gitignore"), "link.env\n").expect("gitignore should be written");
+    fs::write(repo.join(".worktreeinclude"), "link.env\n")
+        .expect("worktree include should be written");
+    git(["add", ".gitignore", ".worktreeinclude"], &repo);
+    git(["commit", "-q", "-m", "add worktree include"], &repo);
+
+    std::os::unix::fs::symlink("missing.env", repo.join("link.env"))
+        .expect("symlink should be created");
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    let mut registry = Registry::default();
+
+    let created = create_with_registry(
+        &mut registry,
+        CreateWorktree {
+            name: Some("include-symlink".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(destination),
+            base: None,
+            branch: None,
+            detached: false,
+            max_detached_worktrees: None,
+            max_branch_worktrees: Some(0),
+        },
+    )
+    .unwrap();
+
+    assert!(fs::symlink_metadata(created.path.join("link.env")).is_err());
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[cfg(unix)]
+#[test]
+fn create_skips_included_paths_with_destination_symlink_ancestors() {
+    let test_dir = test_dir("hz-worktree-create-include-destination-symlink-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    let outside = test_dir.join("outside");
+    init_committed_repo(&repo);
+    git(["branch", "-m", "main"], &repo);
+    fs::write(repo.join(".gitignore"), "config\n").expect("gitignore should be written");
+    fs::write(repo.join(".worktreeinclude"), "config\n")
+        .expect("worktree include should be written");
+    git(["add", ".gitignore", ".worktreeinclude"], &repo);
+    git(["commit", "-q", "-m", "add worktree include"], &repo);
+    git(["checkout", "-q", "-b", "symlink-base"], &repo);
+    fs::create_dir_all(&outside).expect("outside directory should be created");
+    std::os::unix::fs::symlink(&outside, repo.join("config")).expect("symlink should be created");
+    git(["add", "-f", "config"], &repo);
+    git(["commit", "-q", "-m", "add config symlink"], &repo);
+    git(["checkout", "-q", "main"], &repo);
+
+    fs::create_dir_all(repo.join("config")).expect("config directory should be created");
+    fs::write(repo.join("config/secrets.json"), "{\"token\":true}\n")
+        .expect("secret file should be written");
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+    let mut registry = Registry::default();
+
+    let created = create_with_registry(
+        &mut registry,
+        CreateWorktree {
+            name: Some("destination-symlink".to_owned()),
+            repo: Some(repo.clone()),
+            path: Some(destination),
+            base: Some("symlink-base".to_owned()),
+            branch: None,
+            detached: false,
+            max_detached_worktrees: None,
+            max_branch_worktrees: Some(0),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        fs::symlink_metadata(created.path.join("config"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(!outside.join("secrets.json").exists());
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
 fn deferred_create_prune_does_not_remove_candidates_until_run() {
     let test_dir = test_dir("hz-worktree-deferred-prune-test");
     let repo = test_dir.join("repo");
