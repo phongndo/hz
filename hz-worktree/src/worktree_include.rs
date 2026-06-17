@@ -19,11 +19,12 @@ pub(crate) fn copy_worktree_includes(source: &Path, destination: &Path) -> HzRes
     let mut has_include = false;
     let mut pathspecs = Vec::new();
     for pattern in &patterns {
-        let Some(pathspec) = worktree_include_pathspec(pattern) else {
+        let pattern_pathspecs = worktree_include_pathspecs(pattern);
+        if pattern_pathspecs.is_empty() {
             continue;
-        };
+        }
         has_include |= !pattern.negated;
-        pathspecs.push(pathspec);
+        pathspecs.extend(pattern_pathspecs);
     }
     if !has_include {
         return Ok(());
@@ -79,44 +80,56 @@ fn parse_worktree_include_line(line: &str) -> Option<WorktreeIncludePattern> {
     })
 }
 
-fn worktree_include_pathspec(pattern: &WorktreeIncludePattern) -> Option<String> {
+fn worktree_include_pathspecs(pattern: &WorktreeIncludePattern) -> Vec<String> {
     let mut body = pattern.pattern.as_str();
     let anchored = body.starts_with('/');
     body = body.trim_start_matches('/');
     let directory = body.ends_with('/');
     body = body.trim_end_matches('/');
     if body.is_empty() {
-        return None;
+        return Vec::new();
     }
 
     let recursive = !anchored && !body.contains('/');
-    let body = if directory {
-        if recursive {
-            format!("**/{body}/**")
-        } else {
-            format!("{body}/**")
-        }
-    } else if recursive {
-        format!("**/{body}")
+    let mut bodies = Vec::new();
+    if directory {
+        bodies.push(worktree_include_pathspec_body(body, recursive, true));
     } else {
-        body.to_owned()
-    };
+        bodies.push(worktree_include_pathspec_body(body, recursive, false));
+        bodies.push(worktree_include_pathspec_body(body, recursive, true));
+    }
 
+    bodies
+        .into_iter()
+        .map(|body| format_worktree_include_pathspec(&body, recursive, pattern.negated))
+        .collect()
+}
+
+fn worktree_include_pathspec_body(body: &str, recursive: bool, descendants: bool) -> String {
+    match (recursive, descendants) {
+        (true, true) => format!("**/{body}/**"),
+        (true, false) => format!("**/{body}"),
+        (false, true) => format!("{body}/**"),
+        (false, false) => body.to_owned(),
+    }
+}
+
+fn format_worktree_include_pathspec(body: &str, recursive: bool, negated: bool) -> String {
     let mut magic = Vec::new();
     if !recursive {
         magic.push("top");
     }
-    if recursive || directory || has_glob_meta(&body) {
+    if recursive || has_glob_meta(body) {
         magic.push("glob");
     }
-    if pattern.negated {
+    if negated {
         magic.push("exclude");
     }
 
     if magic.is_empty() {
-        Some(body)
+        body.to_owned()
     } else {
-        Some(format!(":({}){body}", magic.join(",")))
+        format!(":({}){body}", magic.join(","))
     }
 }
 
@@ -138,17 +151,69 @@ fn copy_included_path(source: &Path, destination: &Path, relative_path: &Path) -
         return Ok(());
     }
 
+    let relative_parent = relative_path.parent().unwrap_or_else(|| Path::new(""));
+    if !destination_ancestors_are_directories(destination, relative_parent)? {
+        return Ok(());
+    }
+
     let destination_path = destination.join(relative_path);
     if fs::symlink_metadata(&destination_path).is_ok() {
         return Ok(());
     }
 
-    if let Some(parent) = destination_path.parent() {
-        fs::create_dir_all(parent)?;
+    if !hz_git::path_is_ignored(destination, relative_path)? {
+        return Ok(());
+    }
+
+    if !create_destination_parent_dirs(destination, relative_parent)? {
+        return Ok(());
     }
     fs::copy(source_path, destination_path)?;
 
     Ok(())
+}
+
+fn destination_ancestors_are_directories(
+    destination: &Path,
+    relative_parent: &Path,
+) -> HzResult<bool> {
+    let mut current = destination.to_path_buf();
+    for component in relative_parent.components() {
+        let Component::Normal(component) = component else {
+            return Ok(false);
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Ok(false);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(true),
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Ok(true)
+}
+
+fn create_destination_parent_dirs(destination: &Path, relative_parent: &Path) -> HzResult<bool> {
+    let mut current = destination.to_path_buf();
+    for component in relative_parent.components() {
+        let Component::Normal(component) = component else {
+            return Ok(false);
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Ok(false);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => fs::create_dir(&current)?,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Ok(true)
 }
 
 fn is_safe_relative_path(path: &Path) -> bool {
@@ -177,23 +242,30 @@ mod tests {
     #[test]
     fn include_pathspecs_match_common_gitignore_shapes() {
         let patterns = parse_worktree_include(
-            ".env\n*.pem\nconfig/\n/config/secrets.json\nlogs/*.json\n!.env.example\n",
+            ".env\n*.pem\nconfig\ncache/\n/config/secrets.json\nlogs/*.json\n!.env.example\n",
         );
 
         let pathspecs = patterns
             .iter()
-            .filter_map(worktree_include_pathspec)
+            .flat_map(worktree_include_pathspecs)
             .collect::<Vec<_>>();
 
         assert_eq!(
             pathspecs,
             vec![
                 ":(glob)**/.env",
+                ":(glob)**/.env/**",
                 ":(glob)**/*.pem",
+                ":(glob)**/*.pem/**",
+                ":(glob)**/config",
                 ":(glob)**/config/**",
+                ":(glob)**/cache/**",
                 ":(top)config/secrets.json",
+                ":(top,glob)config/secrets.json/**",
                 ":(top,glob)logs/*.json",
+                ":(top,glob)logs/*.json/**",
                 ":(glob,exclude)**/.env.example",
+                ":(glob,exclude)**/.env.example/**",
             ]
         );
     }
