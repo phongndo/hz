@@ -2,10 +2,6 @@ setup:
     cargo fetch --locked
     cargo build -p hz-cli --locked
 
-install-hooks:
-    git config core.hooksPath .githooks
-    printf 'Git hooks installed from .githooks\n'
-
 check:
     rust-analyzer diagnostics .
     cargo fmt --all --check
@@ -38,6 +34,3 @@ smoke-curl-install version="latest":
 
 smoke-update version="latest":
     scripts/smoke-update {{version}}
-
-hz *args:
-    ./target/debug/hz {{ args }}
