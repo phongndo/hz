@@ -123,21 +123,21 @@ pub(crate) struct CurrentWorktree {
 
 pub(crate) fn current_worktree(repo: Option<PathBuf>) -> CliResult<CurrentWorktree> {
     let current_path = hz_command::current_worktree_path(hz_command::ListWorktrees { repo: None })?;
-    let local = hz_command::local_worktree(hz_command::LocalWorktree { repo: repo.clone() })?;
+    let (repo, local_path, worktrees) =
+        hz_command::list_worktree_targets_with_repo(hz_command::ListWorktrees { repo })?;
 
-    if same_path(&current_path, &local.path) {
+    if same_path(&current_path, &local_path) {
         return Ok(CurrentWorktree {
             target: "local".to_owned(),
-            repo: local.repo,
-            path: local.path,
+            repo,
+            path: local_path,
         });
     }
 
-    let worktrees = hz_command::list_worktree_targets(hz_command::ListWorktrees { repo })?;
     let worktree = current_worktree_entry(&worktrees, &current_path).ok_or_else(|| {
         HzError::Usage(format!(
             "current worktree is not linked to {}",
-            local.repo.display()
+            repo.display()
         ))
     })?;
 
@@ -158,22 +158,20 @@ pub(crate) fn current_worktree_entry<'a>(
 }
 
 pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> CliResult<()> {
-    let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees {
-        repo: args.repo.clone(),
-    })?;
-
     if args.json {
+        let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees {
+            repo: args.repo.clone(),
+        })?;
         write_stdout(format_args!(
             "{}\n",
             serde_json::to_string_pretty(&worktrees)?
         ))?;
     } else {
-        let config = hz_command::load_repo_config(hz_command::LoadRepoConfig {
-            repo: args.repo.clone(),
-        })?;
-        let local = hz_command::local_worktree(hz_command::LocalWorktree {
-            repo: args.repo.clone(),
-        })?;
+        let (local, worktrees) =
+            hz_command::list_worktrees_with_local(hz_command::ListWorktrees {
+                repo: args.repo.clone(),
+            })?;
+        let config = hz_command::load_repo_config_at(&local.repo)?;
         let current_path =
             hz_command::current_worktree_path(hz_command::ListWorktrees { repo: None }).ok();
         let terminal = io::stdout().is_terminal();
@@ -517,11 +515,12 @@ pub(crate) fn render_worktree_rows_with_options(
         hz_command::ListHeaders::Never => false,
         hz_command::ListHeaders::Auto => !compact,
     };
+    let display_paths = DisplayPathContext::from_env();
     let values: Vec<Vec<String>> = columns
         .iter()
         .map(|column| {
             rows.iter()
-                .map(|row| list_cell_value(row, *column, glyphs))
+                .map(|row| list_cell_value_with_context(row, *column, glyphs, &display_paths))
                 .collect()
         })
         .collect();
@@ -583,10 +582,11 @@ pub(crate) fn render_worktree_rows_with_options(
     output
 }
 
-pub(crate) fn list_cell_value(
+pub(crate) fn list_cell_value_with_context(
     row: &WorktreeListRow,
     column: hz_command::ListColumn,
     glyphs: ListGlyphs,
+    display_paths: &DisplayPathContext,
 ) -> String {
     match column {
         hz_command::ListColumn::Marker => worktree_marker(row, glyphs).to_owned(),
@@ -596,7 +596,7 @@ pub(crate) fn list_cell_value(
         hz_command::ListColumn::Status => worktree_status_label(row.status, glyphs).to_owned(),
         hz_command::ListColumn::Base => row.base.clone().unwrap_or_else(|| "-".to_owned()),
         hz_command::ListColumn::Modified => format_modified_at(row.modified_at_unix),
-        hz_command::ListColumn::Path => display_path(&row.path),
+        hz_command::ListColumn::Path => display_paths.display(&row.path),
     }
 }
 
@@ -756,18 +756,35 @@ pub(crate) fn same_path(left: &Path, right: &Path) -> bool {
             .is_some_and(|(left, right)| left == right)
 }
 
-pub(crate) fn display_path(path: &Path) -> String {
-    let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
-        return path.display().to_string();
-    };
+pub(crate) struct DisplayPathContext {
+    home: Option<PathBuf>,
+    canonical_home: Option<PathBuf>,
+}
 
-    home_relative_path(path, &home)
-        .or_else(|| {
-            fs::canonicalize(&home)
-                .ok()
-                .and_then(|home| home_relative_path(path, &home))
-        })
-        .unwrap_or_else(|| path.display().to_string())
+impl DisplayPathContext {
+    pub(crate) fn from_env() -> Self {
+        let home = env::var_os("HOME").map(PathBuf::from);
+        let canonical_home = home.as_ref().and_then(|home| fs::canonicalize(home).ok());
+
+        Self {
+            home,
+            canonical_home,
+        }
+    }
+
+    pub(crate) fn display(&self, path: &Path) -> String {
+        let Some(home) = self.home.as_deref() else {
+            return path.display().to_string();
+        };
+
+        home_relative_path(path, home)
+            .or_else(|| {
+                self.canonical_home
+                    .as_deref()
+                    .and_then(|home| home_relative_path(path, home))
+            })
+            .unwrap_or_else(|| path.display().to_string())
+    }
 }
 
 pub(crate) fn home_relative_path(path: &Path, home: &Path) -> Option<String> {

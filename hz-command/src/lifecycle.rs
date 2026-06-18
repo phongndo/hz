@@ -34,8 +34,8 @@ pub struct LifecycleRun {
 pub fn run_lifecycle(input: RunLifecycle) -> HzResult<LifecycleRun> {
     let target = input.target.unwrap_or_else(|| "local".to_owned());
     if target == "local" {
-        let local = hz_worktree::local(LocalWorktree { repo: input.repo })?;
-        return run_lifecycle_for_path(&local.repo, &local.path, "local", input.kind);
+        let (repo, path) = hz_worktree::local_path(LocalWorktree { repo: input.repo })?;
+        return run_lifecycle_for_path(&repo, &path, "local", input.kind);
     }
 
     let worktree = hz_worktree::find(FindWorktree {

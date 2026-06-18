@@ -3,10 +3,11 @@ use std::{fs, path::Path};
 use crate::{
     CreateWorktree, CreatedWorktree, DEFAULT_MAX_BRANCH_WORKTREES, DEFAULT_MAX_DETACHED_WORKTREES,
     PathWorktree, Registry, WorktreeEntry, WorktreeSource, WorktreeStatus, branch_prune_warning,
-    branch_worktree_prune_candidates, copy_worktree_includes, default_worktree_path,
-    detached_prune_warning, detached_worktree_prune_candidates, generate_unique_handle,
-    new_uuid_v4, prune_worktrees, resolve_repo, resolve_target, resolve_worktree_path, unix_now,
-    validate_worktree_name,
+    clean_worktree, copy_worktree_includes, default_worktree_path, detached_prune_warning,
+    discover_entries_with_git_worktrees, find_target_entry, generate_unique_handle, new_uuid_v4,
+    prune_worktrees, resolve_registered_repo, resolve_repo_with_git_worktrees,
+    resolve_worktree_path, select_branch_worktree_prune_candidates,
+    select_detached_worktree_prune_candidates, unix_now, validate_worktree_name,
 };
 use hz_core::{HzError, HzResult, paths::WorktreeTarget};
 
@@ -29,7 +30,17 @@ pub(crate) fn create_with_registry_and_deferred_prune(
     input: CreateWorktree,
 ) -> HzResult<(CreatedWorktree, PendingWorktreePrune)> {
     let include_source = hz_git::repository_root(input.repo.as_deref())?;
-    let repo = resolve_repo(input.repo.as_deref(), registry)?;
+    let git_worktrees = hz_git::list_worktrees(&include_source)?;
+    let main = git_worktrees
+        .first()
+        .map(|worktree| worktree.path.clone())
+        .ok_or_else(|| {
+            HzError::Usage(format!(
+                "git worktree list returned no entries for {}; unexpected repository state",
+                include_source.display()
+            ))
+        })?;
+    let repo = resolve_registered_repo(registry, &include_source, &main).unwrap_or(main);
     let name = input.name;
     let handle = match name.clone() {
         Some(name) => name,
@@ -75,22 +86,26 @@ pub(crate) fn create_with_registry_and_deferred_prune(
 
     let branch_backed = branch.is_some();
     let prune_candidates = if branch_backed {
-        branch_worktree_prune_candidates(
+        select_branch_worktree_prune_candidates(
             registry,
             &repo,
-            input.repo.as_deref(),
             input
                 .max_branch_worktrees
                 .unwrap_or(DEFAULT_MAX_BRANCH_WORKTREES),
+            Some(&include_source),
+            &git_worktrees,
+            clean_worktree,
         )?
     } else {
-        detached_worktree_prune_candidates(
+        select_detached_worktree_prune_candidates(
             registry,
             &repo,
-            input.repo.as_deref(),
             input
                 .max_detached_worktrees
                 .unwrap_or(DEFAULT_MAX_DETACHED_WORKTREES),
+            Some(&include_source),
+            &git_worktrees,
+            clean_worktree,
         )?
     };
 
@@ -215,6 +230,24 @@ pub(crate) fn rollback_created_worktree(
 
 pub fn path(input: PathWorktree) -> HzResult<WorktreeTarget> {
     let registry = Registry::load()?;
-    let repo = resolve_repo(input.repo.as_deref(), &registry)?;
-    resolve_target(&registry, &repo, &input.target)
+    let (repo, git_worktrees) = resolve_repo_with_git_worktrees(input.repo.as_deref(), &registry)?;
+    if input.target == "local" {
+        let path = git_worktrees
+            .first()
+            .map(|worktree| worktree.path.clone())
+            .unwrap_or_else(|| repo.clone());
+        return Ok(WorktreeTarget {
+            name: "local".to_owned(),
+            path,
+        });
+    }
+
+    let target = input.target;
+    let entries = discover_entries_with_git_worktrees(&registry, &repo, git_worktrees);
+    let entry =
+        find_target_entry(&entries, &repo, &target).ok_or(HzError::UnknownWorktree { target })?;
+    Ok(WorktreeTarget {
+        name: entry.handle,
+        path: entry.path,
+    })
 }

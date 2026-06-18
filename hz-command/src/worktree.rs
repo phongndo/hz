@@ -41,8 +41,20 @@ pub fn list_worktrees(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
     hz_worktree::list(input)
 }
 
+pub fn list_worktrees_with_local(
+    input: ListWorktrees,
+) -> HzResult<(LocalWorktreeInfo, Vec<WorktreeEntry>)> {
+    hz_worktree::list_with_local(input)
+}
+
 pub fn list_worktree_targets(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
     hz_worktree::list_targets(input)
+}
+
+pub fn list_worktree_targets_with_repo(
+    input: ListWorktrees,
+) -> HzResult<(PathBuf, PathBuf, Vec<WorktreeEntry>)> {
+    hz_worktree::list_targets_with_repo(input)
 }
 
 pub fn local_worktree(input: LocalWorktree) -> HzResult<LocalWorktreeInfo> {

@@ -14,7 +14,7 @@ pub use hz_worktree::{
 
 pub use config::{
     ColorConfig, ColorMode, ColorSchemeConfig, HzConfig, LifecycleConfig, ListColumn, ListConfig,
-    ListHeaders, LoadRepoConfig, WorktreeConfig, load_repo_config,
+    ListHeaders, LoadRepoConfig, WorktreeConfig, load_repo_config, load_repo_config_at,
 };
 pub use init::{InitRepo, RepoInit, init_repo};
 pub use lifecycle::{
@@ -27,7 +27,8 @@ pub use shell::{
 pub use worktree::{
     create_worktree, create_worktree_with_lifecycle, current_worktree_path, find_worktree,
     find_worktrees, fork_worktree, handoff_worktree, is_user_managed_worktree_path,
-    list_worktree_targets, list_worktrees, local_worktree, path_worktree, remove_found_worktree,
+    list_worktree_targets, list_worktree_targets_with_repo, list_worktrees,
+    list_worktrees_with_local, local_worktree, path_worktree, remove_found_worktree,
     remove_found_worktree_with_force, remove_worktree,
 };
 
