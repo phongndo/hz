@@ -10,7 +10,7 @@ pub fn remove(input: RemoveWorktree) -> HzResult<WorktreeEntry> {
     if let Some(index) = registry
         .entries
         .iter()
-        .position(|entry| same_path(&entry.repo, &repo) && matches_target(entry, &input.target))
+        .position(|entry| matches_target(entry, &input.target) && same_path(&entry.repo, &repo))
     {
         let entry = registry.entries[index].clone();
         return remove_registered_entry_with_force_from_registry(&mut registry, entry, false);
@@ -59,8 +59,8 @@ pub(crate) fn remove_registered_entry_with_force_from_registry(
         .entries
         .iter()
         .position(|registered| {
-            same_path(&registered.repo, &entry.repo)
-                && registered.id == entry.id
+            registered.id == entry.id
+                && same_path(&registered.repo, &entry.repo)
                 && same_path(&registered.path, &entry.path)
         })
         .ok_or_else(|| HzError::UnknownWorktree {

@@ -1,13 +1,11 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
 
-use crate::{
-    CreatedWorktree, Registry, WorktreeEntry, WorktreeSource, WorktreeStatus, find_target_worktree,
-    same_path,
-};
-use hz_core::{HzError, HzResult, paths::WorktreeTarget};
+use crate::{CreatedWorktree, Registry, WorktreeEntry, WorktreeSource, WorktreeStatus, same_path};
+use hz_core::{HzError, HzResult};
 
 pub(crate) fn resolve_repo(repo: Option<&Path>, registry: &Registry) -> HzResult<PathBuf> {
     let current = hz_git::repository_root(repo)?;
@@ -45,54 +43,43 @@ pub(crate) fn resolve_registered_repo(
         .map(|entry| entry.repo.clone())
 }
 
-pub(crate) fn resolve_target(
-    registry: &Registry,
-    repo: &Path,
-    target: &str,
-) -> HzResult<WorktreeTarget> {
-    if target == "local" {
-        return Ok(WorktreeTarget {
-            name: "local".to_owned(),
-            path: hz_git::main_worktree(repo)?,
-        });
-    }
-
-    let entry = find_entry(registry, repo, target)?;
-    Ok(WorktreeTarget {
-        name: entry.handle,
-        path: entry.path,
-    })
-}
-
-pub(crate) fn find_entry(
-    registry: &Registry,
-    repo: &Path,
-    target: &str,
-) -> HzResult<WorktreeEntry> {
-    find_target_worktree(registry, repo, target)?.ok_or_else(|| HzError::UnknownWorktree {
-        target: target.to_owned(),
-    })
-}
-
 pub(crate) fn add_git_worktrees(
     entries: &mut Vec<WorktreeEntry>,
     repo: &Path,
     worktrees: Vec<hz_git::GitWorktree>,
 ) {
+    let mut entries_by_path: HashMap<PathBuf, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (entry.path.clone(), index))
+        .collect();
+
     for (index, worktree) in worktrees.into_iter().enumerate() {
-        if index == 0 || same_path(&worktree.path, repo) {
-            continue;
-        }
-
-        if let Some(entry) = entries
-            .iter_mut()
-            .find(|entry| same_path(&entry.path, &worktree.path))
+        if index == 0
+            || worktree.path == repo
+            || (worktree.path.file_name() == repo.file_name() && same_path(&worktree.path, repo))
         {
-            entry.branch = worktree.branch;
             continue;
         }
 
+        if let Some(entry_index) = entries_by_path.get(&worktree.path).copied() {
+            entries[entry_index].branch = worktree.branch;
+            continue;
+        }
+
+        if let Some(entry_index) = entries
+            .iter()
+            .position(|entry| same_path(&entry.path, &worktree.path))
+        {
+            entries[entry_index].branch = worktree.branch;
+            entries_by_path.insert(worktree.path, entry_index);
+            continue;
+        }
+
+        let entry_index = entries.len();
+        let path = worktree.path.clone();
         entries.push(git_entry(repo, worktree));
+        entries_by_path.insert(path, entry_index);
     }
 }
 

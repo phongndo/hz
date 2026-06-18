@@ -20,6 +20,10 @@ pub fn load_repo_config(input: LoadRepoConfig) -> HzResult<HzConfig> {
     HzConfig::load(&repo)
 }
 
+pub fn load_repo_config_at(repo: &Path) -> HzResult<HzConfig> {
+    HzConfig::load(repo)
+}
+
 pub(crate) fn create_worktree_with_config_defaults(
     mut input: CreateWorktree,
 ) -> HzResult<CreateWorktree> {

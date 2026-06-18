@@ -15,7 +15,10 @@ mod worktree_include;
 pub use create::{create, path};
 pub use fork::fork;
 pub use handoff::handoff;
-pub use list::{current_path, find, find_many, list, list_targets, local};
+pub use list::{
+    current_path, find, find_many, list, list_targets, list_targets_with_repo, list_with_local,
+    local, local_path,
+};
 pub use registry::is_hz_worktree_path;
 pub use remove::{remove, remove_found, remove_found_with_force};
 pub use types::{

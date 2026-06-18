@@ -643,7 +643,7 @@ pub(crate) fn find_target_entry(
 ) -> Option<WorktreeEntry> {
     entries
         .iter()
-        .find(|entry| !same_path(&entry.path, repo) && matches_target(entry, target))
+        .find(|entry| matches_target(entry, target) && !same_path(&entry.path, repo))
         .cloned()
 }
 

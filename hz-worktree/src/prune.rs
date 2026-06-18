@@ -6,44 +6,6 @@ use crate::{
 };
 use hz_core::{HzError, HzResult};
 
-pub(crate) fn detached_worktree_prune_candidates(
-    registry: &Registry,
-    repo: &Path,
-    current_hint: Option<&Path>,
-    max_detached_worktrees: usize,
-) -> HzResult<Vec<WorktreeEntry>> {
-    let current = hz_git::repository_root(current_hint).ok();
-    let git_worktrees = hz_git::list_worktrees(repo)?;
-
-    select_detached_worktree_prune_candidates(
-        registry,
-        repo,
-        max_detached_worktrees,
-        current.as_deref(),
-        &git_worktrees,
-        clean_worktree,
-    )
-}
-
-pub(crate) fn branch_worktree_prune_candidates(
-    registry: &Registry,
-    repo: &Path,
-    current_hint: Option<&Path>,
-    max_branch_worktrees: usize,
-) -> HzResult<Vec<WorktreeEntry>> {
-    let current = hz_git::repository_root(current_hint).ok();
-    let git_worktrees = hz_git::list_worktrees(repo)?;
-
-    select_branch_worktree_prune_candidates(
-        registry,
-        repo,
-        max_branch_worktrees,
-        current.as_deref(),
-        &git_worktrees,
-        clean_worktree,
-    )
-}
-
 pub(crate) fn select_detached_worktree_prune_candidates(
     registry: &Registry,
     repo: &Path,

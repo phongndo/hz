@@ -71,7 +71,7 @@ impl Registry {
     pub(crate) fn find(&self, repo: &Path, target: &str) -> Option<&WorktreeEntry> {
         self.entries
             .iter()
-            .find(|entry| same_path(&entry.repo, repo) && matches_target(entry, target))
+            .find(|entry| matches_target(entry, target) && same_path(&entry.repo, repo))
     }
 
     pub(crate) fn find_by_path(&self, path: &Path) -> Option<&WorktreeEntry> {

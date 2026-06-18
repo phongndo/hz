@@ -3,32 +3,72 @@ use std::path::{Path, PathBuf};
 use crate::{
     FindWorktree, FindWorktrees, ListWorktrees, LocalWorktree, LocalWorktreeInfo, Registry,
     WorktreeEntry, WorktreeStatus, add_git_worktrees, find_target_entry, linked_worktree_exists,
-    resolve_repo, resolve_repo_with_git_worktrees, same_path, worktree_path_timestamp,
+    resolve_repo_with_git_worktrees, same_path, worktree_path_timestamp,
 };
 use hz_core::{HzError, HzResult};
 
 const MAX_STATUS_WORKERS: usize = 8;
 
 pub fn list(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
-    let mut entries = list_targets(input)?;
+    let (_, _, mut entries) = list_targets_with_repo(input)?;
     refresh_worktree_state(&mut entries);
 
     Ok(entries)
 }
 
 pub fn list_targets(input: ListWorktrees) -> HzResult<Vec<WorktreeEntry>> {
+    let (_, _, entries) = list_targets_with_repo(input)?;
+    Ok(entries)
+}
+
+pub fn list_targets_with_repo(
+    input: ListWorktrees,
+) -> HzResult<(PathBuf, PathBuf, Vec<WorktreeEntry>)> {
     let registry = Registry::load()?;
     let (repo, git_worktrees) = resolve_repo_with_git_worktrees(input.repo.as_deref(), &registry)?;
+    let local_path = repo.clone();
     let mut entries = discover_entries_with_git_worktrees(&registry, &repo, git_worktrees);
     sort_worktree_entries(&mut entries);
 
-    Ok(entries)
+    Ok((repo, local_path, entries))
+}
+
+pub fn list_with_local(input: ListWorktrees) -> HzResult<(LocalWorktreeInfo, Vec<WorktreeEntry>)> {
+    let registry = Registry::load()?;
+    let (repo, git_worktrees) = resolve_repo_with_git_worktrees(input.repo.as_deref(), &registry)?;
+    let branch = git_worktrees
+        .first()
+        .and_then(|worktree| worktree.branch.clone());
+    let mut entries = discover_entries_with_git_worktrees(&registry, &repo, git_worktrees);
+    sort_worktree_entries(&mut entries);
+    refresh_worktree_state(&mut entries);
+    let local = local_from_resolved(&registry, repo, branch)?;
+
+    Ok((local, entries))
 }
 
 pub fn local(input: LocalWorktree) -> HzResult<LocalWorktreeInfo> {
     let registry = Registry::load()?;
-    let repo = resolve_repo(input.repo.as_deref(), &registry)?;
-    let branch = hz_git::current_branch(&repo)?;
+    let (repo, git_worktrees) = resolve_repo_with_git_worktrees(input.repo.as_deref(), &registry)?;
+    let branch = git_worktrees
+        .first()
+        .and_then(|worktree| worktree.branch.clone());
+
+    local_from_resolved(&registry, repo, branch)
+}
+
+pub fn local_path(input: LocalWorktree) -> HzResult<(PathBuf, PathBuf)> {
+    let registry = Registry::load()?;
+    let (repo, _) = resolve_repo_with_git_worktrees(input.repo.as_deref(), &registry)?;
+
+    Ok((repo.clone(), repo))
+}
+
+fn local_from_resolved(
+    registry: &Registry,
+    repo: PathBuf,
+    branch: Option<String>,
+) -> HzResult<LocalWorktreeInfo> {
     let state = hz_git::worktree_state(&repo)?;
     let status = if state.dirty {
         WorktreeStatus::Dirty
@@ -40,7 +80,7 @@ pub fn local(input: LocalWorktree) -> HzResult<LocalWorktreeInfo> {
     } else {
         state.modified_at_unix
     };
-    let handoff_from = local_handoff_from(&registry, &repo, branch.as_deref())?;
+    let handoff_from = local_handoff_from(registry, &repo, branch.as_deref())?;
 
     Ok(LocalWorktreeInfo {
         repo: repo.clone(),
