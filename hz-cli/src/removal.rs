@@ -15,6 +15,23 @@ use crate::{
 };
 
 pub(crate) fn remove_worktree(args: RemoveWorktreeArgs) -> CliResult<()> {
+    remove_worktree_with_json_shape(args, RemovalJsonShape::PreserveSingle)
+}
+
+pub(crate) fn remove_worktree_json_array(args: RemoveWorktreeArgs) -> CliResult<()> {
+    remove_worktree_with_json_shape(args, RemovalJsonShape::AlwaysArray)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemovalJsonShape {
+    PreserveSingle,
+    AlwaysArray,
+}
+
+fn remove_worktree_with_json_shape(
+    args: RemoveWorktreeArgs,
+    json_shape: RemovalJsonShape,
+) -> CliResult<()> {
     let debug = args.debug;
     let force = args.force;
     let requested_target_count = args.targets.len();
@@ -49,10 +66,13 @@ pub(crate) fn remove_worktree(args: RemoveWorktreeArgs) -> CliResult<()> {
     }
 
     if args.json {
-        write_stdout(format_args!(
-            "{}\n",
-            removed_worktrees_json(requested_target_count, &removed)?
-        ))?;
+        let json = match json_shape {
+            RemovalJsonShape::PreserveSingle => {
+                removed_worktrees_json(requested_target_count, &removed)?
+            }
+            RemovalJsonShape::AlwaysArray => removed_worktrees_json_array(&removed)?,
+        };
+        write_stdout(format_args!("{}\n", json))?;
     } else if debug {
         for entry in &removed {
             write_stdout(format_args!(
@@ -166,6 +186,12 @@ pub(crate) fn removed_worktrees_json(
         return Ok(serde_json::to_string_pretty(entry)?);
     }
 
+    Ok(serde_json::to_string_pretty(removed)?)
+}
+
+pub(crate) fn removed_worktrees_json_array(
+    removed: &[hz_command::WorktreeEntry],
+) -> HzResult<String> {
     Ok(serde_json::to_string_pretty(removed)?)
 }
 

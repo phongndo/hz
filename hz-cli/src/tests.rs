@@ -103,6 +103,26 @@ fn default_help_renders_usage() {
 }
 
 #[test]
+fn agent_commands_parse_under_machine_namespace() {
+    let cli = Cli::try_parse_from(["hz", "agent", "current"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        Some(Command::Agent {
+            command: AgentCommand::Pwd(_)
+        })
+    ));
+
+    let cli = Cli::try_parse_from(["hz", "agent", "rm", "feature/ui"]).unwrap();
+    let Some(Command::Agent {
+        command: AgentCommand::Remove(args),
+    }) = cli.command
+    else {
+        panic!("agent rm should parse as agent remove");
+    };
+    assert_eq!(args.targets, vec!["feature/ui".to_owned()]);
+}
+
+#[test]
 fn list_output_uses_branch_as_display_identifier() {
     let output = render_worktree_list(&[hz_command::WorktreeEntry {
         id: "entry-id".to_owned(),
@@ -1087,6 +1107,20 @@ fn shell_completion_command_lists_match_clap() {
         worktree_commands
     );
 
+    let agent_commands = clap_completion_subcommands(&["agent"]);
+    assert_eq!(
+        bash_words_variable(bash, "_hz_agent_commands"),
+        agent_commands
+    );
+    assert_eq!(
+        zsh_described_commands(zsh, "_hz_complete_agent_subcommand"),
+        agent_commands
+    );
+    assert_eq!(
+        fish_argument_words(fish, "__hz_needs_agent_subcommand"),
+        agent_commands
+    );
+
     assert!(!bash.contains("_hz_ts_commands"));
     assert!(!zsh.contains("_hz_complete_ts_subcommand"));
     assert!(!fish.contains("__hz_needs_ts_subcommand"));
@@ -1107,7 +1141,7 @@ fn shell_completion_option_flags_match_clap() {
         "fish options for hz"
     );
 
-    for group in ["worktree", "wt"] {
+    for group in ["worktree", "wt", "agent"] {
         let expected = clap_completion_flags(&[group]);
         assert_eq!(
             bash_group_flags(bash, group),
@@ -1127,7 +1161,7 @@ fn shell_completion_option_flags_match_clap() {
     }
 
     for command in clap_completion_subcommands(&[]) {
-        if matches!(command.as_str(), "worktree" | "wt") {
+        if matches!(command.as_str(), "worktree" | "wt" | "agent") {
             continue;
         }
 
@@ -1165,6 +1199,25 @@ fn shell_completion_option_flags_match_clap() {
             fish_completion_flags(fish, FishCompletionContext::Worktree(&command)),
             expected,
             "fish options for hz worktree {command}"
+        );
+    }
+
+    for command in clap_completion_subcommands(&["agent"]) {
+        let expected = clap_completion_flags(&["agent", &command]);
+        assert_eq!(
+            bash_command_flags(bash, &command),
+            expected,
+            "bash options for hz agent {command}"
+        );
+        assert_eq!(
+            zsh_command_flags(zsh, &command),
+            expected,
+            "zsh options for hz agent {command}"
+        );
+        assert_eq!(
+            fish_completion_flags(fish, FishCompletionContext::Agent(&command)),
+            expected,
+            "fish options for hz agent {command}"
         );
     }
 }
@@ -1539,11 +1592,21 @@ fn single_target_json_uses_array_when_nothing_was_removed() {
     assert_eq!(output, "[]");
 }
 
+#[test]
+fn agent_remove_json_always_uses_array_shape() {
+    let removed = vec![test_entry(hz_command::WorktreeSource::Managed)];
+
+    let output = removed_worktrees_json_array(&removed).unwrap();
+
+    assert!(output.trim_start().starts_with('['));
+}
+
 #[derive(Clone, Copy)]
 enum FishCompletionContext<'a> {
     Root,
     Top(&'a str),
     Worktree(&'a str),
+    Agent(&'a str),
 }
 
 fn clap_completion_subcommands(path: &[&str]) -> BTreeSet<String> {
@@ -1671,7 +1734,9 @@ fn zsh_group_flags(script: &str, group: &str) -> BTreeSet<String> {
 fn shell_group_flags(script: &str, group: &str) -> BTreeSet<String> {
     let body = shell_function_body(script, "_hz_completion");
     let marker = match group {
-        "worktree" | "wt" => "if [[ \"$cmd\" == \"worktree\" || \"$cmd\" == \"wt\" ]]; then",
+        "worktree" | "wt" | "agent" => {
+            "if [[ \"$cmd\" == \"worktree\" || \"$cmd\" == \"wt\" || \"$cmd\" == \"agent\" ]]; then"
+        }
         _ => panic!("unsupported shell group: {group}"),
     };
     let branch = shell_branch_body(body, marker);
@@ -1814,6 +1879,8 @@ fn fish_line_applies(line: &str, context: FishCompletionContext<'_>) -> bool {
                 || fish_condition_contains(condition, "__hz_top_command_is", command)
         }),
         FishCompletionContext::Worktree(command) => condition
+            .is_none_or(|condition| fish_condition_contains(condition, "__hz_command_is", command)),
+        FishCompletionContext::Agent(command) => condition
             .is_none_or(|condition| fish_condition_contains(condition, "__hz_command_is", command)),
     }
 }

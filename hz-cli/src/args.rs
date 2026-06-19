@@ -28,7 +28,8 @@ examples:
   hz setup feature/ui
   hz cleanup feature/ui
   hz cd feature/ui
-  hz handoff feature/ui";
+  hz handoff feature/ui
+  hz agent list";
 
 pub(crate) const INSTALL_SCRIPT: &str = include_str!("../../scripts/install.sh");
 pub(crate) const RELEASE_REPO: &str = "phongndo/hz";
@@ -58,10 +59,15 @@ pub(crate) fn help_styles() -> Styles {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    #[command(alias = "wt")]
+    #[command(alias = "wt", about = "Explicit worktree command namespace")]
     Worktree {
         #[command(subcommand)]
         command: WorktreeCommand,
+    },
+    #[command(about = "Machine-readable aliases for agents and scripts")]
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
     },
     #[command(about = "Create an isolated Git worktree for a task or agent")]
     New(NewWorktreeArgs),
@@ -116,6 +122,28 @@ pub(crate) enum WorktreeCommand {
     Remove(RemoveWorktreeArgs),
     #[command(about = "Apply changes between local and a linked worktree")]
     Handoff(HandoffWorktreeArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum AgentCommand {
+    #[command(about = "Create a worktree and print JSON")]
+    New(NewWorktreeArgs),
+    #[command(about = "Fork the current worktree state and print JSON")]
+    Fork(ForkWorktreeArgs),
+    #[command(alias = "cd", about = "Print a worktree path as JSON")]
+    Path(PathWorktreeArgs),
+    #[command(alias = "ls", about = "List worktrees as JSON")]
+    List(ListWorktreeArgs),
+    #[command(alias = "current", about = "Print the current worktree as JSON")]
+    Pwd(PwdWorktreeArgs),
+    #[command(alias = "rm", about = "Remove worktrees and print a JSON array")]
+    Remove(RemoveWorktreeArgs),
+    #[command(about = "Apply changes between linked worktrees and print JSON")]
+    Handoff(HandoffWorktreeArgs),
+    #[command(about = "Run setup lifecycle and print JSON")]
+    Setup(LifecycleArgs),
+    #[command(about = "Run cleanup lifecycle and print JSON")]
+    Cleanup(LifecycleArgs),
 }
 
 #[derive(Debug, Args)]

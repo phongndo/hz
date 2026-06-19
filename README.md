@@ -13,10 +13,9 @@ isolation and diff review can evolve as separate tools.
 ## Status
 
 `hz` is pre-1.0. The current release is usable for local Git worktree, handoff,
-lifecycle, shell integration, and install/update workflows. Prefer `--json` for
-scripts, and expect command shapes to keep tightening before 1.0.
-
-See [docs/roadmap.md](docs/roadmap.md) for the product direction.
+lifecycle, shell integration, agent-facing JSON commands, and install/update
+workflows. Prefer `hz agent ...` or `--json` for scripts, and expect command
+shapes to keep tightening before 1.0.
 
 ## What hz does today
 
@@ -27,6 +26,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the product direction.
 - Applies uncommitted changes between linked worktrees without forcing a commit.
 - Moves branch ownership between worktrees when both sides are clean.
 - Runs repo-local setup and cleanup hooks on explicit opt-in commands for reproducible agent workspaces.
+- Exposes JSON-first `hz agent ...` commands for agents and automation.
 - Lists, finds, prunes, and removes managed and unmanaged worktrees.
 - Installs and updates release binaries from GitHub releases.
 
@@ -55,6 +55,15 @@ hz rm -f fix-login    # force is needed if the source worktree still has handed-
 
 Without shell integration, use `hz path <target>` to print a worktree path and
 `cd "$(hz path <target>)"` from your shell.
+
+For agents and scripts, prefer the machine-readable surface:
+
+```sh
+hz agent new fix-login --repo .
+hz agent list --repo .
+hz agent handoff fix-login --repo .
+hz agent remove fix-login --repo . --force
+```
 
 `hz init` writes repo-local lifecycle files under `.hz/`. Commit them before
 starting the task flow above so the destination worktree is clean when
@@ -228,8 +237,27 @@ without changing directories.
 
 The shell integration also installs completions for zsh, bash, and fish.
 Completions include command aliases such as `hz cd`, `hz ls`, and `hz rm`,
-nested `hz worktree ...` commands, command flags, shell names for
-`hz init`/`hz shell`, and live worktree targets for commands that accept them.
+nested `hz worktree ...` and `hz agent ...` commands, command flags, shell
+names for `hz init`/`hz shell`, and live worktree targets for commands that
+accept them.
+
+### Human and agent command surfaces
+
+The top-level commands are human-facing. They keep terminal output readable and,
+when shell integration is installed, commands such as `hz new`, `hz fork`,
+`hz cd`, and `hz handoff` can change the current shell directory.
+
+`hz agent ...` is the machine-facing namespace. It reuses the same worktree and
+lifecycle behavior but forces JSON output, bypasses shell auto-cd, and refuses
+unsafe prompts in non-interactive paths. Use it when another process needs
+stable stdout:
+
+```sh
+hz agent pwd
+hz agent path fix-login
+hz agent setup fix-login
+hz agent cleanup fix-login
+```
 
 ### Handoff
 
@@ -327,6 +355,11 @@ See [docs/config.md](docs/config.md) for the full config reference.
 For compatibility, `hz init <shell>` still installs shell integration, but
 `hz install <shell>` is the documented command for shell setup.
 
+## CLI reference
+
+See [docs/cli.md](docs/cli.md) for the full human and agent command reference,
+common options, and scripting notes.
+
 ## Architecture
 
 ```text
@@ -362,6 +395,7 @@ Run local checks:
 ```sh
 just setup
 just check
+just test
 just build
 just smoke
 ```

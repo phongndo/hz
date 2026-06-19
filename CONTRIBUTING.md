@@ -61,6 +61,7 @@ Use the cheapest useful check first while developing:
 just setup
 just install-hooks
 just check
+just test
 just build
 just smoke
 just hz --help
