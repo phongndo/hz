@@ -28,6 +28,7 @@ pub fn list_targets_with_repo(
     let (repo, git_worktrees) = resolve_repo_with_git_worktrees(input.repo.as_deref(), &registry)?;
     let local_path = repo.clone();
     let mut entries = discover_entries_with_git_worktrees(&registry, &repo, git_worktrees);
+    filter_entries_by_pin(&mut entries, input.pinned);
     sort_worktree_entries(&mut entries);
 
     Ok((repo, local_path, entries))
@@ -40,11 +41,18 @@ pub fn list_with_local(input: ListWorktrees) -> HzResult<(LocalWorktreeInfo, Vec
         .first()
         .and_then(|worktree| worktree.branch.clone());
     let mut entries = discover_entries_with_git_worktrees(&registry, &repo, git_worktrees);
+    filter_entries_by_pin(&mut entries, input.pinned);
     sort_worktree_entries(&mut entries);
     refresh_worktree_state(&mut entries);
     let local = local_from_resolved(&registry, repo, branch)?;
 
     Ok((local, entries))
+}
+
+pub(crate) fn filter_entries_by_pin(entries: &mut Vec<WorktreeEntry>, pinned: Option<bool>) {
+    if let Some(pinned) = pinned {
+        entries.retain(|entry| entry.pinned == pinned);
+    }
 }
 
 pub fn local(input: LocalWorktree) -> HzResult<LocalWorktreeInfo> {

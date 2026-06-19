@@ -68,9 +68,9 @@ hzlocal() {
   hz cd local "$@"
 }
 
-_hz_top_commands="new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt"
-_hz_worktree_commands="new fork path cd list ls pwd remove rm handoff"
-_hz_agent_commands="new fork path cd list ls pwd current remove rm handoff setup cleanup"
+_hz_top_commands="new fork path cd list ls pwd remove rm pin unpin handoff init install setup cleanup shell update worktree wt"
+_hz_worktree_commands="new fork path cd list ls pwd remove rm pin unpin handoff"
+_hz_agent_commands="new fork path cd list ls pwd current remove rm pin unpin handoff setup cleanup"
 _hz_shells="zsh bash fish"
 
 _hz_reply() {
@@ -182,7 +182,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|pwd|current|remove|rm|handoff|setup|cleanup|init)
+        new|fork|path|cd|list|ls|pwd|current|remove|rm|pin|unpin|handoff|setup|cleanup|init)
           _hz_complete_dirs "$current"
           return 0
           ;;
@@ -277,7 +277,7 @@ _hz_complete_command_args() {
       fi
       ;;
     list|ls)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json --machine -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "-r --repo --pinned --unpinned -j --json --machine -h --help" "$current"
       ;;
     pwd|current)
       [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json --machine -h --help" "$current"
@@ -285,6 +285,13 @@ _hz_complete_command_args() {
     remove|rm)
       if [[ "$current" == -* ]]; then
         _hz_reply "-r --repo -j --json -f --force --yes -d --debug --cleanup --no-cleanup --machine -h --help" "$current"
+      else
+        _hz_dynamic_reply removable-worktrees "$current"
+      fi
+      ;;
+    pin|unpin)
+      if [[ "$current" == -* ]]; then
+        _hz_reply "-r --repo -j --json --machine -h --help" "$current"
       else
         _hz_dynamic_reply removable-worktrees "$current"
       fi

@@ -28,8 +28,8 @@ CLI flag > .hz/hz.toml > built-in default
 ```toml
 [worktree]
 auto_prune = true
-max_detached = 15
-max_branch_worktrees = 15
+max_detached = 10
+max_branch_worktrees = 10
 default_base = "dev"
 user_managed_roots = ["~/.codex/worktrees", "../agent-worktrees"]
 ```
@@ -39,15 +39,22 @@ managed worktrees when a configured limit would be exceeded. Set it to `false`
 to keep managed worktrees instead of deleting them automatically. Per-command
 limit flags still win over repo config.
 
-`max_detached` caps managed detached scratch worktrees for the repo. Creating
-another detached worktree auto-removes the oldest clean managed detached
-worktrees until the cap is satisfied. Set it to `0` to disable auto-pruning.
+`max_detached` caps unpinned managed detached scratch worktrees for the repo.
+Creating another detached worktree auto-removes the oldest clean unpinned
+managed detached worktrees until the cap is satisfied. Set it to `0` to disable
+auto-pruning.
 
-`max_branch_worktrees` caps managed branch-backed worktrees for the repo.
-Creating another branch-backed worktree auto-removes the oldest clean managed
-branch-backed worktrees until the cap is satisfied. Only the checkout is
-removed; the Git branch remains available to check out later. Set it to `0` to
-disable auto-pruning.
+`max_branch_worktrees` caps unpinned managed branch-backed worktrees for the
+repo. Creating another branch-backed worktree auto-removes the oldest clean
+unpinned managed branch-backed worktrees until the cap is satisfied. Only the
+checkout is removed; the Git branch remains available to check out later. Set it
+to `0` to disable auto-pruning.
+
+Pinned worktrees do not count toward these auto-prune limits. Use
+`hz pin <target...>` to make managed worktrees persistent, and
+`hz unpin <target...>` to make them eligible for auto-prune again.
+`hz ls --pinned` shows pinned worktrees; `hz ls --unpinned` shows unpinned
+worktrees.
 
 `default_base` is the branch or revision used when `hz new` is called without
 `--base`.

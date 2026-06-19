@@ -152,6 +152,7 @@ fn list_output_uses_branch_as_display_identifier() {
         branch: Some("feature/ui".to_owned()),
         base: None,
         source: hz_command::WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: hz_command::WorktreeStatus::Unknown,
@@ -177,6 +178,7 @@ fn list_output_uses_handle_when_branch_is_missing() {
         branch: None,
         base: None,
         source: hz_command::WorktreeSource::Git,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: hz_command::WorktreeStatus::Unknown,
@@ -221,6 +223,7 @@ fn list_output_widths_count_terminal_columns() {
         branch: Some("ééééé".to_owned()),
         base: None,
         source: hz_command::WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: hz_command::WorktreeStatus::Unknown,
@@ -240,6 +243,7 @@ fn list_output_omits_source_column() {
             branch: Some("alpha".to_owned()),
             base: None,
             source: hz_command::WorktreeSource::Managed,
+            pinned: false,
             created_at_unix: 0,
             modified_at_unix: 0,
             status: hz_command::WorktreeStatus::Unknown,
@@ -252,6 +256,7 @@ fn list_output_omits_source_column() {
             branch: None,
             base: None,
             source: hz_command::WorktreeSource::Git,
+            pinned: false,
             created_at_unix: 0,
             modified_at_unix: 0,
             status: hz_command::WorktreeStatus::Unknown,
@@ -276,6 +281,7 @@ fn list_output_renders_status_and_modified_columns() {
             branch: Some("dirty-worktree".to_owned()),
             base: None,
             source: hz_command::WorktreeSource::Managed,
+            pinned: false,
             created_at_unix: 0,
             modified_at_unix: dirty_at,
             status: hz_command::WorktreeStatus::Dirty,
@@ -288,6 +294,7 @@ fn list_output_renders_status_and_modified_columns() {
             branch: Some("clean-worktree".to_owned()),
             base: None,
             source: hz_command::WorktreeSource::Managed,
+            pinned: false,
             created_at_unix: created_at,
             modified_at_unix: 0,
             status: hz_command::WorktreeStatus::Clean,
@@ -416,6 +423,7 @@ fn list_output_can_render_terminal_color() {
             branch: Some("feature/ui".to_owned()),
             base: None,
             source: hz_command::WorktreeSource::Managed,
+            pinned: false,
             created_at_unix: 0,
             modified_at_unix: 0,
             status: hz_command::WorktreeStatus::Unknown,
@@ -490,6 +498,7 @@ fn list_output_marks_current_worktree() {
             branch: Some("feature/ui".to_owned()),
             base: None,
             source: hz_command::WorktreeSource::Managed,
+            pinned: false,
             created_at_unix: 0,
             modified_at_unix: 0,
             status: hz_command::WorktreeStatus::Unknown,
@@ -607,6 +616,7 @@ fn list_output_truncates_to_terminal_width() {
             ),
             base: None,
             source: hz_command::WorktreeSource::Managed,
+            pinned: false,
             created_at_unix: 0,
             modified_at_unix: 0,
             status: hz_command::WorktreeStatus::Clean,
@@ -766,6 +776,7 @@ fn removed_output_renders_human_summary() {
             branch: Some("feature/ui".to_owned()),
             base: None,
             source: hz_command::WorktreeSource::Managed,
+            pinned: false,
             created_at_unix: 0,
             modified_at_unix: 0,
             status: hz_command::WorktreeStatus::Unknown,
@@ -1036,10 +1047,20 @@ fn path_and_list_accept_short_flags() {
     match cli.command {
         Some(Command::List(args)) => {
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert!(!args.pinned);
+            assert!(!args.unpinned);
             assert!(args.json);
         }
         command => panic!("expected list command, got {command:?}"),
     }
+
+    let cli = Cli::try_parse_from(["hz", "ls", "--pinned"]).unwrap();
+    match cli.command {
+        Some(Command::List(args)) => assert!(args.pinned),
+        command => panic!("expected list command, got {command:?}"),
+    }
+
+    assert!(Cli::try_parse_from(["hz", "ls", "--pinned", "--unpinned"]).is_err());
 
     let cli = Cli::try_parse_from(["hz", "pwd", "-r", "/repo", "-j"]).unwrap();
     match cli.command {
@@ -1048,6 +1069,26 @@ fn path_and_list_accept_short_flags() {
             assert!(args.json);
         }
         command => panic!("expected pwd command, got {command:?}"),
+    }
+}
+
+#[test]
+fn pin_and_unpin_accept_multiple_targets() {
+    let cli = Cli::try_parse_from(["hz", "pin", "-r", "/repo", "-j", "alpha", "beta"]).unwrap();
+
+    match cli.command {
+        Some(Command::Pin(args)) => {
+            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert!(args.json);
+            assert_eq!(args.targets, vec!["alpha".to_owned(), "beta".to_owned()]);
+        }
+        command => panic!("expected pin command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "unpin", "alpha"]).unwrap();
+    match cli.command {
+        Some(Command::Unpin(args)) => assert_eq!(args.targets, vec!["alpha".to_owned()]),
+        command => panic!("expected unpin command, got {command:?}"),
     }
 }
 
@@ -1423,6 +1464,7 @@ fn removed_worktree_display_identifier_prefers_branch() {
         branch: Some("feature/ui".to_owned()),
         base: None,
         source: hz_command::WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: hz_command::WorktreeStatus::Unknown,
@@ -2015,6 +2057,7 @@ fn test_entry(source: hz_command::WorktreeSource) -> hz_command::WorktreeEntry {
         branch: Some("feature/ui".to_owned()),
         base: None,
         source,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: hz_command::WorktreeStatus::Unknown,

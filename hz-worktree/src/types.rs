@@ -43,6 +43,14 @@ pub struct HandoffWorktree {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListWorktrees {
     pub repo: Option<PathBuf>,
+    pub pinned: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinWorktrees {
+    pub targets: Vec<String>,
+    pub repo: Option<PathBuf>,
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +151,8 @@ pub struct WorktreeEntry {
     pub branch: Option<String>,
     pub base: Option<String>,
     pub source: WorktreeSource,
+    #[serde(default)]
+    pub pinned: bool,
     pub created_at_unix: u64,
     #[serde(default)]
     pub modified_at_unix: u64,
@@ -150,8 +160,8 @@ pub struct WorktreeEntry {
     pub status: WorktreeStatus,
 }
 
-pub const DEFAULT_MAX_DETACHED_WORKTREES: usize = 15;
-pub const DEFAULT_MAX_BRANCH_WORKTREES: usize = 15;
+pub const DEFAULT_MAX_DETACHED_WORKTREES: usize = 10;
+pub const DEFAULT_MAX_BRANCH_WORKTREES: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct HandoffLink {

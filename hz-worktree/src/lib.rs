@@ -3,6 +3,7 @@ mod fork;
 mod handles;
 mod handoff;
 mod list;
+mod pin;
 mod prune;
 mod registry;
 mod remove;
@@ -19,13 +20,14 @@ pub use list::{
     current_path, find, find_many, list, list_targets, list_targets_with_repo, list_with_local,
     local, local_path,
 };
+pub use pin::pin;
 pub use registry::is_hz_worktree_path;
 pub use remove::{remove, remove_found, remove_found_with_force};
 pub use types::{
     CreateWorktree, CreatedWorktree, DEFAULT_MAX_BRANCH_WORKTREES, DEFAULT_MAX_DETACHED_WORKTREES,
     FindWorktree, FindWorktrees, ForkWorktree, ForkedWorktree, HandoffMode, HandoffWorktree,
-    ListWorktrees, LocalWorktree, LocalWorktreeInfo, PathWorktree, RemoveWorktree, WorktreeEntry,
-    WorktreeHandoff, WorktreeSource, WorktreeStatus,
+    ListWorktrees, LocalWorktree, LocalWorktreeInfo, PathWorktree, PinWorktrees, RemoveWorktree,
+    WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
 };
 
 pub(crate) use create::*;
@@ -34,6 +36,8 @@ pub(crate) use fork::*;
 pub(crate) use handles::*;
 pub(crate) use handoff::*;
 pub(crate) use list::*;
+#[cfg(test)]
+pub(crate) use pin::*;
 pub(crate) use prune::*;
 pub(crate) use registry::*;
 pub(crate) use remove::*;

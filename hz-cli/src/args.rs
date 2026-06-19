@@ -84,6 +84,10 @@ pub(crate) enum Command {
     Pwd(PwdWorktreeArgs),
     #[command(alias = "rm", about = "Remove one or more worktrees")]
     Remove(RemoveWorktreeArgs),
+    #[command(about = "Pin worktrees so auto-prune will not remove them")]
+    Pin(PinWorktreeArgs),
+    #[command(about = "Unpin worktrees so auto-prune may remove them")]
+    Unpin(PinWorktreeArgs),
     #[command(about = "Apply changes between local and a linked worktree")]
     Handoff(HandoffWorktreeArgs),
     #[command(about = "Initialize hz repo lifecycle config")]
@@ -123,6 +127,10 @@ pub(crate) enum WorktreeCommand {
     Pwd(PwdWorktreeArgs),
     #[command(alias = "rm", about = "Remove one or more worktrees")]
     Remove(RemoveWorktreeArgs),
+    #[command(about = "Pin worktrees so auto-prune will not remove them")]
+    Pin(PinWorktreeArgs),
+    #[command(about = "Unpin worktrees so auto-prune may remove them")]
+    Unpin(PinWorktreeArgs),
     #[command(about = "Apply changes between local and a linked worktree")]
     Handoff(HandoffWorktreeArgs),
 }
@@ -141,6 +149,10 @@ pub(crate) enum AgentCommand {
     Pwd(PwdWorktreeArgs),
     #[command(alias = "rm", about = "Remove worktrees and print a JSON array")]
     Remove(RemoveWorktreeArgs),
+    #[command(about = "Pin worktrees and print JSON")]
+    Pin(PinWorktreeArgs),
+    #[command(about = "Unpin worktrees and print JSON")]
+    Unpin(PinWorktreeArgs),
     #[command(about = "Apply changes between linked worktrees and print JSON")]
     Handoff(HandoffWorktreeArgs),
     #[command(about = "Run setup lifecycle and print JSON")]
@@ -208,6 +220,10 @@ pub(crate) struct PathWorktreeArgs {
 pub(crate) struct ListWorktreeArgs {
     #[arg(short = 'r', long)]
     pub(crate) repo: Option<PathBuf>,
+    #[arg(long, conflicts_with = "unpinned")]
+    pub(crate) pinned: bool,
+    #[arg(long)]
+    pub(crate) unpinned: bool,
     #[arg(short = 'j', long)]
     pub(crate) json: bool,
 }
@@ -236,6 +252,16 @@ pub(crate) struct RemoveWorktreeArgs {
     pub(crate) cleanup: bool,
     #[arg(long)]
     pub(crate) no_cleanup: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PinWorktreeArgs {
+    #[arg(value_name = "TARGET", required = true, num_args = 1..)]
+    pub(crate) targets: Vec<String>,
+    #[arg(short = 'r', long)]
+    pub(crate) repo: Option<PathBuf>,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]

@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use crate::{
     CreateWorktree, CreatedWorktree, FindWorktree, ForkWorktree, ForkedWorktree, HandoffWorktree,
     HzConfig, LifecycleKind, ListWorktrees, LocalWorktree, LocalWorktreeInfo, PathWorktree,
-    RemoveWorktree, WorktreeEntry, WorktreeHandoff, create_worktree_with_config_defaults,
-    created_worktree_target, fork_worktree_with_config_defaults, run_lifecycle_for_path,
-    with_configured_handoff_limits,
+    PinWorktrees, RemoveWorktree, WorktreeEntry, WorktreeHandoff,
+    create_worktree_with_config_defaults, created_worktree_target,
+    fork_worktree_with_config_defaults, run_lifecycle_for_path, with_configured_handoff_limits,
 };
 use hz_core::{HzResult, path_utils::path_is_inside};
 
@@ -55,6 +55,10 @@ pub fn list_worktree_targets_with_repo(
     input: ListWorktrees,
 ) -> HzResult<(PathBuf, PathBuf, Vec<WorktreeEntry>)> {
     hz_worktree::list_targets_with_repo(input)
+}
+
+pub fn pin_worktrees(input: PinWorktrees) -> HzResult<Vec<WorktreeEntry>> {
+    hz_worktree::pin(input)
 }
 
 pub fn local_worktree(input: LocalWorktree) -> HzResult<LocalWorktreeInfo> {

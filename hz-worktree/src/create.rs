@@ -128,6 +128,7 @@ pub(crate) fn create_with_registry_and_deferred_prune(
         branch: branch.clone(),
         base: input.base.clone(),
         source: WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: unix_now()?,
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,

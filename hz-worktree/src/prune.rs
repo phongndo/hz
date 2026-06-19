@@ -25,6 +25,7 @@ pub(crate) fn select_detached_worktree_prune_candidates(
             same_path(&entry.repo, repo)
                 && entry.source == WorktreeSource::Managed
                 && entry.branch.is_none()
+                && !entry.pinned
                 && git_worktrees.iter().any(|worktree| {
                     same_path(&worktree.path, &entry.path) && worktree.branch.is_none()
                 })
@@ -77,6 +78,7 @@ pub(crate) fn select_branch_worktree_prune_candidates(
         .entries
         .iter()
         .filter(|entry| same_path(&entry.repo, repo) && entry.source == WorktreeSource::Managed)
+        .filter(|entry| !entry.pinned)
         .filter_map(|entry| {
             let git_worktree = git_worktrees.iter().find(|worktree| {
                 same_path(&worktree.path, &entry.path) && worktree.branch.is_some()
