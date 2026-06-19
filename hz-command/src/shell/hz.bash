@@ -68,8 +68,9 @@ hzlocal() {
   hz cd local "$@"
 }
 
-_hz_top_commands="new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt"
+_hz_top_commands="new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt agent"
 _hz_worktree_commands="new fork path cd list ls pwd remove rm handoff"
+_hz_agent_commands="new fork path cd list ls pwd current remove rm handoff setup cleanup"
 _hz_shells="zsh bash fish"
 
 _hz_reply() {
@@ -145,7 +146,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|pwd|remove|rm|handoff|setup|cleanup|init)
+        new|fork|path|cd|list|ls|pwd|current|remove|rm|handoff|setup|cleanup|init)
           _hz_complete_dirs "$current"
           return 0
           ;;
@@ -242,7 +243,7 @@ _hz_complete_command_args() {
     list|ls)
       [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json -h --help" "$current"
       ;;
-    pwd)
+    pwd|current)
       [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json -h --help" "$current"
       ;;
     remove|rm)
@@ -301,10 +302,12 @@ _hz_completion() {
   fi
 
   local cmd="${COMP_WORDS[1]}"
-  if [[ "$cmd" == "worktree" || "$cmd" == "wt" ]]; then
+  if [[ "$cmd" == "worktree" || "$cmd" == "wt" || "$cmd" == "agent" ]]; then
     if [[ "$COMP_CWORD" -eq 2 ]]; then
       if [[ "$current" == -* ]]; then
         _hz_reply "-h --help" "$current"
+      elif [[ "$cmd" == "agent" ]]; then
+        _hz_reply "$_hz_agent_commands" "$current"
       else
         _hz_reply "$_hz_worktree_commands" "$current"
       fi

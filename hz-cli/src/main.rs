@@ -1,3 +1,4 @@
+mod agent;
 mod args;
 mod complete;
 mod lifecycle;
@@ -18,6 +19,7 @@ use clap::{CommandFactory, Parser};
 use hz_core::{HzError, HzResult};
 
 use crate::{
+    agent::run_agent_command,
     args::{Cli, Command, WorktreeCommand},
     complete::complete,
     lifecycle::run_lifecycle,
@@ -109,15 +111,8 @@ fn run() -> CliResult<()> {
 
     match cli.command {
         None => write_default_help(io::stdout().lock()),
-        Some(Command::Worktree { command }) => match command {
-            WorktreeCommand::New(args) => create_worktree(args),
-            WorktreeCommand::Fork(args) => fork_worktree(args),
-            WorktreeCommand::Path(args) => path_worktree(args),
-            WorktreeCommand::List(args) => list_worktrees(args),
-            WorktreeCommand::Pwd(args) => pwd_worktree(args),
-            WorktreeCommand::Remove(args) => remove_worktree(args),
-            WorktreeCommand::Handoff(args) => handoff_worktree(args),
-        },
+        Some(Command::Worktree { command }) => run_worktree_command(command),
+        Some(Command::Agent { command }) => run_agent_command(command),
         Some(Command::New(args)) => create_worktree(args),
         Some(Command::Fork(args)) => fork_worktree(args),
         Some(Command::Path(args)) => path_worktree(args),
@@ -132,6 +127,18 @@ fn run() -> CliResult<()> {
         Some(Command::Shell(args)) => shell_script(args),
         Some(Command::Update(args)) => update(args),
         Some(Command::Complete(args)) => complete(args),
+    }
+}
+
+fn run_worktree_command(command: WorktreeCommand) -> CliResult<()> {
+    match command {
+        WorktreeCommand::New(args) => create_worktree(args),
+        WorktreeCommand::Fork(args) => fork_worktree(args),
+        WorktreeCommand::Path(args) => path_worktree(args),
+        WorktreeCommand::List(args) => list_worktrees(args),
+        WorktreeCommand::Pwd(args) => pwd_worktree(args),
+        WorktreeCommand::Remove(args) => remove_worktree(args),
+        WorktreeCommand::Handoff(args) => handoff_worktree(args),
     }
 }
 

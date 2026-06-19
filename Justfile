@@ -7,8 +7,18 @@ check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+test:
+    cargo test --workspace --all-targets --all-features --locked
+
 build:
     cargo build -p hz-cli --locked
+
+install-hooks:
+    git config core.hooksPath .githooks
+
+hz *args:
+    cargo build -p hz-cli --locked
+    ./target/debug/hz {{args}}
 
 smoke: smoke-cli smoke-zsh smoke-bench smoke-installer-update
 

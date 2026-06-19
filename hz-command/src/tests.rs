@@ -737,7 +737,7 @@ fn fish_integration_passes_json_short_flag_through() {
 fn bash_integration_registers_completion() {
     let script = shell_integration(Shell::Bash);
     let worktree_completion = script
-        .split("if [[ \"$cmd\" == \"worktree\" || \"$cmd\" == \"wt\" ]]; then")
+        .split("if [[ \"$cmd\" == \"worktree\" || \"$cmd\" == \"wt\" || \"$cmd\" == \"agent\" ]]; then")
         .nth(1)
         .and_then(|completion| {
             completion
@@ -751,6 +751,7 @@ fn bash_integration_registers_completion() {
     assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
     assert!(script.contains("command hz __complete \"$command\" -r \"$repo\""));
     assert!(script.contains("for ((index = 1; index < COMP_CWORD; index++))"));
+    assert!(script.contains("_hz_agent_commands"));
     assert!(script.contains("_hz_complete_option_value"));
     assert!(script.contains("_hz_git_ref_reply"));
     assert!(script.contains("--branch)"));

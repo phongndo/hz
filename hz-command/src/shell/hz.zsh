@@ -150,9 +150,31 @@ _hz_complete_main() {
     'update:update hz from GitHub releases'
     'worktree:worktree commands'
     'wt:worktree commands'
+    'agent:machine-readable commands'
   )
 
   _describe -t commands 'hz command' commands
+}
+
+_hz_complete_agent_subcommand() {
+  local -a commands
+  commands=(
+    'new:create a worktree and print JSON'
+    'fork:fork the current worktree state and print JSON'
+    'path:print a worktree path as JSON'
+    'cd:print a worktree path as JSON'
+    'list:list worktrees as JSON'
+    'ls:list worktrees as JSON'
+    'pwd:print the current worktree as JSON'
+    'current:print the current worktree as JSON'
+    'remove:remove worktrees and print a JSON array'
+    'rm:remove worktrees and print a JSON array'
+    'handoff:apply changes between linked worktrees and print JSON'
+    'setup:run setup lifecycle and print JSON'
+    'cleanup:run cleanup lifecycle and print JSON'
+  )
+
+  _describe -t commands 'hz agent command' commands
 }
 
 
@@ -186,7 +208,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|pwd|remove|rm|handoff|setup|cleanup|init)
+        new|fork|path|cd|list|ls|pwd|current|remove|rm|handoff|setup|cleanup|init)
           _files -/
           return 0
           ;;
@@ -279,7 +301,7 @@ _hz_complete_command_options() {
     list|ls)
       compadd -- -r --repo -j --json -h --help
       ;;
-    pwd)
+    pwd|current)
       compadd -- -r --repo -j --json -h --help
       ;;
     remove|rm)
@@ -353,10 +375,12 @@ _hz_completion() {
   fi
 
   local cmd="${words[2]}"
-  if [[ "$cmd" == "worktree" || "$cmd" == "wt" ]]; then
+  if [[ "$cmd" == "worktree" || "$cmd" == "wt" || "$cmd" == "agent" ]]; then
     if (( CURRENT == 3 )); then
       if [[ "$PREFIX" == -* ]]; then
         compadd -- -h --help
+      elif [[ "$cmd" == "agent" ]]; then
+        _hz_complete_agent_subcommand
       else
         _hz_complete_worktree_subcommand
       fi
