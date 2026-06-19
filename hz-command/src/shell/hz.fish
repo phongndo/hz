@@ -11,7 +11,7 @@ function hz
         case new fork
             for arg in $argv
                 switch $arg
-                    case --json --path-only --help -h -j
+                    case --json --machine --path-only --help -h -j
                         command hz $argv
                         return
                 end
@@ -24,7 +24,7 @@ function hz
         case handoff
             for arg in $argv
                 switch $arg
-                    case --json --path-only --help -h -j
+                    case --json --machine --path-only --help -h -j
                         command hz $argv
                         return
                 end
@@ -38,7 +38,7 @@ function hz
             set rest $argv[2..-1]
             for arg in $rest
                 switch $arg
-                    case --json --path-only --help -h -j
+                    case --json --machine --path-only --help -h -j
                         command hz $cmd $rest
                         return
                 end
@@ -80,46 +80,97 @@ function __hz_complete_removable_worktrees
 end
 
 function __hz_needs_worktree_subcommand
-    set -l tokens (commandline -opc)
-    test (count $tokens) -ge 2; or return 1
-    contains -- $tokens[2] worktree wt; or return 1
-
-    if test (count $tokens) -eq 2
-        return 0
-    end
-
-    set -l current (commandline -ct)
-    test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
+    set -l cmd (__hz_command_token)
+    contains -- "$cmd" worktree wt; or return 1
+    set -l subcmd_index (__hz_subcommand_index)
+    test -z "$subcmd_index"
 end
 
 function __hz_needs_agent_subcommand
-    set -l tokens (commandline -opc)
-    test (count $tokens) -ge 2; or return 1
-    test "$tokens[2]" = agent; or return 1
-
-    if test (count $tokens) -eq 2
-        return 0
-    end
-
-    set -l current (commandline -ct)
-    test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
+    set -l cmd (__hz_command_token)
+    test "$cmd" = agent; or return 1
+    set -l subcmd_index (__hz_subcommand_index)
+    test -z "$subcmd_index"
 end
 
+function __hz_is_global_flag
+    contains -- "$argv[1]" --machine -h --help -V --version
+end
+
+function __hz_completed_token_count
+    set -l tokens (commandline -opc)
+    set -l current (commandline -ct)
+    set -l count (count $tokens)
+    test $count -gt 0; or return 1
+
+    if test "$tokens[$count]" = "$current"
+        set count (math $count - 1)
+    end
+
+    echo $count
+end
+
+function __hz_command_index
+    set -l tokens (commandline -opc)
+    set -l count (__hz_completed_token_count)
+    test -n "$count"; or return 1
+    test $count -ge 2; or return 1
+
+    for index in (seq 2 $count)
+        if __hz_is_global_flag "$tokens[$index]"
+            continue
+        end
+        echo $index
+        return 0
+    end
+    return 1
+end
+
+function __hz_command_token
+    set -l tokens (commandline -opc)
+    set -l index (__hz_command_index)
+    test -n "$index"; or return 1
+    echo $tokens[$index]
+end
+
+function __hz_subcommand_index
+    set -l tokens (commandline -opc)
+    set -l count (__hz_completed_token_count)
+    set -l command_index (__hz_command_index)
+    test -n "$count"; or return 1
+    test -n "$command_index"; or return 1
+
+    set -l start (math $command_index + 1)
+    test $start -le $count; or return 1
+
+    for index in (seq $start $count)
+        if __hz_is_global_flag "$tokens[$index]"
+            continue
+        end
+        echo $index
+        return 0
+    end
+    return 1
+end
+
+function __hz_subcommand_token
+    set -l tokens (commandline -opc)
+    set -l index (__hz_subcommand_index)
+    test -n "$index"; or return 1
+    echo $tokens[$index]
+end
 
 function __hz_top_command_is
-    set -l tokens (commandline -opc)
-    test (count $tokens) -ge 2; or return 1
-    contains -- $tokens[2] $argv
+    set -l cmd (__hz_command_token)
+    contains -- "$cmd" $argv
 end
 
 function __hz_command_is
-    set -l tokens (commandline -opc)
-    test (count $tokens) -ge 2; or return 1
-
-    set -l cmd $tokens[2]
+    set -l cmd (__hz_command_token)
+    test -n "$cmd"; or return 1
     if contains -- $cmd worktree wt agent
-        test (count $tokens) -ge 3; or return 1
-        set cmd $tokens[3]
+        set cmd (__hz_subcommand_token)
+        test -n "$cmd"; or return 1
     end
 
     contains -- $cmd $argv
@@ -173,7 +224,7 @@ complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt agent" -a "new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt agent"
+complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt agent" -a "new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt"
 complete -c hz -n "__hz_needs_worktree_subcommand" -a "new fork path cd list ls pwd remove rm handoff"
 complete -c hz -n "__hz_needs_agent_subcommand" -a "new fork path cd list ls pwd current remove rm handoff setup cleanup"
 
@@ -189,7 +240,7 @@ complete -c hz -n "__hz_command_is new handoff" -l max-branch-worktrees -r
 complete -c hz -n "__hz_command_is new" -l no-setup
 complete -c hz -n "__hz_command_is new" -l setup
 complete -c hz -n "__hz_command_is fork" -l no-diff
-complete -c hz -n "__hz_command_is new fork path cd list ls pwd current remove rm handoff" -s j -l json
+complete -c hz -n "__hz_command_is new fork path cd list ls pwd current remove rm handoff setup cleanup" -s j -l json
 complete -c hz -n "__hz_command_is new remove rm" -s d -l debug
 complete -c hz -n "__hz_command_is remove rm" -s f -l force
 complete -c hz -n "__hz_command_is remove rm" -l yes
@@ -199,6 +250,7 @@ complete -c hz -n "__hz_command_is handoff" -s b -l branch
 complete -c hz -n "__hz_command_is handoff" -s n -l new
 complete -c hz -n "__hz_top_command_is update" -l target-version -r
 complete -c hz -n "__hz_top_command_is update" -l install-dir -r -F
+complete -c hz -l machine
 complete -c hz -s h -l help
 
 complete -c hzcd -f
@@ -211,4 +263,4 @@ complete -c hzlocal -f
 complete -c hzlocal -s r -l repo -r -F
 complete -c hzlocal -s j -l json
 complete -c hzlocal -s h -l help
-complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt agent" -s V -l version
+complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt" -s V -l version

@@ -658,7 +658,7 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("alias hzlocal='noglob _hzlocal'"));
     assert!(script.contains("_hzlocal() {"));
     assert!(script.contains("handoff)"));
-    assert!(script.contains("--json|--path-only|--help|-h|-j"));
+    assert!(script.contains("--json|--machine|--path-only|--help|-h|-j"));
     assert!(script.contains("builtin cd \"$hz_target_path\" || return"));
     assert!(script.contains("command hz __complete worktree-targets \"${complete_args[@]}\""));
     assert!(script.contains("command hz __complete removable-worktrees \"${complete_args[@]}\""));
@@ -668,17 +668,20 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("compdef _hzlocal_completion hzlocal _hzlocal"));
     assert!(script.contains("_hz_deferred_register_completion()"));
     assert!(script.contains("add-zsh-hook precmd _hz_deferred_register_completion"));
-    assert!(script.contains("compadd -- -h --help -V --version"));
+    assert!(script.contains("compadd -- --machine -h --help -V --version"));
     assert!(script.contains("if [[ \"$PREFIX\" == -* ]]; then"));
     assert!(script.contains("_hz_complete_command_options \"$cmd\""));
     assert!(script.contains("_hz_complete_command_positionals \"$cmd\""));
     assert!(script.contains("_hz_complete_option_value \"$cmd\""));
+    assert!(script.contains("_hz_command_word_index"));
+    assert!(script.contains("_hz_subcommand_word_index"));
+    assert!(script.contains("_hz_is_global_flag"));
     assert!(script.contains("_hz_git_refs"));
     assert!(script.contains("--branch)"));
     assert!(!script.contains("-b|--branch"));
     assert!(script.contains("compinit -C"));
-    assert!(script.contains("shift words"));
-    assert!(script.contains("shift 2 words"));
+    assert!(script.contains("shift $(( cmd_index - 1 )) words"));
+    assert!(script.contains("shift $(( subcmd_index - 1 )) words"));
     assert!(script.contains("'rm:remove one or more worktrees'"));
     assert!(script.contains("'install:install shell integration'"));
     assert!(script.contains("'fork:fork the current worktree state'"));
@@ -708,12 +711,15 @@ fn zsh_integration_wraps_new_and_cd() {
 fn fish_integration_passes_json_short_flag_through() {
     let script = shell_integration(Shell::Fish);
 
-    assert!(script.contains("case --json --path-only --help -h -j"));
+    assert!(script.contains("case --json --machine --path-only --help -h -j"));
     assert!(script.contains("or return"));
     assert!(script.contains("command hz __complete worktree-targets -r \"$repo\""));
     assert!(script.contains("command hz __complete removable-worktrees -r \"$repo\""));
     assert!(script.contains("__hz_command_is"));
     assert!(script.contains("__hz_top_command_is update"));
+    assert!(script.contains("__hz_command_token"));
+    assert!(script.contains("__hz_subcommand_token"));
+    assert!(script.contains("__hz_is_global_flag"));
     assert!(script.contains("__hz_complete_git_refs"));
     assert!(script.contains("complete -c hz -n \"__hz_command_is remove rm\""));
     assert!(script.contains("init install setup cleanup shell update"));
@@ -753,6 +759,9 @@ fn bash_integration_registers_completion() {
     assert!(script.contains("for ((index = 1; index < COMP_CWORD; index++))"));
     assert!(script.contains("_hz_agent_commands"));
     assert!(script.contains("_hz_complete_option_value"));
+    assert!(script.contains("_hz_command_word_index"));
+    assert!(script.contains("_hz_subcommand_word_index"));
+    assert!(script.contains("_hz_is_global_flag"));
     assert!(script.contains("_hz_git_ref_reply"));
     assert!(script.contains("--branch)"));
     assert!(!script.contains("-b|--branch"));
@@ -774,7 +783,8 @@ fn bash_integration_registers_completion() {
     assert!(!script.contains("--no-watch"));
     assert!(!script.contains("--no-syntax"));
     assert!(
-        worktree_completion.contains("_hz_complete_command_args \"${COMP_WORDS[2]}\" \"$current\"")
+        worktree_completion
+            .contains("_hz_complete_command_args \"${COMP_WORDS[$subcmd_index]}\" \"$current\"")
     );
     assert!(!script.contains("tui"));
 }

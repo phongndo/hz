@@ -123,6 +123,26 @@ fn agent_commands_parse_under_machine_namespace() {
 }
 
 #[test]
+fn machine_flag_parses_before_or_after_command() {
+    let cli = Cli::try_parse_from(["hz", "--machine", "list", "--repo", "/repo"]).unwrap();
+    assert!(cli.machine);
+    match cli.command {
+        Some(Command::List(args)) => assert_eq!(args.repo, Some(PathBuf::from("/repo"))),
+        command => panic!("expected list command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "remove", "target", "--machine", "--force"]).unwrap();
+    assert!(cli.machine);
+    match cli.command {
+        Some(Command::Remove(args)) => {
+            assert_eq!(args.targets, vec!["target".to_owned()]);
+            assert!(args.force);
+        }
+        command => panic!("expected remove command, got {command:?}"),
+    }
+}
+
+#[test]
 fn list_output_uses_branch_as_display_identifier() {
     let output = render_worktree_list(&[hz_command::WorktreeEntry {
         id: "entry-id".to_owned(),
@@ -1088,9 +1108,14 @@ fn shell_completion_command_lists_match_clap() {
         zsh_described_commands(zsh, "_hz_complete_main"),
         top_commands
     );
+    let fish_root_commands = fish_argument_words(fish, "not __fish_seen_subcommand_from");
+    assert_eq!(fish_root_commands, top_commands);
+
+    let mut fish_root_guard_commands = top_commands.clone();
+    fish_root_guard_commands.insert("agent".to_owned());
     assert_eq!(
-        fish_argument_words(fish, "not __fish_seen_subcommand_from"),
-        top_commands
+        fish_condition_words(fish, "not __fish_seen_subcommand_from"),
+        fish_root_guard_commands
     );
 
     let worktree_commands = clap_completion_subcommands(&["worktree"]);
@@ -1245,18 +1270,22 @@ fn init_install_and_lifecycle_commands_parse() {
         command => panic!("expected install command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "setup", "-r", "/repo", "target"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "setup", "-r", "/repo", "--json", "target"]).unwrap();
     match cli.command {
         Some(Command::Setup(args)) => {
             assert_eq!(args.target.as_deref(), Some("target"));
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert!(args.json);
         }
         command => panic!("expected setup command, got {command:?}"),
     }
 
     let cli = Cli::try_parse_from(["hz", "cleanup"]).unwrap();
     match cli.command {
-        Some(Command::Cleanup(args)) => assert_eq!(args.target, None),
+        Some(Command::Cleanup(args)) => {
+            assert_eq!(args.target, None);
+            assert!(!args.json);
+        }
         command => panic!("expected cleanup command, got {command:?}"),
     }
 
@@ -1708,6 +1737,18 @@ fn fish_argument_words(script: &str, condition: &str) -> BTreeSet<String> {
     words(value)
 }
 
+fn fish_condition_words(script: &str, prefix: &str) -> BTreeSet<String> {
+    let line = script
+        .lines()
+        .find(|line| line.contains(prefix) && line.contains(" -a \""))
+        .unwrap_or_else(|| panic!("missing fish completion condition for: {prefix}"));
+    let value = fish_line_condition(line)
+        .and_then(|condition| condition.strip_prefix(prefix))
+        .unwrap_or_else(|| panic!("missing fish completion condition words for: {prefix}"));
+
+    words(value)
+}
+
 fn bash_root_flags(script: &str) -> BTreeSet<String> {
     shell_root_flags(script)
 }
@@ -1718,7 +1759,7 @@ fn zsh_root_flags(script: &str) -> BTreeSet<String> {
 
 fn shell_root_flags(script: &str) -> BTreeSet<String> {
     let body = shell_function_body(script, "_hz_completion");
-    let root_branch = body.split("local cmd").next().unwrap_or(body);
+    let root_branch = body.split("local cmd=\"").next().unwrap_or(body);
 
     extract_shell_flags(root_branch)
 }
@@ -1822,7 +1863,7 @@ fn extract_shell_flags(text: &str) -> BTreeSet<String> {
 }
 
 fn normalize_shell_flag(token: &str) -> Option<String> {
-    if token == "--" {
+    if matches!(token, "--" | "-z") {
         return None;
     }
 

@@ -84,8 +84,34 @@ zsh -fc '
     done
   }
 
+  _describe() {
+    local array_name="${argv[-1]}"
+    eval "print -rl -- \"\${${array_name}[@]}\"" >> "$HZ_COMPLETIONS"
+  }
+
   : > "$HZ_COMPLETIONS"
   _hz_complete_command_options ls
+  grep -qx -- "--json" "$HZ_COMPLETIONS"
+
+  : > "$HZ_COMPLETIONS"
+  words=(hz --machine l)
+  CURRENT=3
+  PREFIX=l
+  _hz_completion
+  grep -qx -- "list:list worktrees" "$HZ_COMPLETIONS"
+
+  : > "$HZ_COMPLETIONS"
+  words=(hz --machine list -)
+  CURRENT=4
+  PREFIX=-
+  _hz_completion
+  grep -qx -- "--json" "$HZ_COMPLETIONS"
+
+  : > "$HZ_COMPLETIONS"
+  words=(hz --machine worktree list -)
+  CURRENT=5
+  PREFIX=-
+  _hz_completion
   grep -qx -- "--json" "$HZ_COMPLETIONS"
 
   : > "$HZ_COMPLETIONS"

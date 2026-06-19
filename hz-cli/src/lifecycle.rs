@@ -3,6 +3,10 @@ use std::io::{self, IsTerminal};
 use crate::{CliResult, args::LifecycleArgs, worktree_output::render_lifecycle_run, write_stdout};
 
 pub(crate) fn run_lifecycle(args: LifecycleArgs, kind: hz_command::LifecycleKind) -> CliResult<()> {
+    if args.json {
+        return run_lifecycle_json(args, kind);
+    }
+
     let run = run_lifecycle_command(args, kind)?;
     write_stdout(format_args!(
         "{}",

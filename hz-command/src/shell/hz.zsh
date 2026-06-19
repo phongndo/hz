@@ -16,7 +16,7 @@ _hz() {
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h|-j)
+          --json|--machine|--path-only|--help|-h|-j)
             command hz "$@"
             return
             ;;
@@ -31,7 +31,7 @@ _hz() {
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h|-j)
+          --json|--machine|--path-only|--help|-h|-j)
             command hz "$@"
             return
             ;;
@@ -47,7 +47,7 @@ _hz() {
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h|-j)
+          --json|--machine|--path-only|--help|-h|-j)
             command hz "$cmd" "$@"
             return
             ;;
@@ -150,7 +150,6 @@ _hz_complete_main() {
     'update:update hz from GitHub releases'
     'worktree:worktree commands'
     'wt:worktree commands'
-    'agent:machine-readable commands'
   )
 
   _describe -t commands 'hz command' commands
@@ -199,6 +198,42 @@ _hz_complete_worktree_subcommand() {
 
 _hz_complete_shells() {
   compadd zsh bash fish
+}
+
+_hz_is_global_flag() {
+  case "$1" in
+    --machine|-h|--help|-V|--version)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+_hz_command_word_index() {
+  local index word
+  for (( index = 2; index < CURRENT; index++ )); do
+    word="${words[$index]}"
+    if _hz_is_global_flag "$word"; then
+      continue
+    fi
+    print -r -- "$index"
+    return 0
+  done
+  return 1
+}
+
+_hz_subcommand_word_index() {
+  local command_index="$1"
+  local index word
+  for (( index = command_index + 1; index < CURRENT; index++ )); do
+    word="${words[$index]}"
+    if _hz_is_global_flag "$word"; then
+      continue
+    fi
+    print -r -- "$index"
+    return 0
+  done
+  return 1
 }
 
 _hz_complete_option_value() {
@@ -290,37 +325,37 @@ _hz_complete_command_options() {
 
   case "$cmd" in
     new)
-      compadd -- -r --repo -p --path -B --base -b --branch --max-detached --max-branch-worktrees -j --json -d --debug --setup --no-setup -h --help
+      compadd -- -r --repo -p --path -B --base -b --branch --max-detached --max-branch-worktrees -j --json -d --debug --setup --no-setup --machine -h --help
       ;;
     fork)
-      compadd -- -r --repo -p --path --no-diff --max-detached -j --json -h --help
+      compadd -- -r --repo -p --path --no-diff --max-detached -j --json --machine -h --help
       ;;
     path|cd)
-      compadd -- -r --repo -j --json -h --help
+      compadd -- -r --repo -j --json --machine -h --help
       ;;
     list|ls)
-      compadd -- -r --repo -j --json -h --help
+      compadd -- -r --repo -j --json --machine -h --help
       ;;
     pwd|current)
-      compadd -- -r --repo -j --json -h --help
+      compadd -- -r --repo -j --json --machine -h --help
       ;;
     remove|rm)
-      compadd -- -r --repo -j --json -f --force --yes -d --debug --cleanup --no-cleanup -h --help
+      compadd -- -r --repo -j --json -f --force --yes -d --debug --cleanup --no-cleanup --machine -h --help
       ;;
     handoff)
-      compadd -- -b --branch -n --new --max-detached --max-branch-worktrees -r --repo -j --json -h --help
+      compadd -- -b --branch -n --new --max-detached --max-branch-worktrees -r --repo -j --json --machine -h --help
       ;;
     setup|cleanup)
-      compadd -- -r --repo -h --help
+      compadd -- -r --repo -j --json --machine -h --help
       ;;
     init)
-      compadd -- -r --repo -h --help
+      compadd -- -r --repo --machine -h --help
       ;;
     install|shell)
-      compadd -- -h --help
+      compadd -- --machine -h --help
       ;;
     update)
-      compadd -- --target-version --install-dir -h --help
+      compadd -- --target-version --install-dir --machine -h --help
       ;;
   esac
 }
@@ -365,20 +400,24 @@ _hz_complete_command_args() {
 }
 
 _hz_completion() {
-  if (( CURRENT == 2 )); then
+  local cmd_index
+  cmd_index="$(_hz_command_word_index)"
+  if [[ -z "$cmd_index" ]]; then
     if [[ "$PREFIX" == -* ]]; then
-      compadd -- -h --help -V --version
+      compadd -- --machine -h --help -V --version
       return
     fi
     _hz_complete_main
     return
   fi
 
-  local cmd="${words[2]}"
+  local cmd="${words[$cmd_index]}"
   if [[ "$cmd" == "worktree" || "$cmd" == "wt" || "$cmd" == "agent" ]]; then
-    if (( CURRENT == 3 )); then
+    local subcmd_index
+    subcmd_index="$(_hz_subcommand_word_index "$cmd_index")"
+    if [[ -z "$subcmd_index" ]]; then
       if [[ "$PREFIX" == -* ]]; then
-        compadd -- -h --help
+        compadd -- --machine -h --help
       elif [[ "$cmd" == "agent" ]]; then
         _hz_complete_agent_subcommand
       else
@@ -386,16 +425,16 @@ _hz_completion() {
       fi
       return
     fi
-    local subcmd="${words[3]}"
-    shift 2 words
-    (( CURRENT -= 2 ))
+    local subcmd="${words[$subcmd_index]}"
+    shift $(( subcmd_index - 1 )) words
+    (( CURRENT -= subcmd_index - 1 ))
     _hz_complete_command_args "$subcmd"
     return
   fi
 
 
-  shift words
-  (( CURRENT-- ))
+  shift $(( cmd_index - 1 )) words
+  (( CURRENT -= cmd_index - 1 ))
   _hz_complete_command_args "$cmd"
 }
 
