@@ -88,7 +88,7 @@ verifies its SHA-256 file with `shasum` or `sha256sum`, and installs `hz` to
 want to install without checksum verification.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_VERSION=0.5.1 sh
+curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_VERSION=0.6.0 sh
 curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_INSTALL_DIR=/usr/local/bin sh
 ```
 
@@ -106,7 +106,7 @@ Update a curl-installed binary in place:
 
 ```sh
 hz update
-hz update --target-version 0.5.1
+hz update --target-version 0.6.0
 ```
 
 After installing the binary, install shell integration for auto-cd and
