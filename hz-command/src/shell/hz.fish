@@ -80,46 +80,97 @@ function __hz_complete_removable_worktrees
 end
 
 function __hz_needs_worktree_subcommand
-    set -l tokens (commandline -opc)
-    test (count $tokens) -ge 2; or return 1
-    contains -- $tokens[2] worktree wt; or return 1
-
-    if test (count $tokens) -eq 2
-        return 0
-    end
-
-    set -l current (commandline -ct)
-    test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
+    set -l cmd (__hz_command_token)
+    contains -- "$cmd" worktree wt; or return 1
+    set -l subcmd_index (__hz_subcommand_index)
+    test -z "$subcmd_index"
 end
 
 function __hz_needs_agent_subcommand
-    set -l tokens (commandline -opc)
-    test (count $tokens) -ge 2; or return 1
-    test "$tokens[2]" = agent; or return 1
-
-    if test (count $tokens) -eq 2
-        return 0
-    end
-
-    set -l current (commandline -ct)
-    test (count $tokens) -eq 3; and test "$tokens[3]" = "$current"
+    set -l cmd (__hz_command_token)
+    test "$cmd" = agent; or return 1
+    set -l subcmd_index (__hz_subcommand_index)
+    test -z "$subcmd_index"
 end
 
+function __hz_is_global_flag
+    contains -- "$argv[1]" --machine -h --help -V --version
+end
+
+function __hz_completed_token_count
+    set -l tokens (commandline -opc)
+    set -l current (commandline -ct)
+    set -l count (count $tokens)
+    test $count -gt 0; or return 1
+
+    if test "$tokens[$count]" = "$current"
+        set count (math $count - 1)
+    end
+
+    echo $count
+end
+
+function __hz_command_index
+    set -l tokens (commandline -opc)
+    set -l count (__hz_completed_token_count)
+    test -n "$count"; or return 1
+    test $count -ge 2; or return 1
+
+    for index in (seq 2 $count)
+        if __hz_is_global_flag "$tokens[$index]"
+            continue
+        end
+        echo $index
+        return 0
+    end
+    return 1
+end
+
+function __hz_command_token
+    set -l tokens (commandline -opc)
+    set -l index (__hz_command_index)
+    test -n "$index"; or return 1
+    echo $tokens[$index]
+end
+
+function __hz_subcommand_index
+    set -l tokens (commandline -opc)
+    set -l count (__hz_completed_token_count)
+    set -l command_index (__hz_command_index)
+    test -n "$count"; or return 1
+    test -n "$command_index"; or return 1
+
+    set -l start (math $command_index + 1)
+    test $start -le $count; or return 1
+
+    for index in (seq $start $count)
+        if __hz_is_global_flag "$tokens[$index]"
+            continue
+        end
+        echo $index
+        return 0
+    end
+    return 1
+end
+
+function __hz_subcommand_token
+    set -l tokens (commandline -opc)
+    set -l index (__hz_subcommand_index)
+    test -n "$index"; or return 1
+    echo $tokens[$index]
+end
 
 function __hz_top_command_is
-    set -l tokens (commandline -opc)
-    test (count $tokens) -ge 2; or return 1
-    contains -- $tokens[2] $argv
+    set -l cmd (__hz_command_token)
+    contains -- "$cmd" $argv
 end
 
 function __hz_command_is
-    set -l tokens (commandline -opc)
-    test (count $tokens) -ge 2; or return 1
-
-    set -l cmd $tokens[2]
+    set -l cmd (__hz_command_token)
+    test -n "$cmd"; or return 1
     if contains -- $cmd worktree wt agent
-        test (count $tokens) -ge 3; or return 1
-        set cmd $tokens[3]
+        set cmd (__hz_subcommand_token)
+        test -n "$cmd"; or return 1
     end
 
     contains -- $cmd $argv

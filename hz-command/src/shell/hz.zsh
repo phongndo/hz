@@ -200,6 +200,42 @@ _hz_complete_shells() {
   compadd zsh bash fish
 }
 
+_hz_is_global_flag() {
+  case "$1" in
+    --machine|-h|--help|-V|--version)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+_hz_command_word_index() {
+  local index word
+  for (( index = 2; index < CURRENT; index++ )); do
+    word="${words[$index]}"
+    if _hz_is_global_flag "$word"; then
+      continue
+    fi
+    print -r -- "$index"
+    return 0
+  done
+  return 1
+}
+
+_hz_subcommand_word_index() {
+  local command_index="$1"
+  local index word
+  for (( index = command_index + 1; index < CURRENT; index++ )); do
+    word="${words[$index]}"
+    if _hz_is_global_flag "$word"; then
+      continue
+    fi
+    print -r -- "$index"
+    return 0
+  done
+  return 1
+}
+
 _hz_complete_option_value() {
   local cmd="$1"
   local previous="${words[$(( CURRENT - 1 ))]}"
@@ -364,7 +400,9 @@ _hz_complete_command_args() {
 }
 
 _hz_completion() {
-  if (( CURRENT == 2 )); then
+  local cmd_index
+  cmd_index="$(_hz_command_word_index)"
+  if [[ -z "$cmd_index" ]]; then
     if [[ "$PREFIX" == -* ]]; then
       compadd -- --machine -h --help -V --version
       return
@@ -373,9 +411,11 @@ _hz_completion() {
     return
   fi
 
-  local cmd="${words[2]}"
+  local cmd="${words[$cmd_index]}"
   if [[ "$cmd" == "worktree" || "$cmd" == "wt" || "$cmd" == "agent" ]]; then
-    if (( CURRENT == 3 )); then
+    local subcmd_index
+    subcmd_index="$(_hz_subcommand_word_index "$cmd_index")"
+    if [[ -z "$subcmd_index" ]]; then
       if [[ "$PREFIX" == -* ]]; then
         compadd -- --machine -h --help
       elif [[ "$cmd" == "agent" ]]; then
@@ -385,16 +425,16 @@ _hz_completion() {
       fi
       return
     fi
-    local subcmd="${words[3]}"
-    shift 2 words
-    (( CURRENT -= 2 ))
+    local subcmd="${words[$subcmd_index]}"
+    shift $(( subcmd_index - 1 )) words
+    (( CURRENT -= subcmd_index - 1 ))
     _hz_complete_command_args "$subcmd"
     return
   fi
 
 
-  shift words
-  (( CURRENT-- ))
+  shift $(( cmd_index - 1 )) words
+  (( CURRENT -= cmd_index - 1 ))
   _hz_complete_command_args "$cmd"
 }
 

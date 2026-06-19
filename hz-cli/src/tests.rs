@@ -1742,7 +1742,7 @@ fn zsh_root_flags(script: &str) -> BTreeSet<String> {
 
 fn shell_root_flags(script: &str) -> BTreeSet<String> {
     let body = shell_function_body(script, "_hz_completion");
-    let root_branch = body.split("local cmd").next().unwrap_or(body);
+    let root_branch = body.split("local cmd=\"").next().unwrap_or(body);
 
     extract_shell_flags(root_branch)
 }
@@ -1846,7 +1846,7 @@ fn extract_shell_flags(text: &str) -> BTreeSet<String> {
 }
 
 fn normalize_shell_flag(token: &str) -> Option<String> {
-    if token == "--" {
+    if matches!(token, "--" | "-z") {
         return None;
     }
 

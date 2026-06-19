@@ -79,6 +79,42 @@ _hz_reply() {
   COMPREPLY+=( $(compgen -W "$candidates" -- "$current") )
 }
 
+_hz_is_global_flag() {
+  case "$1" in
+    --machine|-h|--help|-V|--version)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+_hz_command_word_index() {
+  local index word
+  for ((index = 1; index < COMP_CWORD; index++)); do
+    word="${COMP_WORDS[index]}"
+    if _hz_is_global_flag "$word"; then
+      continue
+    fi
+    printf '%s' "$index"
+    return 0
+  done
+  return 1
+}
+
+_hz_subcommand_word_index() {
+  local command_index="$1"
+  local index word
+  for ((index = command_index + 1; index < COMP_CWORD; index++)); do
+    word="${COMP_WORDS[index]}"
+    if _hz_is_global_flag "$word"; then
+      continue
+    fi
+    printf '%s' "$index"
+    return 0
+  done
+  return 1
+}
+
 _hz_dynamic_reply() {
   local command="$1"
   local current="$2"
@@ -301,9 +337,22 @@ _hz_completion() {
     return
   fi
 
-  local cmd="${COMP_WORDS[1]}"
+  local cmd_index
+  cmd_index="$(_hz_command_word_index)"
+  if [[ -z "$cmd_index" ]]; then
+    if [[ "$current" == -* ]]; then
+      _hz_reply "--machine -h --help -V --version" "$current"
+    else
+      _hz_reply "$_hz_top_commands" "$current"
+    fi
+    return
+  fi
+
+  local cmd="${COMP_WORDS[$cmd_index]}"
   if [[ "$cmd" == "worktree" || "$cmd" == "wt" || "$cmd" == "agent" ]]; then
-    if [[ "$COMP_CWORD" -eq 2 ]]; then
+    local subcmd_index
+    subcmd_index="$(_hz_subcommand_word_index "$cmd_index")"
+    if [[ -z "$subcmd_index" ]]; then
       if [[ "$current" == -* ]]; then
         _hz_reply "--machine -h --help" "$current"
       elif [[ "$cmd" == "agent" ]]; then
@@ -313,7 +362,7 @@ _hz_completion() {
       fi
       return
     fi
-    _hz_complete_command_args "${COMP_WORDS[2]}" "$current"
+    _hz_complete_command_args "${COMP_WORDS[$subcmd_index]}" "$current"
     return
   fi
 
