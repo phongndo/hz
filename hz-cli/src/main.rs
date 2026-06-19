@@ -22,7 +22,7 @@ use crate::{
     agent::run_agent_command,
     args::{
         Cli, Command, ForkWorktreeArgs, HandoffWorktreeArgs, ListWorktreeArgs, NewWorktreeArgs,
-        PathWorktreeArgs, PwdWorktreeArgs, RemoveWorktreeArgs, WorktreeCommand,
+        PathWorktreeArgs, PinWorktreeArgs, PwdWorktreeArgs, RemoveWorktreeArgs, WorktreeCommand,
     },
     complete::complete,
     lifecycle::{run_lifecycle, run_lifecycle_json},
@@ -30,8 +30,8 @@ use crate::{
     repo_shell::{init_repo_or_shell, install_shell, shell_script},
     update::update,
     worktree_output::{
-        StyleColor, create_worktree, fork_worktree, list_worktrees, path_worktree, pwd_worktree,
-        styled,
+        StyleColor, create_worktree, fork_worktree, list_worktrees, path_worktree, pin_worktree,
+        pwd_worktree, styled, unpin_worktree,
     },
 };
 
@@ -129,6 +129,8 @@ fn run() -> CliResult<()> {
                 remove_worktree(args)
             }
         }
+        Some(Command::Pin(args)) => pin_worktree(machine_pin_args(args, machine)),
+        Some(Command::Unpin(args)) => unpin_worktree(machine_pin_args(args, machine)),
         Some(Command::Handoff(args)) => handoff_worktree(machine_handoff_args(args, machine)),
         Some(Command::Init(args)) => init_repo_or_shell(args),
         Some(Command::Install(args)) => install_shell(args),
@@ -160,6 +162,8 @@ fn run_worktree_command(command: WorktreeCommand, machine: bool) -> CliResult<()
                 remove_worktree(args)
             }
         }
+        WorktreeCommand::Pin(args) => pin_worktree(machine_pin_args(args, machine)),
+        WorktreeCommand::Unpin(args) => unpin_worktree(machine_pin_args(args, machine)),
         WorktreeCommand::Handoff(args) => handoff_worktree(machine_handoff_args(args, machine)),
     }
 }
@@ -207,6 +211,13 @@ fn machine_remove_args(mut args: RemoveWorktreeArgs, machine: bool) -> RemoveWor
     if machine {
         args.json = true;
         args.debug = false;
+    }
+    args
+}
+
+fn machine_pin_args(mut args: PinWorktreeArgs, machine: bool) -> PinWorktreeArgs {
+    if machine {
+        args.json = true;
     }
     args
 }

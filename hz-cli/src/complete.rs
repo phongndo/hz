@@ -25,7 +25,8 @@ pub(crate) fn worktree_completion_candidates(
     repo: Option<PathBuf>,
     include_local: bool,
 ) -> HzResult<Vec<String>> {
-    let worktrees = hz_command::list_worktree_targets(hz_command::ListWorktrees { repo })?;
+    let worktrees =
+        hz_command::list_worktree_targets(hz_command::ListWorktrees { repo, pinned: None })?;
     let mut candidates = Vec::new();
 
     if include_local {

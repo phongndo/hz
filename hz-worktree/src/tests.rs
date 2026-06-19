@@ -71,6 +71,7 @@ fn detached_prune_candidates_select_oldest_clean_managed_detached_worktree() {
     };
     let unmanaged = WorktreeEntry {
         source: WorktreeSource::Git,
+        pinned: false,
         ..detached_test_entry(&repo, "unmanaged", 0)
     };
     let stale = detached_test_entry(&repo, "stale", 0);
@@ -159,6 +160,33 @@ fn detached_prune_candidates_allow_zero_to_disable_auto_pruning() {
 }
 
 #[test]
+fn detached_prune_candidates_ignore_pinned_worktrees_for_limit() {
+    let repo = PathBuf::from("/repo/hz");
+    let pinned = WorktreeEntry {
+        pinned: true,
+        ..detached_test_entry(&repo, "pinned", 1)
+    };
+    let unpinned = detached_test_entry(&repo, "unpinned", 2);
+    let registry = Registry {
+        entries: vec![pinned.clone(), unpinned.clone()],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+
+    let candidates = select_detached_worktree_prune_candidates(
+        &registry,
+        &repo,
+        2,
+        None,
+        &[git_detached(&pinned), git_detached(&unpinned)],
+        |_| true,
+    )
+    .unwrap();
+
+    assert!(candidates.is_empty());
+}
+
+#[test]
 fn branch_prune_candidates_select_oldest_clean_managed_branch_worktree() {
     let repo = PathBuf::from("/repo/hz");
     let old = branch_test_entry(&repo, "old", "feature/old", 1);
@@ -166,6 +194,7 @@ fn branch_prune_candidates_select_oldest_clean_managed_branch_worktree() {
     let new = branch_test_entry(&repo, "new", "feature/new", 3);
     let unmanaged = WorktreeEntry {
         source: WorktreeSource::Git,
+        pinned: false,
         ..branch_test_entry(&repo, "unmanaged", "feature/unmanaged", 0)
     };
     let detached = detached_test_entry(&repo, "detached", 0);
@@ -250,6 +279,36 @@ fn branch_prune_candidates_allow_zero_to_disable_auto_pruning() {
         None,
         &[git_branch(&entry, "feature/old")],
         |_| false,
+    )
+    .unwrap();
+
+    assert!(candidates.is_empty());
+}
+
+#[test]
+fn branch_prune_candidates_ignore_pinned_worktrees_for_limit() {
+    let repo = PathBuf::from("/repo/hz");
+    let pinned = WorktreeEntry {
+        pinned: true,
+        ..branch_test_entry(&repo, "pinned", "feature/pinned", 1)
+    };
+    let unpinned = branch_test_entry(&repo, "unpinned", "feature/unpinned", 2);
+    let registry = Registry {
+        entries: vec![pinned.clone(), unpinned.clone()],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+
+    let candidates = select_branch_worktree_prune_candidates(
+        &registry,
+        &repo,
+        2,
+        None,
+        &[
+            git_branch(&pinned, "feature/pinned"),
+            git_branch(&unpinned, "feature/unpinned"),
+        ],
+        |_| true,
     )
     .unwrap();
 
@@ -579,6 +638,7 @@ fn deferred_create_prune_does_not_remove_candidates_until_run() {
         branch: Some("old".to_owned()),
         base: None,
         source: WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,
@@ -865,6 +925,7 @@ fn fork_prunes_oldest_clean_detached_worktree() {
         branch: None,
         base: None,
         source: WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,
@@ -962,6 +1023,7 @@ fn remove_does_not_remove_git_worktree_when_registry_save_fails() {
         branch: Some("feature".to_owned()),
         base: None,
         source: WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,
@@ -1020,6 +1082,7 @@ fn remove_restores_registry_when_git_removal_fails() {
         branch: Some("feature".to_owned()),
         base: None,
         source: WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,
@@ -1075,6 +1138,7 @@ fn prune_does_not_remove_git_worktree_when_registry_save_fails() {
         branch: None,
         base: None,
         source: WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,
@@ -1127,6 +1191,7 @@ fn prune_branch_worktree_keeps_git_branch() {
         branch: Some("feature".to_owned()),
         base: None,
         source: WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,
@@ -1152,6 +1217,91 @@ fn prune_branch_worktree_keeps_git_branch() {
     );
 
     fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn pin_with_registry_marks_managed_worktree_pinned() {
+    let test_dir = test_dir("hz-worktree-pin-test");
+    let repo = test_dir.join("repo");
+    let destination = test_dir.join("destination");
+    init_committed_repo(&repo);
+    git(["branch", "feature"], &repo);
+    git(
+        [
+            "worktree",
+            "add",
+            "-q",
+            destination.to_str().unwrap(),
+            "feature",
+        ],
+        &repo,
+    );
+    let destination = fs::canonicalize(destination).unwrap();
+    let mut registry = Registry {
+        entries: vec![WorktreeEntry {
+            id: "feature".to_owned(),
+            handle: "feature".to_owned(),
+            repo: repo.clone(),
+            path: destination,
+            branch: Some("feature".to_owned()),
+            base: None,
+            source: WorktreeSource::Managed,
+            pinned: false,
+            created_at_unix: 0,
+            modified_at_unix: 0,
+            status: WorktreeStatus::Unknown,
+        }],
+        handoffs: Vec::new(),
+        patch_handoffs: Vec::new(),
+    };
+    let registry_path = test_dir.join("config").join("registry.json");
+    let _registry_path_override = RegistryPathOverrideGuard::set(registry_path);
+
+    let pinned = pin_with_registry(
+        &mut registry,
+        PinWorktrees {
+            targets: vec!["feature".to_owned()],
+            repo: Some(repo.clone()),
+            pinned: true,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(pinned.len(), 1);
+    assert!(pinned[0].pinned);
+    assert!(registry.entries[0].pinned);
+    assert!(Registry::load().unwrap().entries[0].pinned);
+
+    let unpinned = pin_with_registry(
+        &mut registry,
+        PinWorktrees {
+            targets: vec!["feature".to_owned()],
+            repo: Some(repo.clone()),
+            pinned: false,
+        },
+    )
+    .unwrap();
+
+    assert!(!unpinned[0].pinned);
+    assert!(!registry.entries[0].pinned);
+    assert!(!Registry::load().unwrap().entries[0].pinned);
+
+    fs::remove_dir_all(test_dir).expect("test directory should be removed");
+}
+
+#[test]
+fn filter_entries_by_pin_keeps_matching_entries() {
+    let repo = PathBuf::from("/repo/hz");
+    let pinned = WorktreeEntry {
+        pinned: true,
+        ..detached_test_entry(&repo, "pinned", 1)
+    };
+    let unpinned = detached_test_entry(&repo, "unpinned", 2);
+    let mut entries = vec![pinned.clone(), unpinned];
+
+    filter_entries_by_pin(&mut entries, Some(true));
+
+    assert_eq!(entries, vec![pinned]);
 }
 
 #[test]
@@ -1299,6 +1449,7 @@ fn repo_resolution_uses_registered_repo_for_managed_linked_worktree() {
             branch: Some("managed".to_owned()),
             base: None,
             source: WorktreeSource::Managed,
+            pinned: false,
             created_at_unix: 0,
             modified_at_unix: 0,
             status: WorktreeStatus::Unknown,
@@ -1365,6 +1516,7 @@ fn registry_entries_default_added_state_fields() {
 
     assert_eq!(registry.entries[0].modified_at_unix, 0);
     assert_eq!(registry.entries[0].status, WorktreeStatus::Unknown);
+    assert!(!registry.entries[0].pinned);
     assert!(registry.handoffs.is_empty());
     assert!(registry.patch_handoffs.is_empty());
 }
@@ -1599,6 +1751,7 @@ fn local_to_worktree_branch_handoff_rolls_back_when_registry_save_fails() {
         branch: None,
         base: None,
         source: WorktreeSource::Git,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,
@@ -1907,6 +2060,7 @@ fn git_worktree_merge_refreshes_registered_branch_and_skips_registered_path() {
         branch: None,
         base: None,
         source: WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,
@@ -1978,6 +2132,7 @@ fn test_entry(repo: &Path, handle: String) -> WorktreeEntry {
         branch: Some(handle),
         base: None,
         source: WorktreeSource::Managed,
+        pinned: false,
         created_at_unix: 0,
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,
@@ -1993,6 +2148,7 @@ fn detached_test_entry(repo: &Path, handle: &str, created_at_unix: u64) -> Workt
         branch: None,
         base: None,
         source: WorktreeSource::Managed,
+        pinned: false,
         created_at_unix,
         modified_at_unix: 0,
         status: WorktreeStatus::Unknown,

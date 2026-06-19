@@ -735,6 +735,7 @@ pub(crate) fn find_handoff_destination(
             branch: Some(branch.to_owned()),
             base: None,
             source: WorktreeSource::Git,
+            pinned: false,
             created_at_unix: link.updated_at_unix,
             modified_at_unix: link.updated_at_unix,
             status: WorktreeStatus::Unknown,

@@ -4,7 +4,8 @@ use crate::{
     lifecycle::run_lifecycle_json,
     removal::{handoff_worktree, remove_worktree_json_array},
     worktree_output::{
-        create_worktree, fork_worktree, list_worktrees, path_worktree, pwd_worktree,
+        create_worktree, fork_worktree, list_worktrees, path_worktree, pin_worktree, pwd_worktree,
+        unpin_worktree,
     },
 };
 
@@ -38,6 +39,14 @@ pub(crate) fn run_agent_command(command: AgentCommand) -> CliResult<()> {
             args.json = true;
             args.debug = false;
             remove_worktree_json_array(args)
+        }
+        AgentCommand::Pin(mut args) => {
+            args.json = true;
+            pin_worktree(args)
+        }
+        AgentCommand::Unpin(mut args) => {
+            args.json = true;
+            unpin_worktree(args)
         }
         AgentCommand::Handoff(mut args) => {
             args.json = true;

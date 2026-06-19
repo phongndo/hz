@@ -27,6 +27,8 @@ hz path [target]               # Print a worktree path; alias: hz cd
 hz list                        # List worktrees; alias: hz ls
 hz pwd                         # Print current target: local, branch, or handle
 hz remove <target...>          # Remove worktrees; alias: hz rm
+hz pin <target...>             # Keep worktrees out of auto-prune
+hz unpin <target...>           # Make worktrees eligible for auto-prune
 hz handoff [target]            # Apply changes between linked worktrees
 hz setup [target]              # Run configured setup lifecycle
 hz cleanup [target]            # Run configured cleanup lifecycle
@@ -37,8 +39,8 @@ hz update                      # Update a curl-installed hz binary
 ```
 
 `hz worktree <command>` and `hz wt <command>` are explicit namespaces for the
-worktree commands: `new`, `fork`, `path`, `list`, `pwd`, `remove`, and
-`handoff`.
+worktree commands: `new`, `fork`, `path`, `list`, `pwd`, `remove`, `pin`,
+`unpin`, and `handoff`.
 
 Most commands that return data accept `--json` (`-j`). With shell integration
 loaded, `hz new`, `hz fork`, `hz cd`, and `hz handoff` may change the current
@@ -53,6 +55,8 @@ hz --machine path [target]         # Print a target path as JSON; alias: cd
 hz --machine list                  # List worktrees as JSON; alias: ls
 hz --machine pwd                   # Print current target/repo/path as JSON
 hz --machine remove <target...>    # Remove worktrees and print a JSON array; alias: rm
+hz --machine pin <target...>       # Pin worktrees and print JSON
+hz --machine unpin <target...>     # Unpin worktrees and print JSON
 hz --machine handoff [target]      # Handoff changes and print JSON
 hz setup [target] --json           # Run setup lifecycle and print JSON
 hz cleanup [target] --json         # Run cleanup lifecycle and print JSON
@@ -88,6 +92,7 @@ same worktree and lifecycle commands.
 | `-b`, `--branch <name>` | `new` | Create or use a branch-backed worktree |
 | `--max-detached <n>` | `new`, `fork`, `handoff --new` | Override detached worktree cap |
 | `--max-branch-worktrees <n>` | `new`, branch `handoff --new` | Override branch-backed worktree cap |
+| `--pinned`, `--unpinned` | `list` | Filter listed worktrees by pin state |
 | `-j`, `--json` | data-producing human commands | Print JSON |
 | `--machine` | worktree and lifecycle commands | Force JSON and avoid shell side effects |
 | `-f`, `--force`, `--yes` | `remove` | Skip removal confirmation and pass force to Git |

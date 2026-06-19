@@ -9,7 +9,7 @@ mod worktree;
 pub use hz_worktree::{
     CreateWorktree, CreatedWorktree, FindWorktree, FindWorktrees, ForkWorktree, ForkedWorktree,
     HandoffMode, HandoffWorktree, ListWorktrees, LocalWorktree, LocalWorktreeInfo, PathWorktree,
-    RemoveWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
+    PinWorktrees, RemoveWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
 };
 
 pub use config::{
@@ -28,7 +28,7 @@ pub use worktree::{
     create_worktree, create_worktree_with_lifecycle, current_worktree_path, find_worktree,
     find_worktrees, fork_worktree, handoff_worktree, is_user_managed_worktree_path,
     list_worktree_targets, list_worktree_targets_with_repo, list_worktrees,
-    list_worktrees_with_local, local_worktree, path_worktree, remove_found_worktree,
+    list_worktrees_with_local, local_worktree, path_worktree, pin_worktrees, remove_found_worktree,
     remove_found_worktree_with_force, remove_worktree,
 };
 

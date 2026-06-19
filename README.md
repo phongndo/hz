@@ -28,6 +28,7 @@ to keep tightening before 1.0.
 - Runs repo-local setup and cleanup hooks on explicit opt-in commands for reproducible agent workspaces.
 - Exposes JSON and `--machine` modes for agents and automation.
 - Lists, finds, prunes, and removes managed and unmanaged worktrees.
+- Pins managed worktrees so auto-prune will not remove them.
 - Installs and updates release binaries from GitHub releases.
 
 ## Quickstart
@@ -163,22 +164,28 @@ asks for confirmation because the path is not in `hz`'s worktree namespace. Add
 `[worktree].user_managed_roots` in `.hz/hz.toml` for other directories that
 should be treated as user-managed by `hz`.
 
-Detached scratch worktrees are capped at 15 by default. Creating another
+Detached scratch worktrees are capped at 10 by default. Creating another
 detached worktree auto-removes the oldest clean managed detached worktrees until
-the cap is satisfied. Branch-backed, unmanaged, dirty, unknown, and current
-worktrees are not auto-removed. If there are not enough removable worktrees,
-`hz new` and `hz handoff --new` refuse to create another detached worktree. Set
-`[worktree].max_detached` in `.hz/hz.toml`, or pass `--max-detached <count>` to
-`hz new` or `hz handoff --new`; `0` disables auto-pruning.
+the cap is satisfied. Pinned, branch-backed, unmanaged, dirty, unknown, and
+current worktrees are not auto-removed. If there are not enough removable
+worktrees, `hz new` and `hz handoff --new` refuse to create another detached
+worktree. Set `[worktree].max_detached` in `.hz/hz.toml`, or pass
+`--max-detached <count>` to `hz new` or `hz handoff --new`; `0` disables
+auto-pruning.
 
-Branch-backed worktrees are also capped at 15 by default. Creating another
+Branch-backed worktrees are also capped at 10 by default. Creating another
 branch-backed worktree auto-removes the oldest clean managed branch-backed
 worktrees until the cap is satisfied. Removing a branch-backed worktree removes
 only the checkout; the Git branch remains in the repo and can be checked out
-again later. Detached, unmanaged, dirty, unknown, and current worktrees are not
-auto-removed. Set `[worktree].max_branch_worktrees` in `.hz/hz.toml`, or pass
-`--max-branch-worktrees <count>` to `hz new` or branch-backed
-`hz handoff --new`; `0` disables auto-pruning.
+again later. Pinned, detached, unmanaged, dirty, unknown, and current
+worktrees are not auto-removed. Set `[worktree].max_branch_worktrees` in
+`.hz/hz.toml`, or pass `--max-branch-worktrees <count>` to `hz new` or
+branch-backed `hz handoff --new`; `0` disables auto-pruning.
+
+Use `hz pin <target...>` to keep managed worktrees out of auto-prune, and
+`hz unpin <target...>` to make them eligible again. `hz ls --pinned` shows only
+pinned worktrees; `hz ls --unpinned` shows only unpinned worktrees. Pinned
+worktrees can still be removed explicitly with `hz rm`.
 
 Auto-pruning is enabled by default. Set `[worktree].auto_prune = false` to opt
 into keeping managed worktrees instead of deleting them at the configured
@@ -191,8 +198,8 @@ user-managed worktree roots:
 # .hz/hz.toml
 [worktree]
 auto_prune = true
-max_detached = 15
-max_branch_worktrees = 15
+max_detached = 10
+max_branch_worktrees = 10
 default_base = "dev"
 user_managed_roots = ["~/.codex/worktrees"]
 ```
@@ -310,8 +317,8 @@ dx --patch changes.diff
 
 ```toml
 [worktree]
-max_detached = 15
-max_branch_worktrees = 15
+max_detached = 10
+max_branch_worktrees = 10
 # user_managed_roots = ["~/.codex/worktrees"]
 
 [lifecycle]

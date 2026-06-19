@@ -15,7 +15,8 @@ const MONTH_ABBREVIATIONS: [&str; 12] = [
 use crate::{
     CliResult,
     args::{
-        ForkWorktreeArgs, ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs, PwdWorktreeArgs,
+        ForkWorktreeArgs, ListWorktreeArgs, NewWorktreeArgs, PathWorktreeArgs, PinWorktreeArgs,
+        PwdWorktreeArgs,
     },
     removal::worktree_branch_or_handle,
     write_stderr, write_stdout,
@@ -122,9 +123,15 @@ pub(crate) struct CurrentWorktree {
 }
 
 pub(crate) fn current_worktree(repo: Option<PathBuf>) -> CliResult<CurrentWorktree> {
-    let current_path = hz_command::current_worktree_path(hz_command::ListWorktrees { repo: None })?;
+    let current_path = hz_command::current_worktree_path(hz_command::ListWorktrees {
+        repo: None,
+        pinned: None,
+    })?;
     let (repo, local_path, worktrees) =
-        hz_command::list_worktree_targets_with_repo(hz_command::ListWorktrees { repo })?;
+        hz_command::list_worktree_targets_with_repo(hz_command::ListWorktrees {
+            repo,
+            pinned: None,
+        })?;
 
     if same_path(&current_path, &local_path) {
         return Ok(CurrentWorktree {
@@ -158,9 +165,11 @@ pub(crate) fn current_worktree_entry<'a>(
 }
 
 pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> CliResult<()> {
+    let pinned_filter = list_pinned_filter(&args);
     if args.json {
         let worktrees = hz_command::list_worktrees(hz_command::ListWorktrees {
             repo: args.repo.clone(),
+            pinned: pinned_filter,
         })?;
         write_stdout(format_args!(
             "{}\n",
@@ -170,16 +179,25 @@ pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> CliResult<()> {
         let (local, worktrees) =
             hz_command::list_worktrees_with_local(hz_command::ListWorktrees {
                 repo: args.repo.clone(),
+                pinned: pinned_filter,
             })?;
         let config = hz_command::load_repo_config_at(&local.repo)?;
-        let current_path =
-            hz_command::current_worktree_path(hz_command::ListWorktrees { repo: None }).ok();
+        let current_path = hz_command::current_worktree_path(hz_command::ListWorktrees {
+            repo: None,
+            pinned: None,
+        })
+        .ok();
         let terminal = io::stdout().is_terminal();
         let color = color_output_enabled(config.color.as_ref(), terminal);
+        let local = if pinned_filter.is_none() {
+            Some(&local)
+        } else {
+            None
+        };
         write_stdout(format_args!(
             "{}",
             render_worktree_list_with_options(
-                &local,
+                local,
                 &worktrees,
                 current_path.as_deref(),
                 color,
@@ -188,6 +206,48 @@ pub(crate) fn list_worktrees(args: ListWorktreeArgs) -> CliResult<()> {
                 list_options(config.list.as_ref(), config.color.as_ref()),
             )
         ))?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn list_pinned_filter(args: &ListWorktreeArgs) -> Option<bool> {
+    if args.pinned {
+        Some(true)
+    } else if args.unpinned {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn pin_worktree(args: PinWorktreeArgs) -> CliResult<()> {
+    set_worktree_pin(args, true)
+}
+
+pub(crate) fn unpin_worktree(args: PinWorktreeArgs) -> CliResult<()> {
+    set_worktree_pin(args, false)
+}
+
+fn set_worktree_pin(args: PinWorktreeArgs, pinned: bool) -> CliResult<()> {
+    let worktrees = hz_command::pin_worktrees(hz_command::PinWorktrees {
+        targets: args.targets,
+        repo: args.repo,
+        pinned,
+    })?;
+
+    if args.json {
+        write_stdout(format_args!(
+            "{}\n",
+            serde_json::to_string_pretty(&worktrees)?
+        ))?;
+    } else {
+        for worktree in &worktrees {
+            write_stdout(format_args!(
+                "{}",
+                render_pin_worktree(worktree, pinned, io::stdout().is_terminal())
+            ))?;
+        }
     }
 
     Ok(())
@@ -221,7 +281,7 @@ pub(crate) fn render_worktree_list_with_context(
     terminal_width: Option<usize>,
 ) -> String {
     render_worktree_list_with_options(
-        local,
+        Some(local),
         worktrees,
         current_path,
         color,
@@ -232,7 +292,7 @@ pub(crate) fn render_worktree_list_with_context(
 }
 
 pub(crate) fn render_worktree_list_with_options(
-    local: &hz_command::LocalWorktreeInfo,
+    local: Option<&hz_command::LocalWorktreeInfo>,
     worktrees: &[hz_command::WorktreeEntry],
     current_path: Option<&Path>,
     color: bool,
@@ -241,7 +301,7 @@ pub(crate) fn render_worktree_list_with_options(
     options: WorktreeListOptions,
 ) -> String {
     render_worktree_rows_with_options(
-        &worktree_rows(Some(local), worktrees, current_path),
+        &worktree_rows(local, worktrees, current_path),
         color,
         glyphs,
         terminal_width,
@@ -926,6 +986,36 @@ pub(crate) fn render_removed_worktree(worktree: &hz_command::WorktreeEntry, colo
         "{} {}  {}\n",
         styled("-", StyleColor::Yellow, color),
         styled("removed", StyleColor::Yellow, color),
+        styled(
+            worktree_branch_or_handle(worktree),
+            StyleColor::White,
+            color
+        )
+    );
+    output.push_str(&render_field(
+        "path",
+        &worktree.path.display().to_string(),
+        StyleColor::White,
+        color,
+    ));
+
+    output
+}
+
+pub(crate) fn render_pin_worktree(
+    worktree: &hz_command::WorktreeEntry,
+    pinned: bool,
+    color: bool,
+) -> String {
+    let (marker, status, status_color) = if pinned {
+        ("+", "pinned", StyleColor::Green)
+    } else {
+        ("-", "unpinned", StyleColor::Yellow)
+    };
+    let mut output = format!(
+        "{} {}  {}\n",
+        styled(marker, status_color, color),
+        styled(status, status_color, color),
         styled(
             worktree_branch_or_handle(worktree),
             StyleColor::White,

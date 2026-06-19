@@ -141,6 +141,8 @@ _hz_complete_main() {
     'pwd:print the current worktree target'
     'remove:remove one or more worktrees'
     'rm:remove one or more worktrees'
+    'pin:pin worktrees'
+    'unpin:unpin worktrees'
     'handoff:apply changes between linked worktrees'
     'init:initialize hz repo config'
     'install:install shell integration'
@@ -168,6 +170,8 @@ _hz_complete_agent_subcommand() {
     'current:print the current worktree as JSON'
     'remove:remove worktrees and print a JSON array'
     'rm:remove worktrees and print a JSON array'
+    'pin:pin worktrees and print JSON'
+    'unpin:unpin worktrees and print JSON'
     'handoff:apply changes between linked worktrees and print JSON'
     'setup:run setup lifecycle and print JSON'
     'cleanup:run cleanup lifecycle and print JSON'
@@ -189,6 +193,8 @@ _hz_complete_worktree_subcommand() {
     'pwd:print the current worktree target'
     'remove:remove one or more worktrees'
     'rm:remove one or more worktrees'
+    'pin:pin worktrees'
+    'unpin:unpin worktrees'
     'handoff:apply changes between linked worktrees'
   )
 
@@ -243,7 +249,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|pwd|current|remove|rm|handoff|setup|cleanup|init)
+        new|fork|path|cd|list|ls|pwd|current|remove|rm|pin|unpin|handoff|setup|cleanup|init)
           _files -/
           return 0
           ;;
@@ -334,13 +340,16 @@ _hz_complete_command_options() {
       compadd -- -r --repo -j --json --machine -h --help
       ;;
     list|ls)
-      compadd -- -r --repo -j --json --machine -h --help
+      compadd -- -r --repo --pinned --unpinned -j --json --machine -h --help
       ;;
     pwd|current)
       compadd -- -r --repo -j --json --machine -h --help
       ;;
     remove|rm)
       compadd -- -r --repo -j --json -f --force --yes -d --debug --cleanup --no-cleanup --machine -h --help
+      ;;
+    pin|unpin)
+      compadd -- -r --repo -j --json --machine -h --help
       ;;
     handoff)
       compadd -- -b --branch -n --new --max-detached --max-branch-worktrees -r --repo -j --json --machine -h --help
@@ -369,7 +378,7 @@ _hz_complete_command_positionals() {
       _arguments \
         '1:worktree target:_hz_worktree_targets'
       ;;
-    remove|rm)
+    remove|rm|pin|unpin)
       _arguments \
         '*:worktree targets:_hz_removable_worktrees'
       ;;
