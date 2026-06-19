@@ -224,7 +224,7 @@ complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt" -a "new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt"
+complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt agent" -a "new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt"
 complete -c hz -n "__hz_needs_worktree_subcommand" -a "new fork path cd list ls pwd remove rm handoff"
 complete -c hz -n "__hz_needs_agent_subcommand" -a "new fork path cd list ls pwd current remove rm handoff setup cleanup"
 

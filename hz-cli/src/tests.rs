@@ -1108,9 +1108,14 @@ fn shell_completion_command_lists_match_clap() {
         zsh_described_commands(zsh, "_hz_complete_main"),
         top_commands
     );
+    let fish_root_commands = fish_argument_words(fish, "not __fish_seen_subcommand_from");
+    assert_eq!(fish_root_commands, top_commands);
+
+    let mut fish_root_guard_commands = top_commands.clone();
+    fish_root_guard_commands.insert("agent".to_owned());
     assert_eq!(
-        fish_argument_words(fish, "not __fish_seen_subcommand_from"),
-        top_commands
+        fish_condition_words(fish, "not __fish_seen_subcommand_from"),
+        fish_root_guard_commands
     );
 
     let worktree_commands = clap_completion_subcommands(&["worktree"]);
@@ -1728,6 +1733,18 @@ fn fish_argument_words(script: &str, condition: &str) -> BTreeSet<String> {
         .nth(1)
         .and_then(|rest| rest.split('"').next())
         .unwrap_or_else(|| panic!("missing fish completion argument list for: {condition}"));
+
+    words(value)
+}
+
+fn fish_condition_words(script: &str, prefix: &str) -> BTreeSet<String> {
+    let line = script
+        .lines()
+        .find(|line| line.contains(prefix) && line.contains(" -a \""))
+        .unwrap_or_else(|| panic!("missing fish completion condition for: {prefix}"));
+    let value = fish_line_condition(line)
+        .and_then(|condition| condition.strip_prefix(prefix))
+        .unwrap_or_else(|| panic!("missing fish completion condition words for: {prefix}"));
 
     words(value)
 }
