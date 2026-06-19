@@ -13,9 +13,9 @@ isolation and diff review can evolve as separate tools.
 ## Status
 
 `hz` is pre-1.0. The current release is usable for local Git worktree, handoff,
-lifecycle, shell integration, agent-facing JSON commands, and install/update
-workflows. Prefer `hz agent ...` or `--json` for scripts, and expect command
-shapes to keep tightening before 1.0.
+lifecycle, shell integration, machine-readable JSON output, and install/update
+workflows. Prefer `--machine` or `--json` for scripts, and expect command shapes
+to keep tightening before 1.0.
 
 ## What hz does today
 
@@ -26,7 +26,7 @@ shapes to keep tightening before 1.0.
 - Applies uncommitted changes between linked worktrees without forcing a commit.
 - Moves branch ownership between worktrees when both sides are clean.
 - Runs repo-local setup and cleanup hooks on explicit opt-in commands for reproducible agent workspaces.
-- Exposes JSON-first `hz agent ...` commands for agents and automation.
+- Exposes JSON and `--machine` modes for agents and automation.
 - Lists, finds, prunes, and removes managed and unmanaged worktrees.
 - Installs and updates release binaries from GitHub releases.
 
@@ -59,10 +59,10 @@ Without shell integration, use `hz path <target>` to print a worktree path and
 For agents and scripts, prefer the machine-readable surface:
 
 ```sh
-hz agent new fix-login --repo .
-hz agent list --repo .
-hz agent handoff fix-login --repo .
-hz agent remove fix-login --repo . --force
+hz --machine new fix-login --repo .
+hz --machine list --repo .
+hz --machine handoff fix-login --repo .
+hz --machine remove fix-login --repo . --force
 ```
 
 `hz init` writes repo-local lifecycle files under `.hz/`. Commit them before
@@ -237,27 +237,30 @@ without changing directories.
 
 The shell integration also installs completions for zsh, bash, and fish.
 Completions include command aliases such as `hz cd`, `hz ls`, and `hz rm`,
-nested `hz worktree ...` and `hz agent ...` commands, command flags, shell
+nested `hz worktree ...` commands, command flags such as `--machine`, shell
 names for `hz init`/`hz shell`, and live worktree targets for commands that
 accept them.
 
-### Human and agent command surfaces
+### Human and machine-readable output
 
-The top-level commands are human-facing. They keep terminal output readable and,
-when shell integration is installed, commands such as `hz new`, `hz fork`,
-`hz cd`, and `hz handoff` can change the current shell directory.
+By default, top-level commands are human-facing. They keep terminal output
+readable and, when shell integration is installed, commands such as `hz new`,
+`hz fork`, `hz cd`, and `hz handoff` can change the current shell directory.
 
-`hz agent ...` is the machine-facing namespace. It reuses the same worktree and
-lifecycle behavior but forces JSON output, bypasses shell auto-cd, and refuses
-unsafe prompts in non-interactive paths. Use it when another process needs
-stable stdout:
+Pass `--json` to data-producing commands when another process needs parseable
+stdout. Pass `--machine` to force JSON, bypass shell auto-cd, and refuse unsafe
+prompts in non-interactive paths:
 
 ```sh
-hz agent pwd
-hz agent path fix-login
-hz agent setup fix-login
-hz agent cleanup fix-login
+hz pwd --json
+hz path fix-login --json
+hz setup fix-login --json
+hz cleanup fix-login --json
+hz --machine list
 ```
+
+For compatibility, `hz agent ...` remains as a machine-readable alias for the
+same worktree and lifecycle commands.
 
 ### Handoff
 
@@ -269,7 +272,8 @@ defaults back to the last linked worktree. The destination must be clean unless
 its current diff still matches the last patch handed off between that pair; in
 that case `hz` safely replaces it with the source diff. Source changes are left
 in place. With shell integration loaded, successful handoffs change into the
-destination worktree unless `--json`, `--path-only`, or help is passed.
+destination worktree unless `--json`, `--machine`, `--path-only`, or help is
+passed.
 
 Use `hz handoff --new` to create a new detached destination worktree and apply
 the current patch there. Use `hz handoff --new fix-login` to create a
@@ -357,7 +361,7 @@ For compatibility, `hz init <shell>` still installs shell integration, but
 
 ## CLI reference
 
-See [docs/cli.md](docs/cli.md) for the full human and agent command reference,
+See [docs/cli.md](docs/cli.md) for the full human and machine command reference,
 common options, and scripting notes.
 
 ## Architecture

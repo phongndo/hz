@@ -20,10 +20,13 @@ use hz_core::{HzError, HzResult};
 
 use crate::{
     agent::run_agent_command,
-    args::{Cli, Command, WorktreeCommand},
+    args::{
+        Cli, Command, ForkWorktreeArgs, HandoffWorktreeArgs, ListWorktreeArgs, NewWorktreeArgs,
+        PathWorktreeArgs, PwdWorktreeArgs, RemoveWorktreeArgs, WorktreeCommand,
+    },
     complete::complete,
-    lifecycle::run_lifecycle,
-    removal::{handoff_worktree, remove_worktree},
+    lifecycle::{run_lifecycle, run_lifecycle_json},
+    removal::{handoff_worktree, remove_worktree, remove_worktree_json_array},
     repo_shell::{init_repo_or_shell, install_shell, shell_script},
     update::update,
     worktree_output::{
@@ -108,21 +111,34 @@ fn is_clean_exit_error(error: &CliError) -> bool {
 
 fn run() -> CliResult<()> {
     let cli = Cli::parse();
+    let machine = cli.machine;
 
     match cli.command {
         None => write_default_help(io::stdout().lock()),
-        Some(Command::Worktree { command }) => run_worktree_command(command),
+        Some(Command::Worktree { command }) => run_worktree_command(command, machine),
         Some(Command::Agent { command }) => run_agent_command(command),
-        Some(Command::New(args)) => create_worktree(args),
-        Some(Command::Fork(args)) => fork_worktree(args),
-        Some(Command::Path(args)) => path_worktree(args),
-        Some(Command::List(args)) => list_worktrees(args),
-        Some(Command::Pwd(args)) => pwd_worktree(args),
-        Some(Command::Remove(args)) => remove_worktree(args),
-        Some(Command::Handoff(args)) => handoff_worktree(args),
+        Some(Command::New(args)) => create_worktree(machine_new_args(args, machine)),
+        Some(Command::Fork(args)) => fork_worktree(machine_fork_args(args, machine)),
+        Some(Command::Path(args)) => path_worktree(machine_path_args(args, machine)),
+        Some(Command::List(args)) => list_worktrees(machine_list_args(args, machine)),
+        Some(Command::Pwd(args)) => pwd_worktree(machine_pwd_args(args, machine)),
+        Some(Command::Remove(args)) => {
+            if machine {
+                remove_worktree_json_array(machine_remove_args(args, true))
+            } else {
+                remove_worktree(args)
+            }
+        }
+        Some(Command::Handoff(args)) => handoff_worktree(machine_handoff_args(args, machine)),
         Some(Command::Init(args)) => init_repo_or_shell(args),
         Some(Command::Install(args)) => install_shell(args),
+        Some(Command::Setup(args)) if machine => {
+            run_lifecycle_json(args, hz_command::LifecycleKind::Setup)
+        }
         Some(Command::Setup(args)) => run_lifecycle(args, hz_command::LifecycleKind::Setup),
+        Some(Command::Cleanup(args)) if machine => {
+            run_lifecycle_json(args, hz_command::LifecycleKind::Cleanup)
+        }
         Some(Command::Cleanup(args)) => run_lifecycle(args, hz_command::LifecycleKind::Cleanup),
         Some(Command::Shell(args)) => shell_script(args),
         Some(Command::Update(args)) => update(args),
@@ -130,16 +146,77 @@ fn run() -> CliResult<()> {
     }
 }
 
-fn run_worktree_command(command: WorktreeCommand) -> CliResult<()> {
+fn run_worktree_command(command: WorktreeCommand, machine: bool) -> CliResult<()> {
     match command {
-        WorktreeCommand::New(args) => create_worktree(args),
-        WorktreeCommand::Fork(args) => fork_worktree(args),
-        WorktreeCommand::Path(args) => path_worktree(args),
-        WorktreeCommand::List(args) => list_worktrees(args),
-        WorktreeCommand::Pwd(args) => pwd_worktree(args),
-        WorktreeCommand::Remove(args) => remove_worktree(args),
-        WorktreeCommand::Handoff(args) => handoff_worktree(args),
+        WorktreeCommand::New(args) => create_worktree(machine_new_args(args, machine)),
+        WorktreeCommand::Fork(args) => fork_worktree(machine_fork_args(args, machine)),
+        WorktreeCommand::Path(args) => path_worktree(machine_path_args(args, machine)),
+        WorktreeCommand::List(args) => list_worktrees(machine_list_args(args, machine)),
+        WorktreeCommand::Pwd(args) => pwd_worktree(machine_pwd_args(args, machine)),
+        WorktreeCommand::Remove(args) => {
+            if machine {
+                remove_worktree_json_array(machine_remove_args(args, true))
+            } else {
+                remove_worktree(args)
+            }
+        }
+        WorktreeCommand::Handoff(args) => handoff_worktree(machine_handoff_args(args, machine)),
     }
+}
+
+fn machine_new_args(mut args: NewWorktreeArgs, machine: bool) -> NewWorktreeArgs {
+    if machine {
+        args.json = true;
+        args.debug = false;
+        args.path_only = false;
+    }
+    args
+}
+
+fn machine_fork_args(mut args: ForkWorktreeArgs, machine: bool) -> ForkWorktreeArgs {
+    if machine {
+        args.json = true;
+        args.path_only = false;
+    }
+    args
+}
+
+fn machine_path_args(mut args: PathWorktreeArgs, machine: bool) -> PathWorktreeArgs {
+    if machine {
+        args.json = true;
+        args.path_only = false;
+    }
+    args
+}
+
+fn machine_list_args(mut args: ListWorktreeArgs, machine: bool) -> ListWorktreeArgs {
+    if machine {
+        args.json = true;
+    }
+    args
+}
+
+fn machine_pwd_args(mut args: PwdWorktreeArgs, machine: bool) -> PwdWorktreeArgs {
+    if machine {
+        args.json = true;
+    }
+    args
+}
+
+fn machine_remove_args(mut args: RemoveWorktreeArgs, machine: bool) -> RemoveWorktreeArgs {
+    if machine {
+        args.json = true;
+        args.debug = false;
+    }
+    args
+}
+
+fn machine_handoff_args(mut args: HandoffWorktreeArgs, machine: bool) -> HandoffWorktreeArgs {
+    if machine {
+        args.json = true;
+        args.path_only = false;
+    }
+    args
 }
 
 fn write_default_help(mut writer: impl Write) -> CliResult<()> {

@@ -16,7 +16,7 @@ _hz() {
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h|-j)
+          --json|--machine|--path-only|--help|-h|-j)
             command hz "$@"
             return
             ;;
@@ -31,7 +31,7 @@ _hz() {
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h|-j)
+          --json|--machine|--path-only|--help|-h|-j)
             command hz "$@"
             return
             ;;
@@ -47,7 +47,7 @@ _hz() {
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h|-j)
+          --json|--machine|--path-only|--help|-h|-j)
             command hz "$cmd" "$@"
             return
             ;;
@@ -150,7 +150,6 @@ _hz_complete_main() {
     'update:update hz from GitHub releases'
     'worktree:worktree commands'
     'wt:worktree commands'
-    'agent:machine-readable commands'
   )
 
   _describe -t commands 'hz command' commands
@@ -290,37 +289,37 @@ _hz_complete_command_options() {
 
   case "$cmd" in
     new)
-      compadd -- -r --repo -p --path -B --base -b --branch --max-detached --max-branch-worktrees -j --json -d --debug --setup --no-setup -h --help
+      compadd -- -r --repo -p --path -B --base -b --branch --max-detached --max-branch-worktrees -j --json -d --debug --setup --no-setup --machine -h --help
       ;;
     fork)
-      compadd -- -r --repo -p --path --no-diff --max-detached -j --json -h --help
+      compadd -- -r --repo -p --path --no-diff --max-detached -j --json --machine -h --help
       ;;
     path|cd)
-      compadd -- -r --repo -j --json -h --help
+      compadd -- -r --repo -j --json --machine -h --help
       ;;
     list|ls)
-      compadd -- -r --repo -j --json -h --help
+      compadd -- -r --repo -j --json --machine -h --help
       ;;
     pwd|current)
-      compadd -- -r --repo -j --json -h --help
+      compadd -- -r --repo -j --json --machine -h --help
       ;;
     remove|rm)
-      compadd -- -r --repo -j --json -f --force --yes -d --debug --cleanup --no-cleanup -h --help
+      compadd -- -r --repo -j --json -f --force --yes -d --debug --cleanup --no-cleanup --machine -h --help
       ;;
     handoff)
-      compadd -- -b --branch -n --new --max-detached --max-branch-worktrees -r --repo -j --json -h --help
+      compadd -- -b --branch -n --new --max-detached --max-branch-worktrees -r --repo -j --json --machine -h --help
       ;;
     setup|cleanup)
-      compadd -- -r --repo -h --help
+      compadd -- -r --repo -j --json --machine -h --help
       ;;
     init)
-      compadd -- -r --repo -h --help
+      compadd -- -r --repo --machine -h --help
       ;;
     install|shell)
-      compadd -- -h --help
+      compadd -- --machine -h --help
       ;;
     update)
-      compadd -- --target-version --install-dir -h --help
+      compadd -- --target-version --install-dir --machine -h --help
       ;;
   esac
 }
@@ -367,7 +366,7 @@ _hz_complete_command_args() {
 _hz_completion() {
   if (( CURRENT == 2 )); then
     if [[ "$PREFIX" == -* ]]; then
-      compadd -- -h --help -V --version
+      compadd -- --machine -h --help -V --version
       return
     fi
     _hz_complete_main
@@ -378,7 +377,7 @@ _hz_completion() {
   if [[ "$cmd" == "worktree" || "$cmd" == "wt" || "$cmd" == "agent" ]]; then
     if (( CURRENT == 3 )); then
       if [[ "$PREFIX" == -* ]]; then
-        compadd -- -h --help
+        compadd -- --machine -h --help
       elif [[ "$cmd" == "agent" ]]; then
         _hz_complete_agent_subcommand
       else

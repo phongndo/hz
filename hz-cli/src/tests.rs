@@ -123,6 +123,26 @@ fn agent_commands_parse_under_machine_namespace() {
 }
 
 #[test]
+fn machine_flag_parses_before_or_after_command() {
+    let cli = Cli::try_parse_from(["hz", "--machine", "list", "--repo", "/repo"]).unwrap();
+    assert!(cli.machine);
+    match cli.command {
+        Some(Command::List(args)) => assert_eq!(args.repo, Some(PathBuf::from("/repo"))),
+        command => panic!("expected list command, got {command:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["hz", "remove", "target", "--machine", "--force"]).unwrap();
+    assert!(cli.machine);
+    match cli.command {
+        Some(Command::Remove(args)) => {
+            assert_eq!(args.targets, vec!["target".to_owned()]);
+            assert!(args.force);
+        }
+        command => panic!("expected remove command, got {command:?}"),
+    }
+}
+
+#[test]
 fn list_output_uses_branch_as_display_identifier() {
     let output = render_worktree_list(&[hz_command::WorktreeEntry {
         id: "entry-id".to_owned(),
@@ -1245,18 +1265,22 @@ fn init_install_and_lifecycle_commands_parse() {
         command => panic!("expected install command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "setup", "-r", "/repo", "target"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "setup", "-r", "/repo", "--json", "target"]).unwrap();
     match cli.command {
         Some(Command::Setup(args)) => {
             assert_eq!(args.target.as_deref(), Some("target"));
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
+            assert!(args.json);
         }
         command => panic!("expected setup command, got {command:?}"),
     }
 
     let cli = Cli::try_parse_from(["hz", "cleanup"]).unwrap();
     match cli.command {
-        Some(Command::Cleanup(args)) => assert_eq!(args.target, None),
+        Some(Command::Cleanup(args)) => {
+            assert_eq!(args.target, None);
+            assert!(!args.json);
+        }
         command => panic!("expected cleanup command, got {command:?}"),
     }
 

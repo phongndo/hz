@@ -658,7 +658,7 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("alias hzlocal='noglob _hzlocal'"));
     assert!(script.contains("_hzlocal() {"));
     assert!(script.contains("handoff)"));
-    assert!(script.contains("--json|--path-only|--help|-h|-j"));
+    assert!(script.contains("--json|--machine|--path-only|--help|-h|-j"));
     assert!(script.contains("builtin cd \"$hz_target_path\" || return"));
     assert!(script.contains("command hz __complete worktree-targets \"${complete_args[@]}\""));
     assert!(script.contains("command hz __complete removable-worktrees \"${complete_args[@]}\""));
@@ -668,7 +668,7 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("compdef _hzlocal_completion hzlocal _hzlocal"));
     assert!(script.contains("_hz_deferred_register_completion()"));
     assert!(script.contains("add-zsh-hook precmd _hz_deferred_register_completion"));
-    assert!(script.contains("compadd -- -h --help -V --version"));
+    assert!(script.contains("compadd -- --machine -h --help -V --version"));
     assert!(script.contains("if [[ \"$PREFIX\" == -* ]]; then"));
     assert!(script.contains("_hz_complete_command_options \"$cmd\""));
     assert!(script.contains("_hz_complete_command_positionals \"$cmd\""));
@@ -708,7 +708,7 @@ fn zsh_integration_wraps_new_and_cd() {
 fn fish_integration_passes_json_short_flag_through() {
     let script = shell_integration(Shell::Fish);
 
-    assert!(script.contains("case --json --path-only --help -h -j"));
+    assert!(script.contains("case --json --machine --path-only --help -h -j"));
     assert!(script.contains("or return"));
     assert!(script.contains("command hz __complete worktree-targets -r \"$repo\""));
     assert!(script.contains("command hz __complete removable-worktrees -r \"$repo\""));

@@ -12,7 +12,7 @@ hz() {
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h|-j)
+          --json|--machine|--path-only|--help|-h|-j)
             command hz "$@"
             return
             ;;
@@ -27,7 +27,7 @@ hz() {
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h|-j)
+          --json|--machine|--path-only|--help|-h|-j)
             command hz "$@"
             return
             ;;
@@ -43,7 +43,7 @@ hz() {
       local arg
       for arg in "$@"; do
         case "$arg" in
-          --json|--path-only|--help|-h|-j)
+          --json|--machine|--path-only|--help|-h|-j)
             command hz "$cmd" "$@"
             return
             ;;
@@ -68,7 +68,7 @@ hzlocal() {
   hz cd local "$@"
 }
 
-_hz_top_commands="new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt agent"
+_hz_top_commands="new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt"
 _hz_worktree_commands="new fork path cd list ls pwd remove rm handoff"
 _hz_agent_commands="new fork path cd list ls pwd current remove rm handoff setup cleanup"
 _hz_shells="zsh bash fish"
@@ -228,61 +228,61 @@ _hz_complete_command_args() {
 
   case "$cmd" in
     new)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -p --path -B --base -b --branch --max-detached --max-branch-worktrees -j --json -d --debug --setup --no-setup -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -p --path -B --base -b --branch --max-detached --max-branch-worktrees -j --json -d --debug --setup --no-setup --machine -h --help" "$current"
       ;;
     fork)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -p --path --no-diff --max-detached -j --json -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -p --path --no-diff --max-detached -j --json --machine -h --help" "$current"
       ;;
     path|cd)
       if [[ "$current" == -* ]]; then
-        _hz_reply "-r --repo -j --json -h --help" "$current"
+        _hz_reply "-r --repo -j --json --machine -h --help" "$current"
       else
         _hz_dynamic_reply worktree-targets "$current"
       fi
       ;;
     list|ls)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json --machine -h --help" "$current"
       ;;
     pwd|current)
-      [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json --machine -h --help" "$current"
       ;;
     remove|rm)
       if [[ "$current" == -* ]]; then
-        _hz_reply "-r --repo -j --json -f --force --yes -d --debug --cleanup --no-cleanup -h --help" "$current"
+        _hz_reply "-r --repo -j --json -f --force --yes -d --debug --cleanup --no-cleanup --machine -h --help" "$current"
       else
         _hz_dynamic_reply removable-worktrees "$current"
       fi
       ;;
     handoff)
       if [[ "$current" == -* ]]; then
-        _hz_reply "-b --branch -n --new --max-detached --max-branch-worktrees -r --repo -j --json -h --help" "$current"
+        _hz_reply "-b --branch -n --new --max-detached --max-branch-worktrees -r --repo -j --json --machine -h --help" "$current"
       else
         _hz_dynamic_reply worktree-targets "$current"
       fi
       ;;
     setup|cleanup)
       if [[ "$current" == -* ]]; then
-        _hz_reply "-r --repo -h --help" "$current"
+        _hz_reply "-r --repo -j --json --machine -h --help" "$current"
       else
         _hz_dynamic_reply worktree-targets "$current"
       fi
       ;;
     init)
       if [[ "$current" == -* ]]; then
-        _hz_reply "-r --repo -h --help" "$current"
+        _hz_reply "-r --repo --machine -h --help" "$current"
       else
         _hz_reply "$_hz_shells" "$current"
       fi
       ;;
     install|shell)
       if [[ "$current" == -* ]]; then
-        _hz_reply "-h --help" "$current"
+        _hz_reply "--machine -h --help" "$current"
       else
         _hz_reply "$_hz_shells" "$current"
       fi
       ;;
     update)
-      [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir -h --help" "$current"
+      [[ "$current" == -* ]] && _hz_reply "--target-version --install-dir --machine -h --help" "$current"
       ;;
   esac
 }
@@ -294,7 +294,7 @@ _hz_completion() {
 
   if [[ "$COMP_CWORD" -eq 1 ]]; then
     if [[ "$current" == -* ]]; then
-      _hz_reply "-h --help -V --version" "$current"
+      _hz_reply "--machine -h --help -V --version" "$current"
     else
       _hz_reply "$_hz_top_commands" "$current"
     fi
@@ -305,7 +305,7 @@ _hz_completion() {
   if [[ "$cmd" == "worktree" || "$cmd" == "wt" || "$cmd" == "agent" ]]; then
     if [[ "$COMP_CWORD" -eq 2 ]]; then
       if [[ "$current" == -* ]]; then
-        _hz_reply "-h --help" "$current"
+        _hz_reply "--machine -h --help" "$current"
       elif [[ "$cmd" == "agent" ]]; then
         _hz_reply "$_hz_agent_commands" "$current"
       else
@@ -330,7 +330,7 @@ _hzcd_completion() {
   fi
 
   if [[ "$current" == -* ]]; then
-    _hz_reply "-r --repo -j --json -h --help" "$current"
+    _hz_reply "-r --repo -j --json --machine -h --help" "$current"
   else
     _hz_dynamic_reply worktree-targets "$current"
   fi
@@ -344,7 +344,7 @@ _hzlocal_completion() {
     return
   fi
 
-  [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json -h --help" "$current"
+  [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json --machine -h --help" "$current"
 }
 
 complete -F _hz_completion hz

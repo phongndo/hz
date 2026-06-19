@@ -11,7 +11,7 @@ function hz
         case new fork
             for arg in $argv
                 switch $arg
-                    case --json --path-only --help -h -j
+                    case --json --machine --path-only --help -h -j
                         command hz $argv
                         return
                 end
@@ -24,7 +24,7 @@ function hz
         case handoff
             for arg in $argv
                 switch $arg
-                    case --json --path-only --help -h -j
+                    case --json --machine --path-only --help -h -j
                         command hz $argv
                         return
                 end
@@ -38,7 +38,7 @@ function hz
             set rest $argv[2..-1]
             for arg in $rest
                 switch $arg
-                    case --json --path-only --help -h -j
+                    case --json --machine --path-only --help -h -j
                         command hz $cmd $rest
                         return
                 end
@@ -173,7 +173,7 @@ complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt agent" -a "new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt agent"
+complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt" -a "new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt"
 complete -c hz -n "__hz_needs_worktree_subcommand" -a "new fork path cd list ls pwd remove rm handoff"
 complete -c hz -n "__hz_needs_agent_subcommand" -a "new fork path cd list ls pwd current remove rm handoff setup cleanup"
 
@@ -189,7 +189,7 @@ complete -c hz -n "__hz_command_is new handoff" -l max-branch-worktrees -r
 complete -c hz -n "__hz_command_is new" -l no-setup
 complete -c hz -n "__hz_command_is new" -l setup
 complete -c hz -n "__hz_command_is fork" -l no-diff
-complete -c hz -n "__hz_command_is new fork path cd list ls pwd current remove rm handoff" -s j -l json
+complete -c hz -n "__hz_command_is new fork path cd list ls pwd current remove rm handoff setup cleanup" -s j -l json
 complete -c hz -n "__hz_command_is new remove rm" -s d -l debug
 complete -c hz -n "__hz_command_is remove rm" -s f -l force
 complete -c hz -n "__hz_command_is remove rm" -l yes
@@ -199,6 +199,7 @@ complete -c hz -n "__hz_command_is handoff" -s b -l branch
 complete -c hz -n "__hz_command_is handoff" -s n -l new
 complete -c hz -n "__hz_top_command_is update" -l target-version -r
 complete -c hz -n "__hz_top_command_is update" -l install-dir -r -F
+complete -c hz -l machine
 complete -c hz -s h -l help
 
 complete -c hzcd -f
@@ -211,4 +212,4 @@ complete -c hzlocal -f
 complete -c hzlocal -s r -l repo -r -F
 complete -c hzlocal -s j -l json
 complete -c hzlocal -s h -l help
-complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt agent" -s V -l version
+complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm handoff init install setup cleanup shell update worktree wt" -s V -l version

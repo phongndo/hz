@@ -21,6 +21,7 @@ examples:
   hz init
   hz install zsh
   hz new feature/ui
+  hz --machine list
   hz fork
   hz ls
   hz pwd
@@ -28,8 +29,7 @@ examples:
   hz setup feature/ui
   hz cleanup feature/ui
   hz cd feature/ui
-  hz handoff feature/ui
-  hz agent list";
+  hz handoff feature/ui";
 
 pub(crate) const INSTALL_SCRIPT: &str = include_str!("../../scripts/install.sh");
 pub(crate) const RELEASE_REPO: &str = "phongndo/hz";
@@ -45,6 +45,9 @@ pub(crate) const RELEASE_REPO: &str = "phongndo/hz";
     styles = help_styles()
 )]
 pub(crate) struct Cli {
+    /// Use stable JSON output and disable interactive shell side effects.
+    #[arg(long, global = true)]
+    pub(crate) machine: bool,
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }
@@ -64,7 +67,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
-    #[command(about = "Machine-readable aliases for agents and scripts")]
+    #[command(about = "Machine-readable aliases for agents and scripts", hide = true)]
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
@@ -272,6 +275,8 @@ pub(crate) struct LifecycleArgs {
     pub(crate) target: Option<String>,
     #[arg(short = 'r', long)]
     pub(crate) repo: Option<PathBuf>,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]
