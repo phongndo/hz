@@ -374,12 +374,12 @@ common options, and scripting notes.
 ## Architecture
 
 ```text
-hz-cli       command parsing, terminal output, install/update, and CLI UX
-hz-bench     headless command benchmark utilities
-hz-command   command facade shared by CLI and future runtime callers
-hz-core      shared errors and common models
-hz-git       low-level Git integration boundary
-hz-worktree  worktree domain boundary: new, path, list, handoff, remove
+crates/hz-cli       command parsing, terminal output, install/update, and CLI UX
+crates/hz-bench     headless command benchmark utilities
+crates/hz-command   command facade shared by CLI and future runtime callers
+crates/hz-core      shared errors and common models
+crates/hz-git       low-level Git integration boundary
+crates/hz-worktree  worktree domain boundary: new, path, list, handoff, remove
 ```
 
 The command crate is the main extension seam. CLI and future runtime code should

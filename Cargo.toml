@@ -1,12 +1,5 @@
 [workspace]
-members = [
-    "hz-cli",
-    "hz-bench",
-    "hz-command",
-    "hz-core",
-    "hz-git",
-    "hz-worktree",
-]
+members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
@@ -30,7 +23,7 @@ time = { version = "=0.3.45", default-features = false, features = ["local-offse
 toml = "1.1"
 unicode-width = "0.2"
 
-hz-core = { path = "hz-core" }
-hz-command = { path = "hz-command" }
-hz-git = { path = "hz-git" }
-hz-worktree = { path = "hz-worktree" }
+hz-core = { path = "crates/hz-core" }
+hz-command = { path = "crates/hz-command" }
+hz-git = { path = "crates/hz-git" }
+hz-worktree = { path = "crates/hz-worktree" }
