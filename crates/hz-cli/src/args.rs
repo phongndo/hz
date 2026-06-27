@@ -31,7 +31,7 @@ examples:
   hz cd feature/ui
   hz handoff feature/ui";
 
-pub(crate) const INSTALL_SCRIPT: &str = include_str!("../../scripts/install.sh");
+pub(crate) const INSTALL_SCRIPT: &str = include_str!("../../../scripts/install.sh");
 pub(crate) const RELEASE_REPO: &str = "phongndo/hz";
 
 #[derive(Debug, Parser)]
