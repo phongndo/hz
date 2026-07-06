@@ -30,13 +30,19 @@ fn worktree_defaults_use_child_home() {
 
     let output = Command::new(hz())
         .env("HOME", &home)
-        .args(["new", "--repo", repo.to_str().unwrap(), "--no-setup"])
+        .args([
+            "worktree",
+            "new",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--no-setup",
+        ])
         .output()
         .expect("hz should run");
 
     assert!(
         output.status.success(),
-        "hz new failed: stdout={} stderr={}",
+        "hz worktree new failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -65,6 +71,7 @@ fn pwd_prints_current_worktree_target() {
         &home,
         &repo,
         &[
+            "worktree",
             "new",
             "feature",
             "--repo",
@@ -74,17 +81,30 @@ fn pwd_prints_current_worktree_target() {
         ],
     );
 
-    assert_eq!(hz_stdout(&home, &repo, &["pwd"]), "local\n");
-    assert_eq!(hz_stdout(&home, &worktree, &["pwd"]), "feature\n");
+    assert_eq!(hz_stdout(&home, &repo, &["worktree", "pwd"]), "local\n");
     assert_eq!(
-        hz_stdout(&home, &worktree, &["pwd", "--repo", repo.to_str().unwrap()]),
+        hz_stdout(&home, &worktree, &["worktree", "pwd"]),
+        "feature\n"
+    );
+    assert_eq!(
+        hz_stdout(
+            &home,
+            &worktree,
+            &["worktree", "pwd", "--repo", repo.to_str().unwrap()]
+        ),
         "feature\n"
     );
 
     let json = hz_stdout(
         &home,
         &worktree,
-        &["pwd", "--repo", repo.to_str().unwrap(), "--json"],
+        &[
+            "worktree",
+            "pwd",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--json",
+        ],
     );
     let value: serde_json::Value = serde_json::from_str(&json).expect("json should parse");
     assert_eq!(value["target"], "feature");

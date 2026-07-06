@@ -1170,37 +1170,6 @@ pub(crate) fn render_created_field(label: &str, path: &Path, created: bool, colo
     )
 }
 
-pub(crate) fn render_lifecycle_run(run: &hz_command::LifecycleRun, color: bool) -> String {
-    let label = lifecycle_kind_label(run.kind);
-    let (marker, status, status_color) = if run.configured {
-        ("+", label, StyleColor::Green)
-    } else {
-        ("=", "no-op", StyleColor::Yellow)
-    };
-
-    let mut output = format!(
-        "{} {}  {}\n",
-        styled(marker, status_color, color),
-        styled(status, status_color, color),
-        styled(&run.target, StyleColor::White, color)
-    );
-    output.push_str(&render_field(
-        "path",
-        &run.path.display().to_string(),
-        StyleColor::White,
-        color,
-    ));
-
-    output
-}
-
-pub(crate) fn lifecycle_kind_label(kind: hz_command::LifecycleKind) -> &'static str {
-    match kind {
-        hz_command::LifecycleKind::Setup => "setup",
-        hz_command::LifecycleKind::Cleanup => "cleanup",
-    }
-}
-
 pub(crate) fn render_field(
     label: &str,
     value: &str,

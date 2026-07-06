@@ -12,51 +12,49 @@ _hz() {
 
   local cmd="$1"
   case "$cmd" in
-    new|fork)
-      local arg
-      for arg in "$@"; do
-        case "$arg" in
-          --json|--machine|--path-only|--help|-h|-j)
-            command hz "$@"
-            return
-            ;;
-        esac
-      done
+    worktree|wt)
+      if [[ "$#" -lt 2 ]]; then
+        command hz "$@"
+        return
+      fi
 
-      local hz_target_path
-      hz_target_path="$(command hz "$@" --path-only)" || return
-      builtin cd "$hz_target_path" || return
-      ;;
-    handoff)
-      local arg
-      for arg in "$@"; do
-        case "$arg" in
-          --json|--machine|--path-only|--help|-h|-j)
-            command hz "$@"
-            return
-            ;;
-        esac
-      done
+      local subcmd="$2"
+      case "$subcmd" in
+        new|fork|handoff)
+          local arg
+          for arg in "$@"; do
+            case "$arg" in
+              --json|--machine|--path-only|--help|-h|-j)
+                command hz "$@"
+                return
+                ;;
+            esac
+          done
 
-      local hz_target_path
-      hz_target_path="$(command hz "$@" --path-only)" || return
-      builtin cd "$hz_target_path" || return
-      ;;
-    cd)
-      shift
-      local arg
-      for arg in "$@"; do
-        case "$arg" in
-          --json|--machine|--path-only|--help|-h|-j)
-            command hz "$cmd" "$@"
-            return
-            ;;
-        esac
-      done
+          local hz_target_path
+          hz_target_path="$(command hz "$@" --path-only)" || return
+          builtin cd "$hz_target_path" || return
+          ;;
+        cd)
+          shift 2
+          local arg
+          for arg in "$@"; do
+            case "$arg" in
+              --json|--machine|--path-only|--help|-h|-j)
+                command hz "$cmd" "$subcmd" "$@"
+                return
+                ;;
+            esac
+          done
 
-      local hz_target_path
-      hz_target_path="$(command hz path "$@")" || return
-      builtin cd "$hz_target_path" || return
+          local hz_target_path
+          hz_target_path="$(command hz "$cmd" path "$@")" || return
+          builtin cd "$hz_target_path" || return
+          ;;
+        *)
+          command hz "$@"
+          ;;
+      esac
       ;;
     *)
       command hz "$@"
@@ -65,11 +63,11 @@ _hz() {
 }
 
 _hzcd() {
-  _hz cd "$@"
+  _hz worktree cd "$@"
 }
 
 _hzlocal() {
-  _hz cd local "$@"
+  _hz worktree cd local "$@"
 }
 
 _hz_worktree_targets() {
@@ -132,22 +130,8 @@ _hz_git_refs() {
 _hz_complete_main() {
   local -a commands
   commands=(
-    'new:create a worktree'
-    'fork:fork the current worktree state'
-    'path:print a worktree path'
-    'cd:change to a worktree'
-    'list:list worktrees'
-    'ls:list worktrees'
-    'pwd:print the current worktree target'
-    'remove:remove one or more worktrees'
-    'rm:remove one or more worktrees'
-    'pin:pin worktrees'
-    'unpin:unpin worktrees'
-    'handoff:apply changes between linked worktrees'
     'init:initialize hz repo config'
     'install:install shell integration'
-    'setup:run worktree setup'
-    'cleanup:run worktree cleanup'
     'shell:print shell integration'
     'update:update hz from GitHub releases'
     'worktree:worktree commands'
@@ -173,8 +157,6 @@ _hz_complete_agent_subcommand() {
     'pin:pin worktrees and print JSON'
     'unpin:unpin worktrees and print JSON'
     'handoff:apply changes between linked worktrees and print JSON'
-    'setup:run setup lifecycle and print JSON'
-    'cleanup:run cleanup lifecycle and print JSON'
   )
 
   _describe -t commands 'hz agent command' commands
@@ -249,7 +231,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|pwd|current|remove|rm|pin|unpin|handoff|setup|cleanup|init)
+        new|fork|path|cd|list|ls|pwd|current|remove|rm|pin|unpin|handoff|init)
           _files -/
           return 0
           ;;
@@ -354,9 +336,6 @@ _hz_complete_command_options() {
     handoff)
       compadd -- -b --branch -n --new --max-detached --max-branch-worktrees -r --repo -j --json --machine -h --help
       ;;
-    setup|cleanup)
-      compadd -- -r --repo -j --json --machine -h --help
-      ;;
     init)
       compadd -- -r --repo --machine -h --help
       ;;
@@ -382,7 +361,7 @@ _hz_complete_command_positionals() {
       _arguments \
         '*:worktree targets:_hz_removable_worktrees'
       ;;
-    handoff|setup|cleanup)
+    handoff)
       _arguments \
         '1:worktree target:_hz_worktree_targets'
       ;;

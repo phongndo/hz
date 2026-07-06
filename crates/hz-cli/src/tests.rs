@@ -124,21 +124,27 @@ fn agent_commands_parse_under_machine_namespace() {
 
 #[test]
 fn machine_flag_parses_before_or_after_command() {
-    let cli = Cli::try_parse_from(["hz", "--machine", "list", "--repo", "/repo"]).unwrap();
+    let cli =
+        Cli::try_parse_from(["hz", "--machine", "worktree", "list", "--repo", "/repo"]).unwrap();
     assert!(cli.machine);
     match cli.command {
-        Some(Command::List(args)) => assert_eq!(args.repo, Some(PathBuf::from("/repo"))),
-        command => panic!("expected list command, got {command:?}"),
+        Some(Command::Worktree {
+            command: WorktreeCommand::List(args),
+        }) => assert_eq!(args.repo, Some(PathBuf::from("/repo"))),
+        command => panic!("expected worktree list command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "remove", "target", "--machine", "--force"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "worktree", "remove", "target", "--machine", "--force"])
+        .unwrap();
     assert!(cli.machine);
     match cli.command {
-        Some(Command::Remove(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Remove(args),
+        }) => {
             assert_eq!(args.targets, vec!["target".to_owned()]);
             assert!(args.force);
         }
-        command => panic!("expected remove command, got {command:?}"),
+        command => panic!("expected worktree remove command, got {command:?}"),
     }
 }
 
@@ -865,6 +871,7 @@ fn shell_init_output_renders_status() {
 fn remove_accepts_short_force_flag() {
     let cli = Cli::try_parse_from([
         "hz",
+        "worktree",
         "rm",
         "-r",
         "/repo",
@@ -877,7 +884,9 @@ fn remove_accepts_short_force_flag() {
     .unwrap();
 
     match cli.command {
-        Some(Command::Remove(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Remove(args),
+        }) => {
             assert_eq!(args.targets, vec!["target".to_owned()]);
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             assert!(args.json);
@@ -885,52 +894,76 @@ fn remove_accepts_short_force_flag() {
             assert!(args.force);
             assert!(args.no_cleanup);
         }
-        command => panic!("expected remove command, got {command:?}"),
+        command => panic!("expected worktree remove command, got {command:?}"),
     }
 }
 
 #[test]
 fn remove_accepts_multiple_targets() {
-    let cli = Cli::try_parse_from(["hz", "rm", "cartesian-alpha", "archimedean-beta"]).unwrap();
+    let cli = Cli::try_parse_from([
+        "hz",
+        "worktree",
+        "rm",
+        "cartesian-alpha",
+        "archimedean-beta",
+    ])
+    .unwrap();
 
     match cli.command {
-        Some(Command::Remove(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Remove(args),
+        }) => {
             assert_eq!(
                 args.targets,
                 vec!["cartesian-alpha".to_owned(), "archimedean-beta".to_owned()]
             );
         }
-        command => panic!("expected remove command, got {command:?}"),
+        command => panic!("expected worktree remove command, got {command:?}"),
     }
 }
 
 #[test]
 fn handoff_accepts_optional_branch_and_path_only() {
-    let cli = Cli::try_parse_from(["hz", "handoff", "-r", "/repo", "-j", "feature/ui"]).unwrap();
+    let cli = Cli::try_parse_from([
+        "hz",
+        "worktree",
+        "handoff",
+        "-r",
+        "/repo",
+        "-j",
+        "feature/ui",
+    ])
+    .unwrap();
 
     match cli.command {
-        Some(Command::Handoff(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Handoff(args),
+        }) => {
             assert_eq!(args.target.as_deref(), Some("feature/ui"));
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             assert!(args.json);
             assert!(!args.branch);
             assert!(!args.create);
         }
-        command => panic!("expected handoff command, got {command:?}"),
+        command => panic!("expected worktree handoff command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "handoff", "708e", "-b", "--path-only"]).unwrap();
+    let cli =
+        Cli::try_parse_from(["hz", "worktree", "handoff", "708e", "-b", "--path-only"]).unwrap();
     match cli.command {
-        Some(Command::Handoff(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Handoff(args),
+        }) => {
             assert_eq!(args.target.as_deref(), Some("708e"));
             assert!(args.branch);
             assert!(args.path_only);
         }
-        command => panic!("expected handoff command, got {command:?}"),
+        command => panic!("expected worktree handoff command, got {command:?}"),
     }
 
     let cli = Cli::try_parse_from([
         "hz",
+        "worktree",
         "handoff",
         "--new",
         "--max-detached",
@@ -941,19 +974,23 @@ fn handoff_accepts_optional_branch_and_path_only() {
     ])
     .unwrap();
     match cli.command {
-        Some(Command::Handoff(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Handoff(args),
+        }) => {
             assert_eq!(args.target.as_deref(), Some("feature/ui"));
             assert!(args.create);
             assert_eq!(args.max_detached, Some(3));
             assert_eq!(args.max_branch_worktrees, Some(4));
         }
-        command => panic!("expected handoff command, got {command:?}"),
+        command => panic!("expected worktree handoff command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "handoff"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "worktree", "handoff"]).unwrap();
     match cli.command {
-        Some(Command::Handoff(args)) => assert_eq!(args.target, None),
-        command => panic!("expected handoff command, got {command:?}"),
+        Some(Command::Worktree {
+            command: WorktreeCommand::Handoff(args),
+        }) => assert_eq!(args.target, None),
+        command => panic!("expected worktree handoff command, got {command:?}"),
     }
 }
 
@@ -961,6 +998,7 @@ fn handoff_accepts_optional_branch_and_path_only() {
 fn creation_accepts_short_flags() {
     let cli = Cli::try_parse_from([
         "hz",
+        "worktree",
         "new",
         "-r",
         "/repo",
@@ -982,7 +1020,9 @@ fn creation_accepts_short_flags() {
     .unwrap();
 
     match cli.command {
-        Some(Command::New(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::New(args),
+        }) => {
             assert_eq!(args.name.as_deref(), Some("handle"));
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             assert_eq!(args.path, Some(PathBuf::from("../wt")));
@@ -995,7 +1035,7 @@ fn creation_accepts_short_flags() {
             assert!(!args.setup);
             assert!(args.no_setup);
         }
-        command => panic!("expected new command, got {command:?}"),
+        command => panic!("expected worktree new command, got {command:?}"),
     }
 }
 
@@ -1003,6 +1043,7 @@ fn creation_accepts_short_flags() {
 fn fork_accepts_named_detached_options() {
     let cli = Cli::try_parse_from([
         "hz",
+        "worktree",
         "fork",
         "copy",
         "-r",
@@ -1018,7 +1059,9 @@ fn fork_accepts_named_detached_options() {
     .unwrap();
 
     match cli.command {
-        Some(Command::Fork(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Fork(args),
+        }) => {
             assert_eq!(args.name.as_deref(), Some("copy"));
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             assert_eq!(args.path, Some(PathBuf::from("/tmp/copy")));
@@ -1027,68 +1070,84 @@ fn fork_accepts_named_detached_options() {
             assert!(args.json);
             assert!(args.path_only);
         }
-        command => panic!("expected fork command, got {command:?}"),
+        command => panic!("expected worktree fork command, got {command:?}"),
     }
 }
 
 #[test]
 fn path_and_list_accept_short_flags() {
-    let cli = Cli::try_parse_from(["hz", "path", "-r", "/repo", "-j", "target"]).unwrap();
+    let cli =
+        Cli::try_parse_from(["hz", "worktree", "path", "-r", "/repo", "-j", "target"]).unwrap();
     match cli.command {
-        Some(Command::Path(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Path(args),
+        }) => {
             assert_eq!(args.target.as_deref(), Some("target"));
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             assert!(args.json);
         }
-        command => panic!("expected path command, got {command:?}"),
+        command => panic!("expected worktree path command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "ls", "-r", "/repo", "-j"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "worktree", "ls", "-r", "/repo", "-j"]).unwrap();
     match cli.command {
-        Some(Command::List(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::List(args),
+        }) => {
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             assert!(!args.pinned);
             assert!(!args.unpinned);
             assert!(args.json);
         }
-        command => panic!("expected list command, got {command:?}"),
+        command => panic!("expected worktree list command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "ls", "--pinned"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "worktree", "ls", "--pinned"]).unwrap();
     match cli.command {
-        Some(Command::List(args)) => assert!(args.pinned),
-        command => panic!("expected list command, got {command:?}"),
+        Some(Command::Worktree {
+            command: WorktreeCommand::List(args),
+        }) => assert!(args.pinned),
+        command => panic!("expected worktree list command, got {command:?}"),
     }
 
-    assert!(Cli::try_parse_from(["hz", "ls", "--pinned", "--unpinned"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "worktree", "ls", "--pinned", "--unpinned"]).is_err());
 
-    let cli = Cli::try_parse_from(["hz", "pwd", "-r", "/repo", "-j"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "worktree", "pwd", "-r", "/repo", "-j"]).unwrap();
     match cli.command {
-        Some(Command::Pwd(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Pwd(args),
+        }) => {
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             assert!(args.json);
         }
-        command => panic!("expected pwd command, got {command:?}"),
+        command => panic!("expected worktree pwd command, got {command:?}"),
     }
 }
 
 #[test]
 fn pin_and_unpin_accept_multiple_targets() {
-    let cli = Cli::try_parse_from(["hz", "pin", "-r", "/repo", "-j", "alpha", "beta"]).unwrap();
+    let cli = Cli::try_parse_from([
+        "hz", "worktree", "pin", "-r", "/repo", "-j", "alpha", "beta",
+    ])
+    .unwrap();
 
     match cli.command {
-        Some(Command::Pin(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Pin(args),
+        }) => {
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             assert!(args.json);
             assert_eq!(args.targets, vec!["alpha".to_owned(), "beta".to_owned()]);
         }
-        command => panic!("expected pin command, got {command:?}"),
+        command => panic!("expected worktree pin command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "unpin", "alpha"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "worktree", "unpin", "alpha"]).unwrap();
     match cli.command {
-        Some(Command::Unpin(args)) => assert_eq!(args.targets, vec!["alpha".to_owned()]),
-        command => panic!("expected unpin command, got {command:?}"),
+        Some(Command::Worktree {
+            command: WorktreeCommand::Unpin(args),
+        }) => assert_eq!(args.targets, vec!["alpha".to_owned()]),
+        command => panic!("expected worktree unpin command, got {command:?}"),
     }
 }
 
@@ -1102,6 +1161,25 @@ fn worktree_pwd_is_available_under_worktree_group() {
         }) => assert_eq!(args.repo, Some(PathBuf::from("/repo"))),
         command => panic!("expected worktree pwd command, got {command:?}"),
     }
+}
+
+#[test]
+fn worktree_cd_alias_is_available_under_worktree_group() {
+    let cli = Cli::try_parse_from(["hz", "worktree", "cd", "feature/ui"]).unwrap();
+
+    match cli.command {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Path(args),
+        }) => assert_eq!(args.target.as_deref(), Some("feature/ui")),
+        command => panic!("expected worktree cd alias command, got {command:?}"),
+    }
+}
+
+#[test]
+fn worktree_commands_are_not_top_level_commands() {
+    assert!(Cli::try_parse_from(["hz", "new", "feature/ui"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "cd", "feature/ui"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "rm", "feature/ui"]).is_err());
 }
 
 #[test]
@@ -1311,24 +1389,10 @@ fn init_install_and_lifecycle_commands_parse() {
         command => panic!("expected install command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "setup", "-r", "/repo", "--json", "target"]).unwrap();
-    match cli.command {
-        Some(Command::Setup(args)) => {
-            assert_eq!(args.target.as_deref(), Some("target"));
-            assert_eq!(args.repo, Some(PathBuf::from("/repo")));
-            assert!(args.json);
-        }
-        command => panic!("expected setup command, got {command:?}"),
-    }
-
-    let cli = Cli::try_parse_from(["hz", "cleanup"]).unwrap();
-    match cli.command {
-        Some(Command::Cleanup(args)) => {
-            assert_eq!(args.target, None);
-            assert!(!args.json);
-        }
-        command => panic!("expected cleanup command, got {command:?}"),
-    }
+    assert!(Cli::try_parse_from(["hz", "setup", "-r", "/repo", "--json", "target"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "cleanup"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "worktree", "setup", "target"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "agent", "cleanup", "target"]).is_err());
 
     let cli = Cli::try_parse_from([
         "hz",
@@ -1527,46 +1591,65 @@ fn force_skips_unmanaged_removal_confirmation() {
 
 #[test]
 fn repo_lifecycle_hooks_require_explicit_create_or_remove_flags() {
-    let cli = Cli::try_parse_from(["hz", "new", "handle"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "worktree", "new", "handle"]).unwrap();
     match cli.command {
-        Some(Command::New(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::New(args),
+        }) => {
             assert!(!args.setup);
             assert!(!args.no_setup);
         }
-        command => panic!("expected new command, got {command:?}"),
+        command => panic!("expected worktree new command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "new", "--setup", "handle"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "worktree", "new", "--setup", "handle"]).unwrap();
     match cli.command {
-        Some(Command::New(args)) => assert!(args.setup),
-        command => panic!("expected new command, got {command:?}"),
+        Some(Command::Worktree {
+            command: WorktreeCommand::New(args),
+        }) => assert!(args.setup),
+        command => panic!("expected worktree new command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "rm", "--cleanup", "handle"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "worktree", "rm", "--cleanup", "handle"]).unwrap();
     match cli.command {
-        Some(Command::Remove(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Remove(args),
+        }) => {
             assert!(args.cleanup);
             assert!(!args.no_cleanup);
         }
-        command => panic!("expected remove command, got {command:?}"),
+        command => panic!("expected worktree remove command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "new", "--setup", "--no-setup", "handle"]).unwrap();
+    let cli =
+        Cli::try_parse_from(["hz", "worktree", "new", "--setup", "--no-setup", "handle"]).unwrap();
     match cli.command {
-        Some(Command::New(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::New(args),
+        }) => {
             assert!(args.setup);
             assert!(args.no_setup);
         }
-        command => panic!("expected new command, got {command:?}"),
+        command => panic!("expected worktree new command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "rm", "--cleanup", "--no-cleanup", "handle"]).unwrap();
+    let cli = Cli::try_parse_from([
+        "hz",
+        "worktree",
+        "rm",
+        "--cleanup",
+        "--no-cleanup",
+        "handle",
+    ])
+    .unwrap();
     match cli.command {
-        Some(Command::Remove(args)) => {
+        Some(Command::Worktree {
+            command: WorktreeCommand::Remove(args),
+        }) => {
             assert!(args.cleanup);
             assert!(args.no_cleanup);
         }
-        command => panic!("expected remove command, got {command:?}"),
+        command => panic!("expected worktree remove command, got {command:?}"),
     }
 }
 

@@ -8,57 +8,55 @@ function hz
 
     set cmd $argv[1]
     switch $cmd
-        case new fork
-            for arg in $argv
-                switch $arg
-                    case --json --machine --path-only --help -h -j
-                        command hz $argv
-                        return
-                end
+        case worktree wt
+            if test (count $argv) -lt 2
+                command hz $argv
+                return
             end
 
-            set hz_target_path (command hz $argv --path-only)
-            or return
-            builtin cd "$hz_target_path"
-            or return
-        case handoff
-            for arg in $argv
-                switch $arg
-                    case --json --machine --path-only --help -h -j
-                        command hz $argv
-                        return
-                end
-            end
+            set subcmd $argv[2]
+            switch $subcmd
+                case new fork handoff
+                    for arg in $argv
+                        switch $arg
+                            case --json --machine --path-only --help -h -j
+                                command hz $argv
+                                return
+                        end
+                    end
 
-            set hz_target_path (command hz $argv --path-only)
-            or return
-            builtin cd "$hz_target_path"
-            or return
-        case cd
-            set rest $argv[2..-1]
-            for arg in $rest
-                switch $arg
-                    case --json --machine --path-only --help -h -j
-                        command hz $cmd $rest
-                        return
-                end
-            end
+                    set hz_target_path (command hz $argv --path-only)
+                    or return
+                    builtin cd "$hz_target_path"
+                    or return
+                case cd
+                    set rest $argv[3..-1]
+                    for arg in $rest
+                        switch $arg
+                            case --json --machine --path-only --help -h -j
+                                command hz $cmd $subcmd $rest
+                                return
+                        end
+                    end
 
-            set hz_target_path (command hz path $rest)
-            or return
-            builtin cd "$hz_target_path"
-            or return
+                    set hz_target_path (command hz $cmd path $rest)
+                    or return
+                    builtin cd "$hz_target_path"
+                    or return
+                case '*'
+                    command hz $argv
+            end
         case '*'
             command hz $argv
     end
 end
 
 function hzcd
-    hz cd $argv
+    hz worktree cd $argv
 end
 
 function hzlocal
-    hz cd local $argv
+    hz worktree cd local $argv
 end
 
 function __hz_complete_worktree_targets
@@ -224,14 +222,14 @@ complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm pin unpin handoff init install setup cleanup shell update worktree wt agent" -a "new fork path cd list ls pwd remove rm pin unpin handoff init install setup cleanup shell update worktree wt"
+complete -c hz -n "not __fish_seen_subcommand_from init install shell update worktree wt agent" -a "init install shell update worktree wt"
 complete -c hz -n "__hz_needs_worktree_subcommand" -a "new fork path cd list ls pwd remove rm pin unpin handoff"
-complete -c hz -n "__hz_needs_agent_subcommand" -a "new fork path cd list ls pwd current remove rm pin unpin handoff setup cleanup"
+complete -c hz -n "__hz_needs_agent_subcommand" -a "new fork path cd list ls pwd current remove rm pin unpin handoff"
 
-complete -c hz -n "__hz_command_is cd path handoff setup cleanup" -a "(__hz_complete_worktree_targets)"
+complete -c hz -n "__hz_command_is cd path handoff" -a "(__hz_complete_worktree_targets)"
 complete -c hz -n "__hz_command_is rm remove pin unpin" -a "(__hz_complete_removable_worktrees)"
 complete -c hz -n "__hz_top_command_is init install shell" -a "zsh bash fish"
-complete -c hz -n "__hz_command_is new fork path cd list ls pwd current remove rm pin unpin handoff init setup cleanup" -s r -l repo -r -F
+complete -c hz -n "__hz_command_is new fork path cd list ls pwd current remove rm pin unpin handoff init" -s r -l repo -r -F
 complete -c hz -n "__hz_command_is new fork" -s p -l path -r -F
 complete -c hz -n "__hz_command_is new" -s B -l base -r -a "(__hz_complete_git_refs)"
 complete -c hz -n "__hz_command_is new" -s b -l branch -r -a "(__hz_complete_git_refs)"
@@ -242,7 +240,7 @@ complete -c hz -n "__hz_command_is new" -l setup
 complete -c hz -n "__hz_command_is fork" -l no-diff
 complete -c hz -n "__hz_command_is list ls" -l pinned
 complete -c hz -n "__hz_command_is list ls" -l unpinned
-complete -c hz -n "__hz_command_is new fork path cd list ls pwd current remove rm pin unpin handoff setup cleanup" -s j -l json
+complete -c hz -n "__hz_command_is new fork path cd list ls pwd current remove rm pin unpin handoff" -s j -l json
 complete -c hz -n "__hz_command_is new remove rm" -s d -l debug
 complete -c hz -n "__hz_command_is remove rm" -s f -l force
 complete -c hz -n "__hz_command_is remove rm" -l yes
@@ -265,4 +263,4 @@ complete -c hzlocal -f
 complete -c hzlocal -s r -l repo -r -F
 complete -c hzlocal -s j -l json
 complete -c hzlocal -s h -l help
-complete -c hz -n "not __fish_seen_subcommand_from new fork path cd list ls pwd remove rm pin unpin handoff init install setup cleanup shell update worktree wt" -s V -l version
+complete -c hz -n "not __fish_seen_subcommand_from init install shell update worktree wt" -s V -l version

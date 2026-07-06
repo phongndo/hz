@@ -20,16 +20,14 @@ examples:
   hz
   hz init
   hz install zsh
-  hz new feature/ui
-  hz --machine list
-  hz fork
-  hz ls
-  hz pwd
-  hz rm -f feature/ui
-  hz setup feature/ui
-  hz cleanup feature/ui
-  hz cd feature/ui
-  hz handoff feature/ui";
+  hz worktree new feature/ui
+  hz --machine worktree list
+  hz worktree fork
+  hz worktree ls
+  hz worktree pwd
+  hz worktree rm -f feature/ui
+  hz worktree cd feature/ui
+  hz worktree handoff feature/ui";
 
 pub(crate) const INSTALL_SCRIPT: &str = include_str!("../../../scripts/install.sh");
 pub(crate) const RELEASE_REPO: &str = "phongndo/hz";
@@ -62,7 +60,7 @@ pub(crate) fn help_styles() -> Styles {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    #[command(alias = "wt", about = "Explicit worktree command namespace")]
+    #[command(alias = "wt", about = "Manage Git worktrees")]
     Worktree {
         #[command(subcommand)]
         command: WorktreeCommand,
@@ -72,32 +70,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: AgentCommand,
     },
-    #[command(about = "Create an isolated Git worktree for a task or agent")]
-    New(NewWorktreeArgs),
-    #[command(about = "Fork the current worktree state into a detached worktree")]
-    Fork(ForkWorktreeArgs),
-    #[command(alias = "cd", about = "Print the directory for a worktree")]
-    Path(PathWorktreeArgs),
-    #[command(alias = "ls", about = "List worktrees")]
-    List(ListWorktreeArgs),
-    #[command(about = "Print the current worktree target")]
-    Pwd(PwdWorktreeArgs),
-    #[command(alias = "rm", about = "Remove one or more worktrees")]
-    Remove(RemoveWorktreeArgs),
-    #[command(about = "Pin worktrees so auto-prune will not remove them")]
-    Pin(PinWorktreeArgs),
-    #[command(about = "Unpin worktrees so auto-prune may remove them")]
-    Unpin(PinWorktreeArgs),
-    #[command(about = "Apply changes between local and a linked worktree")]
-    Handoff(HandoffWorktreeArgs),
     #[command(about = "Initialize hz repo lifecycle config")]
     Init(InitArgs),
     #[command(about = "Install shell integration into your shell rc file")]
     Install(ShellArgs),
-    #[command(about = "Run the configured setup command for a worktree")]
-    Setup(LifecycleArgs),
-    #[command(about = "Run the configured cleanup command for a worktree")]
-    Cleanup(LifecycleArgs),
     #[command(about = "Print shell integration script")]
     Shell(ShellArgs),
     #[command(
@@ -155,10 +131,6 @@ pub(crate) enum AgentCommand {
     Unpin(PinWorktreeArgs),
     #[command(about = "Apply changes between linked worktrees and print JSON")]
     Handoff(HandoffWorktreeArgs),
-    #[command(about = "Run setup lifecycle and print JSON")]
-    Setup(LifecycleArgs),
-    #[command(about = "Run cleanup lifecycle and print JSON")]
-    Cleanup(LifecycleArgs),
 }
 
 #[derive(Debug, Args)]
@@ -294,15 +266,6 @@ pub(crate) struct InitArgs {
 #[derive(Debug, Args)]
 pub(crate) struct ShellArgs {
     pub(crate) shell: ShellArg,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct LifecycleArgs {
-    pub(crate) target: Option<String>,
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
-    #[arg(short = 'j', long)]
-    pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]

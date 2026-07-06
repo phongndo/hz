@@ -1,7 +1,6 @@
 mod agent;
 mod args;
 mod complete;
-mod lifecycle;
 mod removal;
 mod repo_shell;
 #[cfg(test)]
@@ -25,7 +24,6 @@ use crate::{
         PathWorktreeArgs, PinWorktreeArgs, PwdWorktreeArgs, RemoveWorktreeArgs, WorktreeCommand,
     },
     complete::complete,
-    lifecycle::{run_lifecycle, run_lifecycle_json},
     removal::{handoff_worktree, remove_worktree, remove_worktree_json_array},
     repo_shell::{init_repo_or_shell, install_shell, shell_script},
     update::update,
@@ -117,31 +115,8 @@ fn run() -> CliResult<()> {
         None => write_default_help(io::stdout().lock()),
         Some(Command::Worktree { command }) => run_worktree_command(command, machine),
         Some(Command::Agent { command }) => run_agent_command(command),
-        Some(Command::New(args)) => create_worktree(machine_new_args(args, machine)),
-        Some(Command::Fork(args)) => fork_worktree(machine_fork_args(args, machine)),
-        Some(Command::Path(args)) => path_worktree(machine_path_args(args, machine)),
-        Some(Command::List(args)) => list_worktrees(machine_list_args(args, machine)),
-        Some(Command::Pwd(args)) => pwd_worktree(machine_pwd_args(args, machine)),
-        Some(Command::Remove(args)) => {
-            if machine {
-                remove_worktree_json_array(machine_remove_args(args, true))
-            } else {
-                remove_worktree(args)
-            }
-        }
-        Some(Command::Pin(args)) => pin_worktree(machine_pin_args(args, machine)),
-        Some(Command::Unpin(args)) => unpin_worktree(machine_pin_args(args, machine)),
-        Some(Command::Handoff(args)) => handoff_worktree(machine_handoff_args(args, machine)),
         Some(Command::Init(args)) => init_repo_or_shell(args),
         Some(Command::Install(args)) => install_shell(args),
-        Some(Command::Setup(args)) if machine => {
-            run_lifecycle_json(args, hz_command::LifecycleKind::Setup)
-        }
-        Some(Command::Setup(args)) => run_lifecycle(args, hz_command::LifecycleKind::Setup),
-        Some(Command::Cleanup(args)) if machine => {
-            run_lifecycle_json(args, hz_command::LifecycleKind::Cleanup)
-        }
-        Some(Command::Cleanup(args)) => run_lifecycle(args, hz_command::LifecycleKind::Cleanup),
         Some(Command::Shell(args)) => shell_script(args),
         Some(Command::Update(args)) => update(args),
         Some(Command::Complete(args)) => complete(args),

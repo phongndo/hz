@@ -21,11 +21,11 @@ to keep tightening before 1.0.
 
 - Creates isolated Git worktrees for parallel human or AI-agent tasks.
 - Forks the current worktree state into a detached scratch worktree.
-- Installs shell integration so `hz new`, `hz fork`, `hz cd`, and `hz handoff`
+- Installs shell integration so `hz worktree new`, `hz worktree fork`, `hz worktree cd`, and `hz worktree handoff`
   can change your current directory.
 - Applies uncommitted changes between linked worktrees without forcing a commit.
 - Moves branch ownership between worktrees when both sides are clean.
-- Runs repo-local setup and cleanup hooks on explicit opt-in commands for reproducible agent workspaces.
+- Runs repo-local setup and cleanup hooks on explicit opt-in create/remove flags for reproducible agent workspaces.
 - Exposes JSON and `--machine` modes for agents and automation.
 - Lists, finds, prunes, and removes managed and unmanaged worktrees.
 - Pins managed worktrees so auto-prune will not remove them.
@@ -41,34 +41,34 @@ git commit -m "Add hz lifecycle config"
 hz install zsh      # or bash/fish; restart or source your shell rc file
 
 # create an isolated workspace for a task/agent and cd into it
-hz new fix-login
+hz worktree new fix-login
 
 # run your terminal AI agent or manual workflow here
 # ...edit files...
 
 # hand the diff back to the linked local worktree and return there
-hz handoff
+hz worktree handoff
 
 # review with dx if desired, then clean up
 dx
-hz rm -f fix-login    # force is needed if the source worktree still has handed-off changes
+hz worktree rm -f fix-login    # force is needed if the source worktree still has handed-off changes
 ```
 
-Without shell integration, use `hz path <target>` to print a worktree path and
-`cd "$(hz path <target>)"` from your shell.
+Without shell integration, use `hz worktree path <target>` to print a worktree path and
+`cd "$(hz worktree path <target>)"` from your shell.
 
 For agents and scripts, prefer the machine-readable surface:
 
 ```sh
-hz --machine new fix-login --repo .
-hz --machine list --repo .
-hz --machine handoff fix-login --repo .
-hz --machine remove fix-login --repo . --force
+hz --machine worktree new fix-login --repo .
+hz --machine worktree list --repo .
+hz --machine worktree handoff fix-login --repo .
+hz --machine worktree remove fix-login --repo . --force
 ```
 
 `hz init` writes repo-local lifecycle files under `.hz/`. Commit them before
 starting the task flow above so the destination worktree is clean when
-`hz handoff` applies changes back to it. For a throwaway first demo where you do
+`hz worktree handoff` applies changes back to it. For a throwaway first demo where you do
 not need lifecycle hooks, skip `hz init`.
 
 ## Installation
@@ -122,43 +122,43 @@ source ~/.zshrc
 
 ### Worktrees
 
-`hz new` creates a scratch Git worktree with a human-facing handle and a UUID
+`hz worktree new` creates a scratch Git worktree with a human-facing handle and a UUID
 directory under `~/.hz/worktrees/<repo>/` by default. Pass a name or `--branch`
 to create a branch-backed worktree:
 
 ```sh
-hz new fix-login
-hz fork
-hz new
-hz ls
-hz pwd
-hz path fix-login
-hz cd fix-login
-hz setup fix-login
-hz cleanup fix-login
-hz cd
-hz rm fix-login
+hz worktree new fix-login
+hz worktree fork
+hz worktree new
+hz worktree ls
+hz worktree pwd
+hz worktree path fix-login
+hz worktree cd fix-login
+hz worktree cd
+hz worktree rm fix-login
 ```
 
-`hz new` without a name generates a four-character lowercase alphanumeric handle
+Use `hz wt ...` as a shorter alias for `hz worktree ...`.
+
+`hz worktree new` without a name generates a four-character lowercase alphanumeric handle
 and leaves the worktree on a detached `HEAD`. Managed worktrees are registered
 in `~/.hz/registry.json`.
 
-`hz pwd` prints the current worktree target (`local`, a branch name, or a
+`hz worktree pwd` prints the current worktree target (`local`, a branch name, or a
 detached handle). Pass `--json` to include the target, repo, and path.
 
-`hz fork` creates a new detached worktree at the current `HEAD` and applies the
+`hz worktree fork` creates a new detached worktree at the current `HEAD` and applies the
 current worktree diff there, including untracked files. The source worktree is
 left unchanged. Pass an optional handle to name the detached fork, or
 `--no-diff` to fork only the current `HEAD` without copying local changes:
 
 ```sh
-hz fork
-hz fork alt-try
-hz fork --no-diff
+hz worktree fork
+hz worktree fork alt-try
+hz worktree fork --no-diff
 ```
 
-`hz ls`, `hz cd`, and `hz rm` also detect unmanaged Git worktrees created by
+`hz worktree ls`, `hz worktree cd`, and `hz worktree rm` also detect unmanaged Git worktrees created by
 other tools. Removing an unmanaged worktree outside `~/.hz/worktrees/<repo>/`
 asks for confirmation because the path is not in `hz`'s worktree namespace. Add
 `[worktree].user_managed_roots` in `.hz/hz.toml` for other directories that
@@ -168,9 +168,9 @@ Detached scratch worktrees are capped at 10 by default. Creating another
 detached worktree auto-removes the oldest clean managed detached worktrees until
 the cap is satisfied. Pinned, branch-backed, unmanaged, dirty, unknown, and
 current worktrees are not auto-removed. If there are not enough removable
-worktrees, `hz new` and `hz handoff --new` refuse to create another detached
+worktrees, `hz worktree new` and `hz worktree handoff --new` refuse to create another detached
 worktree. Set `[worktree].max_detached` in `.hz/hz.toml`, or pass
-`--max-detached <count>` to `hz new` or `hz handoff --new`; `0` disables
+`--max-detached <count>` to `hz worktree new` or `hz worktree handoff --new`; `0` disables
 auto-pruning.
 
 Branch-backed worktrees are also capped at 10 by default. Creating another
@@ -179,13 +179,13 @@ worktrees until the cap is satisfied. Removing a branch-backed worktree removes
 only the checkout; the Git branch remains in the repo and can be checked out
 again later. Pinned, detached, unmanaged, dirty, unknown, and current
 worktrees are not auto-removed. Set `[worktree].max_branch_worktrees` in
-`.hz/hz.toml`, or pass `--max-branch-worktrees <count>` to `hz new` or
-branch-backed `hz handoff --new`; `0` disables auto-pruning.
+`.hz/hz.toml`, or pass `--max-branch-worktrees <count>` to `hz worktree new` or
+branch-backed `hz worktree handoff --new`; `0` disables auto-pruning.
 
-Use `hz pin <target...>` to keep managed worktrees out of auto-prune, and
-`hz unpin <target...>` to make them eligible again. `hz ls --pinned` shows only
-pinned worktrees; `hz ls --unpinned` shows only unpinned worktrees. Pinned
-worktrees can still be removed explicitly with `hz rm`.
+Use `hz worktree pin <target...>` to keep managed worktrees out of auto-prune, and
+`hz worktree unpin <target...>` to make them eligible again. `hz worktree ls --pinned` shows only
+pinned worktrees; `hz worktree ls --unpinned` shows only unpinned worktrees. Pinned
+worktrees can still be removed explicitly with `hz worktree rm`.
 
 Auto-pruning is enabled by default. Set `[worktree].auto_prune = false` to opt
 into keeping managed worktrees instead of deleting them at the configured
@@ -204,8 +204,8 @@ default_base = "dev"
 user_managed_roots = ["~/.codex/worktrees"]
 ```
 
-With that config, `hz new feature/ui` behaves like
-`hz new feature/ui --base dev`. Passing `--base main` still wins for deliberate
+With that config, `hz worktree new feature/ui` behaves like
+`hz worktree new feature/ui --base dev`. Passing `--base main` still wins for deliberate
 main-based work.
 
 Ignored local files are not present in a fresh Git worktree. To copy selected
@@ -225,7 +225,7 @@ destination files are never overwritten.
 
 ### Shell integration
 
-`hz cd` prints a path for scripts. To make `hz new` and `hz cd` change the
+`hz worktree cd` prints a path for scripts. To make `hz worktree new` and `hz worktree cd` change the
 current shell directory, run `hz install <shell>` once to update your shell rc
 file:
 
@@ -236,45 +236,43 @@ hz install fish
 ```
 
 For zsh, this updates `~/.zshrc`. Restart your shell or run `source ~/.zshrc`
-after install. With the integration loaded, plain `hz new ...` or `hz fork ...`
-creates the worktree and changes into it, and `hz cd` returns to the local repo
+after install. With the integration loaded, plain `hz worktree new ...` or `hz worktree fork ...`
+creates the worktree and changes into it, and `hz worktree cd` returns to the local repo
 root.
 `--json`, `--path-only`, and help calls still pass through to the real binary
 without changing directories.
 
 The shell integration also installs completions for zsh, bash, and fish.
-Completions include command aliases such as `hz cd`, `hz ls`, and `hz rm`,
+Completions include command aliases such as `hz worktree cd`, `hz worktree ls`, and `hz worktree rm`,
 nested `hz worktree ...` commands, command flags such as `--machine`, shell
 names for `hz init`/`hz shell`, and live worktree targets for commands that
 accept them.
 
 ### Human and machine-readable output
 
-By default, top-level commands are human-facing. They keep terminal output
-readable and, when shell integration is installed, commands such as `hz new`,
-`hz fork`, `hz cd`, and `hz handoff` can change the current shell directory.
+By default, commands are human-facing. They keep terminal output
+readable and, when shell integration is installed, commands such as `hz worktree new`,
+`hz worktree fork`, `hz worktree cd`, and `hz worktree handoff` can change the current shell directory.
 
 Pass `--json` to data-producing commands when another process needs parseable
 stdout. Pass `--machine` to force JSON, bypass shell auto-cd, and refuse unsafe
 prompts in non-interactive paths:
 
 ```sh
-hz pwd --json
-hz path fix-login --json
-hz setup fix-login --json
-hz cleanup fix-login --json
-hz --machine list
+hz worktree pwd --json
+hz worktree path fix-login --json
+hz --machine worktree list
 ```
 
 For compatibility, `hz agent ...` remains as a machine-readable alias for the
-same worktree and lifecycle commands.
+same worktree commands.
 
 ### Handoff
 
-`hz handoff` applies the current worktree's uncommitted diff to its linked
+`hz worktree handoff` applies the current worktree's uncommitted diff to its linked
 counterpart by default. From a linked worktree it applies the patch to `local`.
-From `local`, pass a worktree handle such as `hz handoff fix-login` to apply the
-local patch there. After a patch handoff, running `hz handoff` from `local`
+From `local`, pass a worktree handle such as `hz worktree handoff fix-login` to apply the
+local patch there. After a patch handoff, running `hz worktree handoff` from `local`
 defaults back to the last linked worktree. The destination must be clean unless
 its current diff still matches the last patch handed off between that pair; in
 that case `hz` safely replaces it with the source diff. Source changes are left
@@ -282,11 +280,11 @@ in place. With shell integration loaded, successful handoffs change into the
 destination worktree unless `--json`, `--machine`, `--path-only`, or help is
 passed.
 
-Use `hz handoff --new` to create a new detached destination worktree and apply
-the current patch there. Use `hz handoff --new fix-login` to create a
+Use `hz worktree handoff --new` to create a new detached destination worktree and apply
+the current patch there. Use `hz worktree handoff --new fix-login` to create a
 branch-backed destination worktree named `fix-login`.
 
-Use `hz handoff <worktree> --branch` to move branch ownership instead of
+Use `hz worktree handoff <worktree> --branch` to move branch ownership instead of
 applying a patch. Branch handoff is clean-only on both sides.
 
 ### Diff review
@@ -328,21 +326,19 @@ cleanup = [".hz/environment/cleanup"]
 
 `.hz/environment/setup` and `.hz/environment/cleanup` are executable script
 files. Edit them to contain the repo setup and cleanup commands an agent
-worktree should run. `hz new --setup` runs the configured setup command after
-creating a worktree, and `hz rm --cleanup` runs the configured cleanup command
+worktree should run. `hz worktree new --setup` runs the configured setup command after
+creating a worktree, and `hz worktree rm --cleanup` runs the configured cleanup command
 before removing one. Use `--no-setup` or `--no-cleanup` to explicitly suppress a
-hook when using aliases or wrapper scripts. Use `hz setup [target]` or
-`hz cleanup [target]` to run a hook manually. Hook stdout
-is forwarded to stderr so `--json` and `--path-only` output stays
-machine-readable.
+hook when using aliases or wrapper scripts. Hook stdout is forwarded to stderr
+so `--json` and `--path-only` output stays machine-readable.
 
 Lifecycle config is read from the target worktree. Commit `.hz/hz.toml` and any
-referenced scripts before opting in to `hz new --setup` for newly created
+referenced scripts before opting in to `hz worktree new --setup` for newly created
 worktrees.
 
 ### Config and display
 
-`hz ls` display is configurable from `.hz/hz.toml`:
+`hz worktree ls` display is configurable from `.hz/hz.toml`:
 
 ```toml
 [list]
@@ -357,7 +353,7 @@ scheme = "terminal"
 
 Columns can include `marker`, `target`, `branch`, `handle`, `status`, `base`,
 `modified`, and `path`. Color defaults to terminal-native ANSI colors so the
-user's terminal color scheme decides the actual palette. Custom `hz ls` color
+user's terminal color scheme decides the actual palette. Custom `hz worktree ls` color
 schemes can opt into different ANSI color names while still letting the terminal
 theme provide the actual colors.
 

@@ -262,6 +262,7 @@ fn create_fixture(hz: &Path, args: &CmdArgs) -> BenchResult<Fixture> {
         let output = run_hz(
             &context,
             &[
+                "worktree".into(),
                 "new".into(),
                 target.clone().into(),
                 "--repo".into(),
@@ -307,11 +308,17 @@ fn read_only_command_specs(fixture: &Fixture) -> Vec<CommandSpec> {
         },
         CommandSpec {
             name: "list-human",
-            args: vec!["list".into(), "--repo".into(), repo.clone()],
+            args: vec![
+                "worktree".into(),
+                "list".into(),
+                "--repo".into(),
+                repo.clone(),
+            ],
         },
         CommandSpec {
             name: "list-json",
             args: vec![
+                "worktree".into(),
                 "list".into(),
                 "--repo".into(),
                 repo.clone(),
@@ -320,11 +327,18 @@ fn read_only_command_specs(fixture: &Fixture) -> Vec<CommandSpec> {
         },
         CommandSpec {
             name: "path-local",
-            args: vec!["path".into(), "local".into(), "--repo".into(), repo.clone()],
+            args: vec![
+                "worktree".into(),
+                "path".into(),
+                "local".into(),
+                "--repo".into(),
+                repo.clone(),
+            ],
         },
         CommandSpec {
             name: "path-worktree",
             args: vec![
+                "worktree".into(),
                 "path".into(),
                 sample_target.into(),
                 "--repo".into(),
@@ -424,6 +438,7 @@ fn create_and_remove(
     let create = run_hz(
         context,
         &[
+            "worktree".into(),
             "new".into(),
             target.into(),
             "--repo".into(),
@@ -437,6 +452,7 @@ fn create_and_remove(
     let remove = run_hz(
         context,
         &[
+            "worktree".into(),
             "remove".into(),
             target.into(),
             "--repo".into(),
@@ -615,8 +631,11 @@ mod tests {
 
     #[test]
     fn display_command_includes_args() {
-        let command = display_command(Path::new("hz"), &["list".into(), "--json".into()]);
+        let command = display_command(
+            Path::new("hz"),
+            &["worktree".into(), "list".into(), "--json".into()],
+        );
 
-        assert_eq!(command, "hz list --json");
+        assert_eq!(command, "hz worktree list --json");
     }
 }

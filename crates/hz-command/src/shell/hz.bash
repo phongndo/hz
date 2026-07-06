@@ -8,51 +8,49 @@ hz() {
 
   local cmd="$1"
   case "$cmd" in
-    new|fork)
-      local arg
-      for arg in "$@"; do
-        case "$arg" in
-          --json|--machine|--path-only|--help|-h|-j)
-            command hz "$@"
-            return
-            ;;
-        esac
-      done
+    worktree|wt)
+      if [[ "$#" -lt 2 ]]; then
+        command hz "$@"
+        return
+      fi
 
-      local hz_target_path
-      hz_target_path="$(command hz "$@" --path-only)" || return
-      builtin cd "$hz_target_path" || return
-      ;;
-    handoff)
-      local arg
-      for arg in "$@"; do
-        case "$arg" in
-          --json|--machine|--path-only|--help|-h|-j)
-            command hz "$@"
-            return
-            ;;
-        esac
-      done
+      local subcmd="$2"
+      case "$subcmd" in
+        new|fork|handoff)
+          local arg
+          for arg in "$@"; do
+            case "$arg" in
+              --json|--machine|--path-only|--help|-h|-j)
+                command hz "$@"
+                return
+                ;;
+            esac
+          done
 
-      local hz_target_path
-      hz_target_path="$(command hz "$@" --path-only)" || return
-      builtin cd "$hz_target_path" || return
-      ;;
-    cd)
-      shift
-      local arg
-      for arg in "$@"; do
-        case "$arg" in
-          --json|--machine|--path-only|--help|-h|-j)
-            command hz "$cmd" "$@"
-            return
-            ;;
-        esac
-      done
+          local hz_target_path
+          hz_target_path="$(command hz "$@" --path-only)" || return
+          builtin cd "$hz_target_path" || return
+          ;;
+        cd)
+          shift 2
+          local arg
+          for arg in "$@"; do
+            case "$arg" in
+              --json|--machine|--path-only|--help|-h|-j)
+                command hz "$cmd" "$subcmd" "$@"
+                return
+                ;;
+            esac
+          done
 
-      local hz_target_path
-      hz_target_path="$(command hz path "$@")" || return
-      builtin cd "$hz_target_path" || return
+          local hz_target_path
+          hz_target_path="$(command hz "$cmd" path "$@")" || return
+          builtin cd "$hz_target_path" || return
+          ;;
+        *)
+          command hz "$@"
+          ;;
+      esac
       ;;
     *)
       command hz "$@"
@@ -61,16 +59,16 @@ hz() {
 }
 
 hzcd() {
-  hz cd "$@"
+  hz worktree cd "$@"
 }
 
 hzlocal() {
-  hz cd local "$@"
+  hz worktree cd local "$@"
 }
 
-_hz_top_commands="new fork path cd list ls pwd remove rm pin unpin handoff init install setup cleanup shell update worktree wt"
+_hz_top_commands="init install shell update worktree wt"
 _hz_worktree_commands="new fork path cd list ls pwd remove rm pin unpin handoff"
-_hz_agent_commands="new fork path cd list ls pwd current remove rm pin unpin handoff setup cleanup"
+_hz_agent_commands="new fork path cd list ls pwd current remove rm pin unpin handoff"
 _hz_shells="zsh bash fish"
 
 _hz_reply() {
@@ -182,7 +180,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|pwd|current|remove|rm|pin|unpin|handoff|setup|cleanup|init)
+        new|fork|path|cd|list|ls|pwd|current|remove|rm|pin|unpin|handoff|init)
           _hz_complete_dirs "$current"
           return 0
           ;;
@@ -299,13 +297,6 @@ _hz_complete_command_args() {
     handoff)
       if [[ "$current" == -* ]]; then
         _hz_reply "-b --branch -n --new --max-detached --max-branch-worktrees -r --repo -j --json --machine -h --help" "$current"
-      else
-        _hz_dynamic_reply worktree-targets "$current"
-      fi
-      ;;
-    setup|cleanup)
-      if [[ "$current" == -* ]]; then
-        _hz_reply "-r --repo -j --json --machine -h --help" "$current"
       else
         _hz_dynamic_reply worktree-targets "$current"
       fi

@@ -51,26 +51,26 @@ checkout is removed; the Git branch remains available to check out later. Set it
 to `0` to disable auto-pruning.
 
 Pinned worktrees do not count toward these auto-prune limits. Use
-`hz pin <target...>` to make managed worktrees persistent, and
-`hz unpin <target...>` to make them eligible for auto-prune again.
-`hz ls --pinned` shows pinned worktrees; `hz ls --unpinned` shows unpinned
+`hz worktree pin <target...>` to make managed worktrees persistent, and
+`hz worktree unpin <target...>` to make them eligible for auto-prune again.
+`hz worktree ls --pinned` shows pinned worktrees; `hz worktree ls --unpinned` shows unpinned
 worktrees.
 
-`default_base` is the branch or revision used when `hz new` is called without
+`default_base` is the branch or revision used when `hz worktree new` is called without
 `--base`.
 
 ```sh
-hz new feature/ui
+hz worktree new feature/ui
 # behaves like:
-hz new feature/ui --base dev
+hz worktree new feature/ui --base dev
 ```
 
 Passing `--base` always overrides `default_base`.
 
 `user_managed_roots` adds directories whose Git worktrees at or under them
 should be treated as user-managed by `hz`, even when they are not in the
-registry. This keeps `hz rm` from prompting for those paths and runs the cleanup
-lifecycle for them when `hz rm --cleanup` is used. The default `~/.hz/worktrees/<repo>/` root is always
+registry. This keeps `hz worktree rm` from prompting for those paths and runs the cleanup
+lifecycle for them when `hz worktree rm --cleanup` is used. The default `~/.hz/worktrees/<repo>/` root is always
 included.
 
 Relative roots are resolved from the repository root. `~/` expands to `$HOME`.
@@ -103,7 +103,7 @@ columns = ["marker", "target", "status", "modified", "path"]
 compact_columns = ["marker", "target", "status"]
 ```
 
-`headers` controls the `hz ls` header row:
+`headers` controls the `hz worktree ls` header row:
 
 ```text
 auto    show headers in normal-width output, hide them in compact output
@@ -111,7 +111,7 @@ always  always show headers
 never   never show headers
 ```
 
-`columns` controls normal-width `hz ls` output. `compact_columns` controls
+`columns` controls normal-width `hz worktree ls` output. `compact_columns` controls
 narrow terminal output.
 
 Supported columns:
@@ -202,6 +202,6 @@ setup = [".hz/environment/setup"]
 cleanup = [".hz/environment/cleanup"]
 ```
 
-Lifecycle commands are argv arrays. Relative executable paths are resolved from
-the target worktree. `hz new --setup` runs `setup` after creating a worktree,
-and `hz rm --cleanup` runs `cleanup` before removing one.
+Lifecycle hooks are argv arrays. Relative executable paths are resolved from
+the target worktree. `hz worktree new --setup` runs `setup` after creating a worktree,
+and `hz worktree rm --cleanup` runs `cleanup` before removing one.

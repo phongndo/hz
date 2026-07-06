@@ -690,6 +690,8 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("'install:install shell integration'"));
     assert!(script.contains("'fork:fork the current worktree state'"));
     assert!(script.contains("'update:update hz from GitHub releases'"));
+    assert!(!script.contains("'setup:run worktree setup'"));
+    assert!(!script.contains("'cleanup:run worktree cleanup'"));
     assert!(!script.contains("'diff:review a git diff'"));
     assert!(!script.contains("'ts:manage diff syntax highlighting languages'"));
     assert!(!script.contains("tree-sitter"));
@@ -726,12 +728,12 @@ fn fish_integration_passes_json_short_flag_through() {
     assert!(script.contains("__hz_is_global_flag"));
     assert!(script.contains("__hz_complete_git_refs"));
     assert!(script.contains("complete -c hz -n \"__hz_command_is remove rm\""));
-    assert!(script.contains("init install setup cleanup shell update"));
+    assert!(script.contains("init install shell update worktree wt"));
     assert!(!script.contains(" diff "));
     assert!(!script.contains("__hz_command_is diff"));
     assert!(!script.contains("tree-sitter"));
     assert!(!script.contains("__hz_needs_ts_subcommand"));
-    assert!(script.contains("not __fish_seen_subcommand_from new fork path cd list ls"));
+    assert!(script.contains("not __fish_seen_subcommand_from init install shell update"));
     assert!(script.contains("-l setup"));
     assert!(script.contains("-l no-setup"));
     assert!(script.contains("-l cleanup"));
@@ -769,7 +771,7 @@ fn bash_integration_registers_completion() {
     assert!(script.contains("_hz_git_ref_reply"));
     assert!(script.contains("--branch)"));
     assert!(!script.contains("-b|--branch"));
-    assert!(script.contains("init install setup cleanup shell update"));
+    assert!(script.contains("init install shell update worktree wt"));
     assert!(!script.contains("tree-sitter"));
     assert!(!script.contains("_hz_complete_ts_args"));
     assert!(script.contains("--setup"));
