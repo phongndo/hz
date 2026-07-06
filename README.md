@@ -405,6 +405,8 @@ Run local checks:
 
 ```sh
 just setup
+just hooks       # validate hk.pkl config
+just hk-check     # run git pre-commit checks via hk
 just check
 just test
 just build

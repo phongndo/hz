@@ -1,0 +1,51 @@
+amends "package://github.com/jdx/hk/releases/download/v1.49.0/hk@1.49.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v1.49.0/hk@1.49.0#/Builtins.pkl"
+
+local linters = new Mapping<String, Step> {
+    ["cargo-fmt"] = (Builtins.cargo_fmt) {
+        // Uses cargo fmt with --manifest-path pointing to workspace Cargo.toml.
+        // Fixes formatting automatically on pre-commit.
+    }
+    ["cargo-clippy"] {
+        glob = "**/*.rs"
+        workspace_indicator = "Cargo.toml"
+        check = "cargo clippy --workspace --all-targets --all-features --locked --manifest-path {{workspace_indicator}} -- --deny warnings"
+        check_first = false
+        env {
+            ["CARGO_TERM_PROGRESS_WHEN"] = "never"
+        }
+    }
+    ["check-merge-conflict"] = Builtins.check_merge_conflict
+    ["check-added-large-files"] = Builtins.check_added_large_files
+}
+
+local slow = new Mapping<String, Step> {
+    ["rust-analyzer-diagnostics"] {
+        check = "rust-analyzer diagnostics ."
+    }
+    ["cargo-test"] {
+        check = "cargo test --workspace --all-targets --all-features --locked"
+        env {
+            ["CARGO_TERM_PROGRESS_WHEN"] = "never"
+        }
+    }
+}
+
+hooks {
+    ["pre-commit"] {
+        fix = true
+        stash = "git"
+        steps = linters
+    }
+    ["fix"] {
+        fix = true
+        steps = linters
+    }
+    ["check"] {
+        steps = linters
+    }
+    ["slow"] {
+        profiles = List("slow", "ci")
+        steps = slow
+    }
+}

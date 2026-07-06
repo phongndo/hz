@@ -7,14 +7,23 @@ check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+# Run hk checks (equivalent to pre-commit hook steps)
+hk-check:
+    mise x hk -- hk check
+
+# Run full hk checks including slow steps (requires --profile slow or --profile ci)
+hk-check-full:
+    mise x hk -- hk check --profile slow
+
 test:
     cargo test --workspace --all-targets --all-features --locked
 
 build:
     cargo build -p hz-cli --locked
 
-install-hooks:
-    git config core.hooksPath .githooks
+hooks:
+    mise x hk -- hk validate
+    @echo 'Global hk hooks are active (hk-pre-commit, hk-pre-push)'
 
 hz *args:
     cargo build -p hz-cli --locked

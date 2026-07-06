@@ -59,8 +59,9 @@ Use the cheapest useful check first while developing:
 
 ```sh
 just setup
-just install-hooks
+just hooks
 just check
+just hk-check
 just test
 just build
 just smoke
@@ -68,8 +69,10 @@ just hz --help
 hz --help
 ```
 
-`just install-hooks` configures Git to use the repo's versioned hooks from
-`.githooks`. The pre-commit hook runs `just check` before each commit.
+`just hooks` validates the hk config. Git hooks are managed globally by
+[hk](https://hk.jdx.dev) (`hk-pre-commit` runs `cargo fmt --check` and
+`cargo clippy` before each commit). The repo's hook steps are defined in
+[hk.pkl](./hk.pkl).
 
 The full local quality gate is:
 
