@@ -7,7 +7,7 @@
 creates isolated Git workspaces, makes it fast to move between them, hands off
 diffs safely, and runs repo-local lifecycle hooks.
 
-Diff review has moved to [`dx`](https://github.com/phongndo/dx) so workspace
+Diff review has moved to [`mark`](https://github.com/phongndo/mark) so workspace
 isolation and diff review can evolve as separate tools.
 
 ## Status
