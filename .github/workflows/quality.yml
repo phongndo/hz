@@ -143,6 +143,11 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Install zsh
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends zsh
+
       - name: Run integration suite
         run: scripts/ci/integration
 
