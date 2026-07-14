@@ -62,6 +62,11 @@ just setup
 just hooks
 just check
 just hk-check
+just ci-check
+just ci-rust
+just ci-integration
+just ci-performance
+just ci-workflows
 just test
 just build
 just smoke
@@ -125,6 +130,8 @@ sections and mark at least one verification command.
 
 ## CI
 
-`.github/workflows/quality.yml` runs rust-analyzer diagnostics, formatter,
-Clippy, workspace tests, a full workspace build, and a headless `hz-bench`
-smoke.
+[docs/ci.md](docs/ci.md) documents the required lanes, scheduled platform
+coverage, and release qualification model. Pull requests and pushes to `main`
+run change-aware correctness, MSRV, integration, performance, and workflow-lint
+lanes. The stable `CI gate` job is the branch-protection check; it fails if any
+selected lane fails or is cancelled.

@@ -7,6 +7,20 @@ check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+ci-check: ci-rust ci-integration ci-performance ci-workflows
+
+ci-rust:
+    scripts/ci/rust
+
+ci-integration:
+    scripts/ci/integration
+
+ci-performance:
+    scripts/ci/performance smoke
+
+ci-workflows:
+    actionlint -color
+
 # Run hk checks (equivalent to pre-commit hook steps)
 hk-check:
     mise x hk -- hk check

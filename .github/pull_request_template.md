@@ -13,11 +13,11 @@
 
 ## Verification
 
+- [ ] `just ci-rust`
+- [ ] `just ci-integration`
+- [ ] `just ci-performance`
+- [ ] `just ci-workflows`
 - [ ] `cargo check --workspace --all-targets --all-features --locked`
-- [ ] `cargo fmt --all --check`
-- [ ] `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
-- [ ] `cargo test --workspace --all-targets --all-features --locked`
-- [ ] `cargo build --workspace --all-targets --all-features --locked`
 - Not run:
 
 ## Risk

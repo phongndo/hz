@@ -1,0 +1,24 @@
+#!/usr/bin/env sh
+set -eux
+
+cargo build -p hz-cli --locked
+target/debug/hz --version
+target/debug/hz --help >/dev/null
+target/debug/hz shell zsh >/dev/null
+target/debug/hz shell bash >/dev/null
+target/debug/hz shell fish >/dev/null
+scripts/smoke-zsh
+scripts/smoke-installer-update
+
+dist_dir="$(mktemp -d)"
+trap 'rm -rf "$dist_dir"' EXIT INT TERM
+HZ_DIST_DIR="$dist_dir" scripts/ci/package-dist \
+  v0.0.0 ci target/debug/hz test-revision
+if command -v shasum >/dev/null 2>&1; then
+  (cd "$dist_dir" && shasum -a 256 -c ./*.sha256)
+else
+  (cd "$dist_dir" && sha256sum -c ./*.sha256)
+fi
+tar -tzf "$dist_dir/hz-v0.0.0-ci.tar.gz" > "$dist_dir/contents"
+grep -qx 'hz-v0.0.0-ci/hz' "$dist_dir/contents"
+grep -qx 'hz-v0.0.0-ci/REVISION' "$dist_dir/contents"

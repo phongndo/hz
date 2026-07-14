@@ -1,0 +1,40 @@
+#!/usr/bin/env sh
+set -eux
+
+mode="${1:-smoke}"
+case "$mode" in
+  smoke)
+    profile="debug"
+    worktrees=2
+    warmup=0
+    iterations=1
+    mutating=""
+    ;;
+  extended)
+    profile="release"
+    worktrees=12
+    warmup=1
+    iterations=3
+    mutating="--mutating"
+    ;;
+  *)
+    echo "usage: scripts/ci/performance [smoke|extended]" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$profile" = release ]; then
+  cargo build --release -p hz-cli --locked
+else
+  cargo build -p hz-cli --locked
+fi
+
+# Intentional word splitting for the optional flag.
+# shellcheck disable=SC2086
+cargo run -p hz-bench --locked -- cmd \
+  --hz "target/$profile/hz" \
+  --worktrees "$worktrees" \
+  --warmup "$warmup" \
+  --iterations "$iterations" \
+  $mutating \
+  --json

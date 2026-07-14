@@ -1,16 +1,17 @@
-name: Quality
+name: CI
 
 on:
   pull_request:
   push:
     branches:
       - main
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -18,13 +19,43 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  actionlint:
-    name: GitHub Actions workflow lint
+  changes:
+    name: Classify changes
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+      integration: ${{ steps.classify.outputs.integration }}
+      performance: ${{ steps.classify.outputs.performance }}
+      workflows: ${{ steps.classify.outputs.workflows }}
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Test CI helpers
+        run: python3 -m unittest discover -s scripts/ci -p 'test_*.py'
+
+      - name: Classify impacted lanes
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: scripts/ci/changes.py
+
+  workflow-lint:
+    name: Workflow lint
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
 
@@ -45,83 +76,149 @@ jobs:
       - name: Lint workflows
         run: actionlint -color
 
-  rust-analyzer:
-    name: Rust analyzer diagnostics
+  rust:
+    name: Rust correctness
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
-          components: rust-analyzer
+          toolchain: stable
+          components: rustfmt, clippy
 
-      - name: Run rust-analyzer diagnostics
-        run: rust-analyzer diagnostics .
+      - name: Run Rust suite
+        run: scripts/ci/rust
 
   msrv:
     name: MSRV (Rust 1.85)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
 
       - name: Install Rust 1.85
-        uses: dtolnay/rust-toolchain@1.85
-
-      - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
-          workspaces: . -> target
+          toolchain: "1.85"
+
+      - name: Restore MSRV cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check MSRV
         run: cargo check --workspace --all-targets --all-features --locked
 
-  quality:
-    name: Formatter, linter, tests, and build
+  integration:
+    name: CLI and installer integration
+    needs: changes
+    if: needs.changes.outputs.integration == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
-          components: rustfmt, clippy
+          toolchain: stable
 
-      - name: Check
-        run: cargo check --workspace --all-targets --all-features --locked
+      - name: Run integration suite
+        run: scripts/ci/integration
 
-      - name: Format
-        run: cargo fmt --all --check
+  performance:
+    name: Deterministic benchmark smoke
+    needs: changes
+    if: needs.changes.outputs.performance == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
 
-      - name: Lint
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
-      - name: Test
-        run: cargo test --workspace --all-targets --all-features --locked
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
 
-      - name: Build
-        run: cargo build --workspace --all-targets --all-features --locked
+      - name: Run benchmark smoke
+        run: scripts/ci/performance smoke
 
-      - name: Benchmark smoke
+  gate:
+    name: CI gate
+    needs:
+      - changes
+      - workflow-lint
+      - rust
+      - msrv
+      - integration
+      - performance
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Require every selected lane
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          WORKFLOW_SELECTED: ${{ needs.changes.outputs.workflows }}
+          WORKFLOW_RESULT: ${{ needs.workflow-lint.result }}
+          RUST_SELECTED: ${{ needs.changes.outputs.rust }}
+          RUST_RESULT: ${{ needs.rust.result }}
+          MSRV_RESULT: ${{ needs.msrv.result }}
+          INTEGRATION_SELECTED: ${{ needs.changes.outputs.integration }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          PERFORMANCE_SELECTED: ${{ needs.changes.outputs.performance }}
+          PERFORMANCE_RESULT: ${{ needs.performance.result }}
+        shell: bash
         run: |
-          cargo run -p hz-bench --locked -- cmd \
-            --hz target/debug/hz \
-            --worktrees 2 \
-            --warmup 0 \
-            --iterations 1 \
-            --json
+          set -euo pipefail
+          if [[ "$CHANGES_RESULT" != success ]]; then
+            echo "::error::change classification ended with $CHANGES_RESULT"
+            exit 1
+          fi
 
-      - name: Smoke installer and update
-        run: scripts/smoke-installer-update
+          failed=0
+          for entry in \
+            "workflow-lint:$WORKFLOW_SELECTED:$WORKFLOW_RESULT" \
+            "rust:$RUST_SELECTED:$RUST_RESULT" \
+            "msrv:$RUST_SELECTED:$MSRV_RESULT" \
+            "integration:$INTEGRATION_SELECTED:$INTEGRATION_RESULT" \
+            "performance:$PERFORMANCE_SELECTED:$PERFORMANCE_RESULT"
+          do
+            name="${entry%%:*}"
+            remainder="${entry#*:}"
+            selected="${remainder%%:*}"
+            result="${remainder#*:}"
+            if [[ "$selected" == true && "$result" != success ]]; then
+              echo "::error::$name was selected but ended with $result"
+              failed=1
+            elif [[ "$selected" != true && "$result" != skipped && "$result" != success ]]; then
+              echo "::error::$name unexpectedly ended with $result"
+              failed=1
+            fi
+          done
+          exit "$failed"

@@ -30,6 +30,7 @@
         {
           default = pkgs.mkShell {
             packages = with pkgs; [
+              actionlint
               cargo
               clippy
               coreutils
