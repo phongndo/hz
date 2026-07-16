@@ -1,4 +1,3 @@
-mod agent;
 mod args;
 mod complete;
 mod removal;
@@ -18,10 +17,9 @@ use clap::{CommandFactory, Parser};
 use hz_core::{HzError, HzResult};
 
 use crate::{
-    agent::run_agent_command,
     args::{
-        Cli, Command, ForkWorktreeArgs, HandoffWorktreeArgs, ListWorktreeArgs, NewWorktreeArgs,
-        PathWorktreeArgs, PinWorktreeArgs, PwdWorktreeArgs, RemoveWorktreeArgs, WorktreeCommand,
+        Cli, Command, ForkWorktreeArgs, GitCommand, HandoffWorktreeArgs, ListWorktreeArgs,
+        NewWorktreeArgs, PathWorktreeArgs, PinWorktreeArgs, PwdWorktreeArgs, RemoveWorktreeArgs,
     },
     complete::complete,
     removal::{handoff_worktree, remove_worktree, remove_worktree_json_array},
@@ -113,8 +111,7 @@ fn run() -> CliResult<()> {
 
     match cli.command {
         None => write_default_help(io::stdout().lock()),
-        Some(Command::Worktree { command }) => run_worktree_command(command, machine),
-        Some(Command::Agent { command }) => run_agent_command(command),
+        Some(Command::Git { command }) => run_git_command(command, machine),
         Some(Command::Init(args)) => init_repo_or_shell(args),
         Some(Command::Install(args)) => install_shell(args),
         Some(Command::Shell(args)) => shell_script(args),
@@ -123,23 +120,23 @@ fn run() -> CliResult<()> {
     }
 }
 
-fn run_worktree_command(command: WorktreeCommand, machine: bool) -> CliResult<()> {
+fn run_git_command(command: GitCommand, machine: bool) -> CliResult<()> {
     match command {
-        WorktreeCommand::New(args) => create_worktree(machine_new_args(args, machine)),
-        WorktreeCommand::Fork(args) => fork_worktree(machine_fork_args(args, machine)),
-        WorktreeCommand::Path(args) => path_worktree(machine_path_args(args, machine)),
-        WorktreeCommand::List(args) => list_worktrees(machine_list_args(args, machine)),
-        WorktreeCommand::Pwd(args) => pwd_worktree(machine_pwd_args(args, machine)),
-        WorktreeCommand::Remove(args) => {
+        GitCommand::New(args) => create_worktree(machine_new_args(args, machine)),
+        GitCommand::Fork(args) => fork_worktree(machine_fork_args(args, machine)),
+        GitCommand::Path(args) => path_worktree(machine_path_args(args, machine)),
+        GitCommand::List(args) => list_worktrees(machine_list_args(args, machine)),
+        GitCommand::Pwd(args) => pwd_worktree(machine_pwd_args(args, machine)),
+        GitCommand::Remove(args) => {
             if machine {
                 remove_worktree_json_array(machine_remove_args(args, true))
             } else {
                 remove_worktree(args)
             }
         }
-        WorktreeCommand::Pin(args) => pin_worktree(machine_pin_args(args, machine)),
-        WorktreeCommand::Unpin(args) => unpin_worktree(machine_pin_args(args, machine)),
-        WorktreeCommand::Handoff(args) => handoff_worktree(machine_handoff_args(args, machine)),
+        GitCommand::Pin(args) => pin_worktree(machine_pin_args(args, machine)),
+        GitCommand::Unpin(args) => unpin_worktree(machine_pin_args(args, machine)),
+        GitCommand::Handoff(args) => handoff_worktree(machine_handoff_args(args, machine)),
     }
 }
 

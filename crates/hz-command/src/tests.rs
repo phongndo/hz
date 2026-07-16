@@ -661,6 +661,7 @@ fn zsh_integration_wraps_new_and_cd() {
     assert!(script.contains("_hzcd() {"));
     assert!(script.contains("alias hzlocal='noglob _hzlocal'"));
     assert!(script.contains("_hzlocal() {"));
+    assert!(script.contains("git)"));
     assert!(script.contains("handoff)"));
     assert!(script.contains("--json|--machine|--path-only|--help|-h|-j"));
     assert!(script.contains("builtin cd \"$hz_target_path\" || return"));
@@ -728,7 +729,9 @@ fn fish_integration_passes_json_short_flag_through() {
     assert!(script.contains("__hz_is_global_flag"));
     assert!(script.contains("__hz_complete_git_refs"));
     assert!(script.contains("complete -c hz -n \"__hz_command_is remove rm\""));
-    assert!(script.contains("init install shell update worktree wt"));
+    assert!(script.contains("init install shell update git"));
+    assert!(!script.contains(" worktree wt"));
+    assert!(!script.contains(" agent"));
     assert!(!script.contains(" diff "));
     assert!(!script.contains("__hz_command_is diff"));
     assert!(!script.contains("tree-sitter"));
@@ -748,22 +751,23 @@ fn fish_integration_passes_json_short_flag_through() {
 #[test]
 fn bash_integration_registers_completion() {
     let script = shell_integration(Shell::Bash);
-    let worktree_completion = script
-        .split("if [[ \"$cmd\" == \"worktree\" || \"$cmd\" == \"wt\" || \"$cmd\" == \"agent\" ]]; then")
+    let git_completion = script
+        .split("if [[ \"$cmd\" == \"git\" ]]; then")
         .nth(1)
         .and_then(|completion| {
             completion
                 .split("_hz_complete_command_args \"$cmd\"")
                 .next()
         })
-        .expect("worktree completion branch should exist");
+        .expect("git completion branch should exist");
 
     assert!(script.contains("complete -F _hz_completion hz"));
     assert!(script.contains("_hz_dynamic_reply worktree-targets"));
     assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
     assert!(script.contains("command hz __complete \"$command\" -r \"$repo\""));
     assert!(script.contains("for ((index = 1; index < COMP_CWORD; index++))"));
-    assert!(script.contains("_hz_agent_commands"));
+    assert!(!script.contains("_hz_agent_commands"));
+    assert!(script.contains("_hz_git_commands"));
     assert!(script.contains("_hz_complete_option_value"));
     assert!(script.contains("_hz_command_word_index"));
     assert!(script.contains("_hz_subcommand_word_index"));
@@ -771,7 +775,9 @@ fn bash_integration_registers_completion() {
     assert!(script.contains("_hz_git_ref_reply"));
     assert!(script.contains("--branch)"));
     assert!(!script.contains("-b|--branch"));
-    assert!(script.contains("init install shell update worktree wt"));
+    assert!(script.contains("init install shell update git"));
+    assert!(!script.contains(" worktree wt"));
+    assert!(!script.contains(" agent"));
     assert!(!script.contains("tree-sitter"));
     assert!(!script.contains("_hz_complete_ts_args"));
     assert!(script.contains("--setup"));
@@ -789,7 +795,7 @@ fn bash_integration_registers_completion() {
     assert!(!script.contains("--no-watch"));
     assert!(!script.contains("--no-syntax"));
     assert!(
-        worktree_completion
+        git_completion
             .contains("_hz_complete_command_args \"${COMP_WORDS[$subcmd_index]}\" \"$current\"")
     );
     assert!(!script.contains("tui"));

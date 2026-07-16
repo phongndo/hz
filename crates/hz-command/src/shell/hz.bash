@@ -8,7 +8,7 @@ hz() {
 
   local cmd="$1"
   case "$cmd" in
-    worktree|wt)
+    git)
       if [[ "$#" -lt 2 ]]; then
         command hz "$@"
         return
@@ -59,16 +59,15 @@ hz() {
 }
 
 hzcd() {
-  hz worktree cd "$@"
+  hz git cd "$@"
 }
 
 hzlocal() {
-  hz worktree cd local "$@"
+  hz git cd local "$@"
 }
 
-_hz_top_commands="init install shell update worktree wt"
-_hz_worktree_commands="new fork path cd list ls pwd remove rm pin unpin handoff"
-_hz_agent_commands="new fork path cd list ls pwd current remove rm pin unpin handoff"
+_hz_top_commands="init install shell update git"
+_hz_git_commands="new fork path cd list ls pwd remove rm pin unpin handoff"
 _hz_shells="zsh bash fish"
 
 _hz_reply() {
@@ -180,7 +179,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|pwd|current|remove|rm|pin|unpin|handoff|init)
+        new|fork|path|cd|list|ls|pwd|remove|rm|pin|unpin|handoff|init)
           _hz_complete_dirs "$current"
           return 0
           ;;
@@ -277,7 +276,7 @@ _hz_complete_command_args() {
     list|ls)
       [[ "$current" == -* ]] && _hz_reply "-r --repo --pinned --unpinned -j --json --machine -h --help" "$current"
       ;;
-    pwd|current)
+    pwd)
       [[ "$current" == -* ]] && _hz_reply "-r --repo -j --json --machine -h --help" "$current"
       ;;
     remove|rm)
@@ -347,16 +346,14 @@ _hz_completion() {
   fi
 
   local cmd="${COMP_WORDS[$cmd_index]}"
-  if [[ "$cmd" == "worktree" || "$cmd" == "wt" || "$cmd" == "agent" ]]; then
+  if [[ "$cmd" == "git" ]]; then
     local subcmd_index
     subcmd_index="$(_hz_subcommand_word_index "$cmd_index")"
     if [[ -z "$subcmd_index" ]]; then
       if [[ "$current" == -* ]]; then
         _hz_reply "--machine -h --help" "$current"
-      elif [[ "$cmd" == "agent" ]]; then
-        _hz_reply "$_hz_agent_commands" "$current"
       else
-        _hz_reply "$_hz_worktree_commands" "$current"
+        _hz_reply "$_hz_git_commands" "$current"
       fi
       return
     fi

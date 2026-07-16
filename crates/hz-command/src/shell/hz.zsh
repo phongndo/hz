@@ -12,7 +12,7 @@ _hz() {
 
   local cmd="$1"
   case "$cmd" in
-    worktree|wt)
+    git)
       if [[ "$#" -lt 2 ]]; then
         command hz "$@"
         return
@@ -63,11 +63,11 @@ _hz() {
 }
 
 _hzcd() {
-  _hz worktree cd "$@"
+  _hz git cd "$@"
 }
 
 _hzlocal() {
-  _hz worktree cd local "$@"
+  _hz git cd local "$@"
 }
 
 _hz_worktree_targets() {
@@ -134,36 +134,13 @@ _hz_complete_main() {
     'install:install shell integration'
     'shell:print shell integration'
     'update:update hz from GitHub releases'
-    'worktree:worktree commands'
-    'wt:worktree commands'
+    'git:Git worktree commands'
   )
 
   _describe -t commands 'hz command' commands
 }
 
-_hz_complete_agent_subcommand() {
-  local -a commands
-  commands=(
-    'new:create a worktree and print JSON'
-    'fork:fork the current worktree state and print JSON'
-    'path:print a worktree path as JSON'
-    'cd:print a worktree path as JSON'
-    'list:list worktrees as JSON'
-    'ls:list worktrees as JSON'
-    'pwd:print the current worktree as JSON'
-    'current:print the current worktree as JSON'
-    'remove:remove worktrees and print a JSON array'
-    'rm:remove worktrees and print a JSON array'
-    'pin:pin worktrees and print JSON'
-    'unpin:unpin worktrees and print JSON'
-    'handoff:apply changes between linked worktrees and print JSON'
-  )
-
-  _describe -t commands 'hz agent command' commands
-}
-
-
-_hz_complete_worktree_subcommand() {
+_hz_complete_git_subcommand() {
   local -a commands
   commands=(
     'new:create a worktree'
@@ -180,7 +157,7 @@ _hz_complete_worktree_subcommand() {
     'handoff:apply changes between linked worktrees'
   )
 
-  _describe -t commands 'hz worktree command' commands
+  _describe -t commands 'hz git command' commands
 }
 
 
@@ -231,7 +208,7 @@ _hz_complete_option_value() {
   case "$previous" in
     -r|--repo)
       case "$cmd" in
-        new|fork|path|cd|list|ls|pwd|current|remove|rm|pin|unpin|handoff|init)
+        new|fork|path|cd|list|ls|pwd|remove|rm|pin|unpin|handoff|init)
           _files -/
           return 0
           ;;
@@ -324,7 +301,7 @@ _hz_complete_command_options() {
     list|ls)
       compadd -- -r --repo --pinned --unpinned -j --json --machine -h --help
       ;;
-    pwd|current)
+    pwd)
       compadd -- -r --repo -j --json --machine -h --help
       ;;
     remove|rm)
@@ -400,16 +377,14 @@ _hz_completion() {
   fi
 
   local cmd="${words[$cmd_index]}"
-  if [[ "$cmd" == "worktree" || "$cmd" == "wt" || "$cmd" == "agent" ]]; then
+  if [[ "$cmd" == "git" ]]; then
     local subcmd_index
     subcmd_index="$(_hz_subcommand_word_index "$cmd_index")"
     if [[ -z "$subcmd_index" ]]; then
       if [[ "$PREFIX" == -* ]]; then
         compadd -- --machine -h --help
-      elif [[ "$cmd" == "agent" ]]; then
-        _hz_complete_agent_subcommand
       else
-        _hz_complete_worktree_subcommand
+        _hz_complete_git_subcommand
       fi
       return
     fi

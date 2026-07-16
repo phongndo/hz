@@ -27,7 +27,7 @@ fn lifecycle_hooks_run_only_when_explicitly_requested() {
     run_hz(
         &home,
         &[
-            "worktree",
+            "git",
             "new",
             "no-setup",
             "--repo",
@@ -41,7 +41,7 @@ fn lifecycle_hooks_run_only_when_explicitly_requested() {
     run_hz(
         &home,
         &[
-            "worktree",
+            "git",
             "new",
             "with-setup",
             "--repo",
@@ -59,7 +59,7 @@ fn lifecycle_hooks_run_only_when_explicitly_requested() {
     run_hz(
         &home,
         &[
-            "worktree",
+            "git",
             "new",
             "setup-optout",
             "--repo",
@@ -78,7 +78,7 @@ fn lifecycle_hooks_run_only_when_explicitly_requested() {
     run_hz(
         &home,
         &[
-            "worktree",
+            "git",
             "rm",
             "no-setup",
             "--repo",
@@ -94,7 +94,7 @@ fn lifecycle_hooks_run_only_when_explicitly_requested() {
     run_hz(
         &home,
         &[
-            "worktree",
+            "git",
             "rm",
             "with-setup",
             "--repo",
@@ -111,7 +111,7 @@ fn lifecycle_hooks_run_only_when_explicitly_requested() {
     run_hz(
         &home,
         &[
-            "worktree",
+            "git",
             "rm",
             "setup-optout",
             "--repo",
@@ -155,7 +155,7 @@ fn cleanup_runs_for_user_managed_git_worktree_when_requested() {
     run_hz(
         &home,
         &[
-            "worktree",
+            "git",
             "rm",
             "external-cleanup",
             "--repo",
@@ -190,7 +190,7 @@ fn fork_no_diff_leaves_dirty_changes_behind() {
     run_hz(
         &home,
         &[
-            "worktree",
+            "git",
             "fork",
             "clean-copy",
             "--repo",
@@ -237,7 +237,7 @@ fn fork_copies_dirty_changes_by_default() {
         &home,
         None,
         &[
-            "worktree",
+            "git",
             "fork",
             "dirty-copy",
             "--repo",
@@ -296,7 +296,7 @@ fn fork_clean_worktree_reports_unchanged_json() {
         &home,
         None,
         &[
-            "worktree",
+            "git",
             "fork",
             "clean-json",
             "--repo",
@@ -362,7 +362,7 @@ fn fork_uses_current_linked_worktree_state_when_repo_points_at_main() {
         &home,
         Some(&linked),
         &[
-            "worktree",
+            "git",
             "fork",
             "linked-copy",
             "--repo",

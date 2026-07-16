@@ -30,19 +30,13 @@ fn worktree_defaults_use_child_home() {
 
     let output = Command::new(hz())
         .env("HOME", &home)
-        .args([
-            "worktree",
-            "new",
-            "--repo",
-            repo.to_str().unwrap(),
-            "--no-setup",
-        ])
+        .args(["git", "new", "--repo", repo.to_str().unwrap(), "--no-setup"])
         .output()
         .expect("hz should run");
 
     assert!(
         output.status.success(),
-        "hz worktree new failed: stdout={} stderr={}",
+        "hz git new failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -71,7 +65,7 @@ fn pwd_prints_current_worktree_target() {
         &home,
         &repo,
         &[
-            "worktree",
+            "git",
             "new",
             "feature",
             "--repo",
@@ -81,16 +75,13 @@ fn pwd_prints_current_worktree_target() {
         ],
     );
 
-    assert_eq!(hz_stdout(&home, &repo, &["worktree", "pwd"]), "local\n");
-    assert_eq!(
-        hz_stdout(&home, &worktree, &["worktree", "pwd"]),
-        "feature\n"
-    );
+    assert_eq!(hz_stdout(&home, &repo, &["git", "pwd"]), "local\n");
+    assert_eq!(hz_stdout(&home, &worktree, &["git", "pwd"]), "feature\n");
     assert_eq!(
         hz_stdout(
             &home,
             &worktree,
-            &["worktree", "pwd", "--repo", repo.to_str().unwrap()]
+            &["git", "pwd", "--repo", repo.to_str().unwrap()]
         ),
         "feature\n"
     );
@@ -98,13 +89,7 @@ fn pwd_prints_current_worktree_target() {
     let json = hz_stdout(
         &home,
         &worktree,
-        &[
-            "worktree",
-            "pwd",
-            "--repo",
-            repo.to_str().unwrap(),
-            "--json",
-        ],
+        &["git", "pwd", "--repo", repo.to_str().unwrap(), "--json"],
     );
     let value: serde_json::Value = serde_json::from_str(&json).expect("json should parse");
     assert_eq!(value["target"], "feature");

@@ -8,7 +8,7 @@ function hz
 
     set cmd $argv[1]
     switch $cmd
-        case worktree wt
+        case git
             if test (count $argv) -lt 2
                 command hz $argv
                 return
@@ -52,11 +52,11 @@ function hz
 end
 
 function hzcd
-    hz worktree cd $argv
+    hz git cd $argv
 end
 
 function hzlocal
-    hz worktree cd local $argv
+    hz git cd local $argv
 end
 
 function __hz_complete_worktree_targets
@@ -77,16 +77,9 @@ function __hz_complete_removable_worktrees
     end
 end
 
-function __hz_needs_worktree_subcommand
+function __hz_needs_git_subcommand
     set -l cmd (__hz_command_token)
-    contains -- "$cmd" worktree wt; or return 1
-    set -l subcmd_index (__hz_subcommand_index)
-    test -z "$subcmd_index"
-end
-
-function __hz_needs_agent_subcommand
-    set -l cmd (__hz_command_token)
-    test "$cmd" = agent; or return 1
+    test "$cmd" = git; or return 1
     set -l subcmd_index (__hz_subcommand_index)
     test -z "$subcmd_index"
 end
@@ -166,7 +159,7 @@ end
 function __hz_command_is
     set -l cmd (__hz_command_token)
     test -n "$cmd"; or return 1
-    if contains -- $cmd worktree wt agent
+    if test "$cmd" = git
         set cmd (__hz_subcommand_token)
         test -n "$cmd"; or return 1
     end
@@ -222,14 +215,13 @@ complete -c hzcd -e
 complete -c hzlocal -e
 
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from init install shell update worktree wt agent" -a "init install shell update worktree wt"
-complete -c hz -n "__hz_needs_worktree_subcommand" -a "new fork path cd list ls pwd remove rm pin unpin handoff"
-complete -c hz -n "__hz_needs_agent_subcommand" -a "new fork path cd list ls pwd current remove rm pin unpin handoff"
+complete -c hz -n "not __fish_seen_subcommand_from init install shell update git" -a "init install shell update git"
+complete -c hz -n "__hz_needs_git_subcommand" -a "new fork path cd list ls pwd remove rm pin unpin handoff"
 
 complete -c hz -n "__hz_command_is cd path handoff" -a "(__hz_complete_worktree_targets)"
 complete -c hz -n "__hz_command_is rm remove pin unpin" -a "(__hz_complete_removable_worktrees)"
 complete -c hz -n "__hz_top_command_is init install shell" -a "zsh bash fish"
-complete -c hz -n "__hz_command_is new fork path cd list ls pwd current remove rm pin unpin handoff init" -s r -l repo -r -F
+complete -c hz -n "__hz_command_is new fork path cd list ls pwd remove rm pin unpin handoff init" -s r -l repo -r -F
 complete -c hz -n "__hz_command_is new fork" -s p -l path -r -F
 complete -c hz -n "__hz_command_is new" -s B -l base -r -a "(__hz_complete_git_refs)"
 complete -c hz -n "__hz_command_is new" -s b -l branch -r -a "(__hz_complete_git_refs)"
@@ -240,7 +232,7 @@ complete -c hz -n "__hz_command_is new" -l setup
 complete -c hz -n "__hz_command_is fork" -l no-diff
 complete -c hz -n "__hz_command_is list ls" -l pinned
 complete -c hz -n "__hz_command_is list ls" -l unpinned
-complete -c hz -n "__hz_command_is new fork path cd list ls pwd current remove rm pin unpin handoff" -s j -l json
+complete -c hz -n "__hz_command_is new fork path cd list ls pwd remove rm pin unpin handoff" -s j -l json
 complete -c hz -n "__hz_command_is new remove rm" -s d -l debug
 complete -c hz -n "__hz_command_is remove rm" -s f -l force
 complete -c hz -n "__hz_command_is remove rm" -l yes
@@ -263,4 +255,4 @@ complete -c hzlocal -f
 complete -c hzlocal -s r -l repo -r -F
 complete -c hzlocal -s j -l json
 complete -c hzlocal -s h -l help
-complete -c hz -n "not __fish_seen_subcommand_from init install shell update worktree wt" -s V -l version
+complete -c hz -n "not __fish_seen_subcommand_from init install shell update git" -s V -l version

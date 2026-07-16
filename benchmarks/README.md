@@ -13,7 +13,7 @@ cargo run -p hz-bench -- cmd --hz target/debug/hz --worktrees 12 --iterations 10
 
 The benchmark creates an isolated temporary Git repo and HOME, creates synthetic
 `hz` worktrees, then measures end-to-end CLI latency for commands such as
-`hz worktree list`, `hz worktree path`, shell generation, and dynamic completion
+`hz git list`, `hz git path`, shell generation, and dynamic completion
 candidate lookup.
 
 Use JSON for machine-readable results:

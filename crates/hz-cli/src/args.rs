@@ -20,14 +20,14 @@ examples:
   hz
   hz init
   hz install zsh
-  hz worktree new feature/ui
-  hz --machine worktree list
-  hz worktree fork
-  hz worktree ls
-  hz worktree pwd
-  hz worktree rm -f feature/ui
-  hz worktree cd feature/ui
-  hz worktree handoff feature/ui";
+  hz git new feature/ui
+  hz --machine git list
+  hz git fork
+  hz git ls
+  hz git pwd
+  hz git rm -f feature/ui
+  hz git cd feature/ui
+  hz git handoff feature/ui";
 
 pub(crate) const INSTALL_SCRIPT: &str = include_str!("../../../scripts/install.sh");
 pub(crate) const RELEASE_REPO: &str = "phongndo/hz";
@@ -60,15 +60,10 @@ pub(crate) fn help_styles() -> Styles {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    #[command(alias = "wt", about = "Manage Git worktrees")]
-    Worktree {
+    #[command(about = "Manage Git worktrees")]
+    Git {
         #[command(subcommand)]
-        command: WorktreeCommand,
-    },
-    #[command(about = "Machine-readable aliases for agents and scripts", hide = true)]
-    Agent {
-        #[command(subcommand)]
-        command: AgentCommand,
+        command: GitCommand,
     },
     #[command(about = "Initialize hz repo lifecycle config")]
     Init(InitArgs),
@@ -90,7 +85,7 @@ examples:
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum WorktreeCommand {
+pub(crate) enum GitCommand {
     #[command(about = "Create an isolated Git worktree for a task or agent")]
     New(NewWorktreeArgs),
     #[command(about = "Fork the current worktree state into a detached worktree")]
@@ -108,28 +103,6 @@ pub(crate) enum WorktreeCommand {
     #[command(about = "Unpin worktrees so auto-prune may remove them")]
     Unpin(PinWorktreeArgs),
     #[command(about = "Apply changes between local and a linked worktree")]
-    Handoff(HandoffWorktreeArgs),
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum AgentCommand {
-    #[command(about = "Create a worktree and print JSON")]
-    New(NewWorktreeArgs),
-    #[command(about = "Fork the current worktree state and print JSON")]
-    Fork(ForkWorktreeArgs),
-    #[command(alias = "cd", about = "Print a worktree path as JSON")]
-    Path(PathWorktreeArgs),
-    #[command(alias = "ls", about = "List worktrees as JSON")]
-    List(ListWorktreeArgs),
-    #[command(alias = "current", about = "Print the current worktree as JSON")]
-    Pwd(PwdWorktreeArgs),
-    #[command(alias = "rm", about = "Remove worktrees and print a JSON array")]
-    Remove(RemoveWorktreeArgs),
-    #[command(about = "Pin worktrees and print JSON")]
-    Pin(PinWorktreeArgs),
-    #[command(about = "Unpin worktrees and print JSON")]
-    Unpin(PinWorktreeArgs),
-    #[command(about = "Apply changes between linked worktrees and print JSON")]
     Handoff(HandoffWorktreeArgs),
 }
 

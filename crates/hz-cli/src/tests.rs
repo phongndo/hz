@@ -103,43 +103,29 @@ fn default_help_renders_usage() {
 }
 
 #[test]
-fn agent_commands_parse_under_machine_namespace() {
-    let cli = Cli::try_parse_from(["hz", "agent", "current"]).unwrap();
-    assert!(matches!(
-        cli.command,
-        Some(Command::Agent {
-            command: AgentCommand::Pwd(_)
-        })
-    ));
-
-    let cli = Cli::try_parse_from(["hz", "agent", "rm", "feature/ui"]).unwrap();
-    let Some(Command::Agent {
-        command: AgentCommand::Remove(args),
-    }) = cli.command
-    else {
-        panic!("agent rm should parse as agent remove");
-    };
-    assert_eq!(args.targets, vec!["feature/ui".to_owned()]);
+fn removed_command_names_are_rejected() {
+    assert!(Cli::try_parse_from(["hz", "worktree", "list"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "wt", "list"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "agent", "list"]).is_err());
 }
 
 #[test]
 fn machine_flag_parses_before_or_after_command() {
-    let cli =
-        Cli::try_parse_from(["hz", "--machine", "worktree", "list", "--repo", "/repo"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "--machine", "git", "list", "--repo", "/repo"]).unwrap();
     assert!(cli.machine);
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::List(args),
+        Some(Command::Git {
+            command: GitCommand::List(args),
         }) => assert_eq!(args.repo, Some(PathBuf::from("/repo"))),
         command => panic!("expected worktree list command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "worktree", "remove", "target", "--machine", "--force"])
-        .unwrap();
+    let cli =
+        Cli::try_parse_from(["hz", "git", "remove", "target", "--machine", "--force"]).unwrap();
     assert!(cli.machine);
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Remove(args),
+        Some(Command::Git {
+            command: GitCommand::Remove(args),
         }) => {
             assert_eq!(args.targets, vec!["target".to_owned()]);
             assert!(args.force);
@@ -871,7 +857,7 @@ fn shell_init_output_renders_status() {
 fn remove_accepts_short_force_flag() {
     let cli = Cli::try_parse_from([
         "hz",
-        "worktree",
+        "git",
         "rm",
         "-r",
         "/repo",
@@ -884,8 +870,8 @@ fn remove_accepts_short_force_flag() {
     .unwrap();
 
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Remove(args),
+        Some(Command::Git {
+            command: GitCommand::Remove(args),
         }) => {
             assert_eq!(args.targets, vec!["target".to_owned()]);
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
@@ -900,18 +886,12 @@ fn remove_accepts_short_force_flag() {
 
 #[test]
 fn remove_accepts_multiple_targets() {
-    let cli = Cli::try_parse_from([
-        "hz",
-        "worktree",
-        "rm",
-        "cartesian-alpha",
-        "archimedean-beta",
-    ])
-    .unwrap();
+    let cli =
+        Cli::try_parse_from(["hz", "git", "rm", "cartesian-alpha", "archimedean-beta"]).unwrap();
 
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Remove(args),
+        Some(Command::Git {
+            command: GitCommand::Remove(args),
         }) => {
             assert_eq!(
                 args.targets,
@@ -924,20 +904,12 @@ fn remove_accepts_multiple_targets() {
 
 #[test]
 fn handoff_accepts_optional_branch_and_path_only() {
-    let cli = Cli::try_parse_from([
-        "hz",
-        "worktree",
-        "handoff",
-        "-r",
-        "/repo",
-        "-j",
-        "feature/ui",
-    ])
-    .unwrap();
+    let cli =
+        Cli::try_parse_from(["hz", "git", "handoff", "-r", "/repo", "-j", "feature/ui"]).unwrap();
 
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Handoff(args),
+        Some(Command::Git {
+            command: GitCommand::Handoff(args),
         }) => {
             assert_eq!(args.target.as_deref(), Some("feature/ui"));
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
@@ -948,11 +920,10 @@ fn handoff_accepts_optional_branch_and_path_only() {
         command => panic!("expected worktree handoff command, got {command:?}"),
     }
 
-    let cli =
-        Cli::try_parse_from(["hz", "worktree", "handoff", "708e", "-b", "--path-only"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "git", "handoff", "708e", "-b", "--path-only"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Handoff(args),
+        Some(Command::Git {
+            command: GitCommand::Handoff(args),
         }) => {
             assert_eq!(args.target.as_deref(), Some("708e"));
             assert!(args.branch);
@@ -963,7 +934,7 @@ fn handoff_accepts_optional_branch_and_path_only() {
 
     let cli = Cli::try_parse_from([
         "hz",
-        "worktree",
+        "git",
         "handoff",
         "--new",
         "--max-detached",
@@ -974,8 +945,8 @@ fn handoff_accepts_optional_branch_and_path_only() {
     ])
     .unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Handoff(args),
+        Some(Command::Git {
+            command: GitCommand::Handoff(args),
         }) => {
             assert_eq!(args.target.as_deref(), Some("feature/ui"));
             assert!(args.create);
@@ -985,10 +956,10 @@ fn handoff_accepts_optional_branch_and_path_only() {
         command => panic!("expected worktree handoff command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "worktree", "handoff"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "git", "handoff"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Handoff(args),
+        Some(Command::Git {
+            command: GitCommand::Handoff(args),
         }) => assert_eq!(args.target, None),
         command => panic!("expected worktree handoff command, got {command:?}"),
     }
@@ -998,7 +969,7 @@ fn handoff_accepts_optional_branch_and_path_only() {
 fn creation_accepts_short_flags() {
     let cli = Cli::try_parse_from([
         "hz",
-        "worktree",
+        "git",
         "new",
         "-r",
         "/repo",
@@ -1020,8 +991,8 @@ fn creation_accepts_short_flags() {
     .unwrap();
 
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::New(args),
+        Some(Command::Git {
+            command: GitCommand::New(args),
         }) => {
             assert_eq!(args.name.as_deref(), Some("handle"));
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
@@ -1043,7 +1014,7 @@ fn creation_accepts_short_flags() {
 fn fork_accepts_named_detached_options() {
     let cli = Cli::try_parse_from([
         "hz",
-        "worktree",
+        "git",
         "fork",
         "copy",
         "-r",
@@ -1059,8 +1030,8 @@ fn fork_accepts_named_detached_options() {
     .unwrap();
 
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Fork(args),
+        Some(Command::Git {
+            command: GitCommand::Fork(args),
         }) => {
             assert_eq!(args.name.as_deref(), Some("copy"));
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
@@ -1076,11 +1047,10 @@ fn fork_accepts_named_detached_options() {
 
 #[test]
 fn path_and_list_accept_short_flags() {
-    let cli =
-        Cli::try_parse_from(["hz", "worktree", "path", "-r", "/repo", "-j", "target"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "git", "path", "-r", "/repo", "-j", "target"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Path(args),
+        Some(Command::Git {
+            command: GitCommand::Path(args),
         }) => {
             assert_eq!(args.target.as_deref(), Some("target"));
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
@@ -1089,10 +1059,10 @@ fn path_and_list_accept_short_flags() {
         command => panic!("expected worktree path command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "worktree", "ls", "-r", "/repo", "-j"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "git", "ls", "-r", "/repo", "-j"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::List(args),
+        Some(Command::Git {
+            command: GitCommand::List(args),
         }) => {
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             assert!(!args.pinned);
@@ -1102,20 +1072,20 @@ fn path_and_list_accept_short_flags() {
         command => panic!("expected worktree list command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "worktree", "ls", "--pinned"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "git", "ls", "--pinned"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::List(args),
+        Some(Command::Git {
+            command: GitCommand::List(args),
         }) => assert!(args.pinned),
         command => panic!("expected worktree list command, got {command:?}"),
     }
 
-    assert!(Cli::try_parse_from(["hz", "worktree", "ls", "--pinned", "--unpinned"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "git", "ls", "--pinned", "--unpinned"]).is_err());
 
-    let cli = Cli::try_parse_from(["hz", "worktree", "pwd", "-r", "/repo", "-j"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "git", "pwd", "-r", "/repo", "-j"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Pwd(args),
+        Some(Command::Git {
+            command: GitCommand::Pwd(args),
         }) => {
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             assert!(args.json);
@@ -1126,14 +1096,12 @@ fn path_and_list_accept_short_flags() {
 
 #[test]
 fn pin_and_unpin_accept_multiple_targets() {
-    let cli = Cli::try_parse_from([
-        "hz", "worktree", "pin", "-r", "/repo", "-j", "alpha", "beta",
-    ])
-    .unwrap();
+    let cli =
+        Cli::try_parse_from(["hz", "git", "pin", "-r", "/repo", "-j", "alpha", "beta"]).unwrap();
 
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Pin(args),
+        Some(Command::Git {
+            command: GitCommand::Pin(args),
         }) => {
             assert_eq!(args.repo, Some(PathBuf::from("/repo")));
             assert!(args.json);
@@ -1142,34 +1110,34 @@ fn pin_and_unpin_accept_multiple_targets() {
         command => panic!("expected worktree pin command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "worktree", "unpin", "alpha"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "git", "unpin", "alpha"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Unpin(args),
+        Some(Command::Git {
+            command: GitCommand::Unpin(args),
         }) => assert_eq!(args.targets, vec!["alpha".to_owned()]),
         command => panic!("expected worktree unpin command, got {command:?}"),
     }
 }
 
 #[test]
-fn worktree_pwd_is_available_under_worktree_group() {
-    let cli = Cli::try_parse_from(["hz", "worktree", "pwd", "--repo", "/repo"]).unwrap();
+fn worktree_pwd_is_available_under_git_group() {
+    let cli = Cli::try_parse_from(["hz", "git", "pwd", "--repo", "/repo"]).unwrap();
 
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Pwd(args),
+        Some(Command::Git {
+            command: GitCommand::Pwd(args),
         }) => assert_eq!(args.repo, Some(PathBuf::from("/repo"))),
         command => panic!("expected worktree pwd command, got {command:?}"),
     }
 }
 
 #[test]
-fn worktree_cd_alias_is_available_under_worktree_group() {
-    let cli = Cli::try_parse_from(["hz", "worktree", "cd", "feature/ui"]).unwrap();
+fn worktree_cd_alias_is_available_under_git_group() {
+    let cli = Cli::try_parse_from(["hz", "git", "cd", "feature/ui"]).unwrap();
 
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Path(args),
+        Some(Command::Git {
+            command: GitCommand::Path(args),
         }) => assert_eq!(args.target.as_deref(), Some("feature/ui")),
         command => panic!("expected worktree cd alias command, got {command:?}"),
     }
@@ -1230,44 +1198,27 @@ fn shell_completion_command_lists_match_clap() {
     let fish_root_commands = fish_argument_words(fish, "not __fish_seen_subcommand_from");
     assert_eq!(fish_root_commands, top_commands);
 
-    let mut fish_root_guard_commands = top_commands.clone();
-    fish_root_guard_commands.insert("agent".to_owned());
     assert_eq!(
         fish_condition_words(fish, "not __fish_seen_subcommand_from"),
-        fish_root_guard_commands
+        top_commands
     );
 
-    let worktree_commands = clap_completion_subcommands(&["worktree"]);
+    let git_commands = clap_completion_subcommands(&["git"]);
+    assert_eq!(bash_words_variable(bash, "_hz_git_commands"), git_commands);
     assert_eq!(
-        bash_words_variable(bash, "_hz_worktree_commands"),
-        worktree_commands
+        zsh_described_commands(zsh, "_hz_complete_git_subcommand"),
+        git_commands
     );
     assert_eq!(
-        zsh_described_commands(zsh, "_hz_complete_worktree_subcommand"),
-        worktree_commands
-    );
-    assert_eq!(
-        fish_argument_words(fish, "__hz_needs_worktree_subcommand"),
-        worktree_commands
+        fish_argument_words(fish, "__hz_needs_git_subcommand"),
+        git_commands
     );
 
-    let agent_commands = clap_completion_subcommands(&["agent"]);
-    assert_eq!(
-        bash_words_variable(bash, "_hz_agent_commands"),
-        agent_commands
-    );
-    assert_eq!(
-        zsh_described_commands(zsh, "_hz_complete_agent_subcommand"),
-        agent_commands
-    );
-    assert_eq!(
-        fish_argument_words(fish, "__hz_needs_agent_subcommand"),
-        agent_commands
-    );
-
-    assert!(!bash.contains("_hz_ts_commands"));
-    assert!(!zsh.contains("_hz_complete_ts_subcommand"));
-    assert!(!fish.contains("__hz_needs_ts_subcommand"));
+    for removed in ["worktree", "wt", "agent"] {
+        assert!(!bash_words_variable(bash, "_hz_top_commands").contains(removed));
+        assert!(!zsh_described_commands(zsh, "_hz_complete_main").contains(removed));
+        assert!(!fish_root_commands.contains(removed));
+    }
 }
 
 #[test]
@@ -1285,27 +1236,25 @@ fn shell_completion_option_flags_match_clap() {
         "fish options for hz"
     );
 
-    for group in ["worktree", "wt", "agent"] {
-        let expected = clap_completion_flags(&[group]);
-        assert_eq!(
-            bash_group_flags(bash, group),
-            expected,
-            "bash options for hz {group}"
-        );
-        assert_eq!(
-            zsh_group_flags(zsh, group),
-            expected,
-            "zsh options for hz {group}"
-        );
-        assert_eq!(
-            fish_completion_flags(fish, FishCompletionContext::Top(group)),
-            expected,
-            "fish options for hz {group}"
-        );
-    }
+    let expected = clap_completion_flags(&["git"]);
+    assert_eq!(
+        bash_group_flags(bash, "git"),
+        expected,
+        "bash options for hz git"
+    );
+    assert_eq!(
+        zsh_group_flags(zsh, "git"),
+        expected,
+        "zsh options for hz git"
+    );
+    assert_eq!(
+        fish_completion_flags(fish, FishCompletionContext::Top("git")),
+        expected,
+        "fish options for hz git"
+    );
 
     for command in clap_completion_subcommands(&[]) {
-        if matches!(command.as_str(), "worktree" | "wt" | "agent") {
+        if command == "git" {
             continue;
         }
 
@@ -1327,41 +1276,22 @@ fn shell_completion_option_flags_match_clap() {
         );
     }
 
-    for command in clap_completion_subcommands(&["worktree"]) {
-        let expected = clap_completion_flags(&["worktree", &command]);
+    for command in clap_completion_subcommands(&["git"]) {
+        let expected = clap_completion_flags(&["git", &command]);
         assert_eq!(
             bash_command_flags(bash, &command),
             expected,
-            "bash options for hz worktree {command}"
+            "bash options for hz git {command}"
         );
         assert_eq!(
             zsh_command_flags(zsh, &command),
             expected,
-            "zsh options for hz worktree {command}"
+            "zsh options for hz git {command}"
         );
         assert_eq!(
-            fish_completion_flags(fish, FishCompletionContext::Worktree(&command)),
+            fish_completion_flags(fish, FishCompletionContext::Git(&command)),
             expected,
-            "fish options for hz worktree {command}"
-        );
-    }
-
-    for command in clap_completion_subcommands(&["agent"]) {
-        let expected = clap_completion_flags(&["agent", &command]);
-        assert_eq!(
-            bash_command_flags(bash, &command),
-            expected,
-            "bash options for hz agent {command}"
-        );
-        assert_eq!(
-            zsh_command_flags(zsh, &command),
-            expected,
-            "zsh options for hz agent {command}"
-        );
-        assert_eq!(
-            fish_completion_flags(fish, FishCompletionContext::Agent(&command)),
-            expected,
-            "fish options for hz agent {command}"
+            "fish options for hz git {command}"
         );
     }
 }
@@ -1391,7 +1321,7 @@ fn init_install_and_lifecycle_commands_parse() {
 
     assert!(Cli::try_parse_from(["hz", "setup", "-r", "/repo", "--json", "target"]).is_err());
     assert!(Cli::try_parse_from(["hz", "cleanup"]).is_err());
-    assert!(Cli::try_parse_from(["hz", "worktree", "setup", "target"]).is_err());
+    assert!(Cli::try_parse_from(["hz", "git", "setup", "target"]).is_err());
     assert!(Cli::try_parse_from(["hz", "agent", "cleanup", "target"]).is_err());
 
     let cli = Cli::try_parse_from([
@@ -1591,10 +1521,10 @@ fn force_skips_unmanaged_removal_confirmation() {
 
 #[test]
 fn repo_lifecycle_hooks_require_explicit_create_or_remove_flags() {
-    let cli = Cli::try_parse_from(["hz", "worktree", "new", "handle"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "git", "new", "handle"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::New(args),
+        Some(Command::Git {
+            command: GitCommand::New(args),
         }) => {
             assert!(!args.setup);
             assert!(!args.no_setup);
@@ -1602,18 +1532,18 @@ fn repo_lifecycle_hooks_require_explicit_create_or_remove_flags() {
         command => panic!("expected worktree new command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "worktree", "new", "--setup", "handle"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "git", "new", "--setup", "handle"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::New(args),
+        Some(Command::Git {
+            command: GitCommand::New(args),
         }) => assert!(args.setup),
         command => panic!("expected worktree new command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from(["hz", "worktree", "rm", "--cleanup", "handle"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "git", "rm", "--cleanup", "handle"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Remove(args),
+        Some(Command::Git {
+            command: GitCommand::Remove(args),
         }) => {
             assert!(args.cleanup);
             assert!(!args.no_cleanup);
@@ -1621,11 +1551,10 @@ fn repo_lifecycle_hooks_require_explicit_create_or_remove_flags() {
         command => panic!("expected worktree remove command, got {command:?}"),
     }
 
-    let cli =
-        Cli::try_parse_from(["hz", "worktree", "new", "--setup", "--no-setup", "handle"]).unwrap();
+    let cli = Cli::try_parse_from(["hz", "git", "new", "--setup", "--no-setup", "handle"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::New(args),
+        Some(Command::Git {
+            command: GitCommand::New(args),
         }) => {
             assert!(args.setup);
             assert!(args.no_setup);
@@ -1633,18 +1562,11 @@ fn repo_lifecycle_hooks_require_explicit_create_or_remove_flags() {
         command => panic!("expected worktree new command, got {command:?}"),
     }
 
-    let cli = Cli::try_parse_from([
-        "hz",
-        "worktree",
-        "rm",
-        "--cleanup",
-        "--no-cleanup",
-        "handle",
-    ])
-    .unwrap();
+    let cli =
+        Cli::try_parse_from(["hz", "git", "rm", "--cleanup", "--no-cleanup", "handle"]).unwrap();
     match cli.command {
-        Some(Command::Worktree {
-            command: WorktreeCommand::Remove(args),
+        Some(Command::Git {
+            command: GitCommand::Remove(args),
         }) => {
             assert!(args.cleanup);
             assert!(args.no_cleanup);
@@ -1747,7 +1669,7 @@ fn single_target_json_uses_array_when_nothing_was_removed() {
 }
 
 #[test]
-fn agent_remove_json_always_uses_array_shape() {
+fn machine_remove_json_always_uses_array_shape() {
     let removed = vec![test_entry(hz_command::WorktreeSource::Managed)];
 
     let output = removed_worktrees_json_array(&removed).unwrap();
@@ -1759,8 +1681,7 @@ fn agent_remove_json_always_uses_array_shape() {
 enum FishCompletionContext<'a> {
     Root,
     Top(&'a str),
-    Worktree(&'a str),
-    Agent(&'a str),
+    Git(&'a str),
 }
 
 fn clap_completion_subcommands(path: &[&str]) -> BTreeSet<String> {
@@ -1900,9 +1821,7 @@ fn zsh_group_flags(script: &str, group: &str) -> BTreeSet<String> {
 fn shell_group_flags(script: &str, group: &str) -> BTreeSet<String> {
     let body = shell_function_body(script, "_hz_completion");
     let marker = match group {
-        "worktree" | "wt" | "agent" => {
-            "if [[ \"$cmd\" == \"worktree\" || \"$cmd\" == \"wt\" || \"$cmd\" == \"agent\" ]]; then"
-        }
+        "git" => "if [[ \"$cmd\" == \"git\" ]]; then",
         _ => panic!("unsupported shell group: {group}"),
     };
     let branch = shell_branch_body(body, marker);
@@ -2044,9 +1963,7 @@ fn fish_line_applies(line: &str, context: FishCompletionContext<'_>) -> bool {
             fish_condition_contains(condition, "__hz_command_is", command)
                 || fish_condition_contains(condition, "__hz_top_command_is", command)
         }),
-        FishCompletionContext::Worktree(command) => condition
-            .is_none_or(|condition| fish_condition_contains(condition, "__hz_command_is", command)),
-        FishCompletionContext::Agent(command) => condition
+        FishCompletionContext::Git(command) => condition
             .is_none_or(|condition| fish_condition_contains(condition, "__hz_command_is", command)),
     }
 }

@@ -40,17 +40,17 @@ zsh -fc '
   setopt nomatch
   source "$HZ_INTEGRATION"
 
-  eval "hz worktree new fix(broker)/help"
+  eval "hz git new fix(broker)/help"
   [[ "$PWD" == "$HZ_TARGET" ]]
-  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" worktree new "fix(broker)/help" --path-only)" ]]
+  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" git new "fix(broker)/help" --path-only)" ]]
 
   eval "hzcd fix(broker)/help"
   [[ "$PWD" == "$HZ_TARGET" ]]
-  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" worktree path "fix(broker)/help")" ]]
+  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" git path "fix(broker)/help")" ]]
 
   eval "hzlocal fix(broker)/help"
   [[ "$PWD" == "$HZ_TARGET" ]]
-  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" worktree path local "fix(broker)/help")" ]]
+  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" git path local "fix(broker)/help")" ]]
 
   [[ "${aliases[hz]:-}" == "noglob _hz" ]]
   [[ "${aliases[hzcd]:-}" == "noglob _hzcd" ]]
@@ -94,28 +94,21 @@ zsh -fc '
   grep -qx -- "--json" "$HZ_COMPLETIONS"
 
   : > "$HZ_COMPLETIONS"
-  words=(hz --machine w)
+  words=(hz --machine g)
   CURRENT=3
-  PREFIX=w
+  PREFIX=g
   _hz_completion
-  grep -qx -- "worktree:worktree commands" "$HZ_COMPLETIONS"
+  grep -qx -- "git:Git worktree commands" "$HZ_COMPLETIONS"
 
   : > "$HZ_COMPLETIONS"
-  words=(hz --machine wt list -)
+  words=(hz --machine git list -)
   CURRENT=5
   PREFIX=-
   _hz_completion
   grep -qx -- "--json" "$HZ_COMPLETIONS"
 
   : > "$HZ_COMPLETIONS"
-  words=(hz --machine worktree list -)
-  CURRENT=5
-  PREFIX=-
-  _hz_completion
-  grep -qx -- "--json" "$HZ_COMPLETIONS"
-
-  : > "$HZ_COMPLETIONS"
-  words=(hz worktree cd "")
+  words=(hz git cd "")
   CURRENT=4
   PREFIX=""
   _hz_worktree_targets

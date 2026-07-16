@@ -101,7 +101,7 @@ nix develop -c cargo build --workspace --all-targets --all-features --locked
 ```
 
 `just hz ...` is useful for commands that print output, but it cannot change the
-current shell directory. Use plain `hz worktree new` or `hz worktree cd` inside interactive
+current shell directory. Use plain `hz git new` or `hz git cd` inside interactive
 `nix develop` to exercise auto-cd behavior from the development binary without
 editing your shell rc file.
 
