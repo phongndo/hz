@@ -8,3 +8,7 @@ repository.workspace = true
 
 [dependencies]
 hz-core.workspace = true
+hz-scm.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

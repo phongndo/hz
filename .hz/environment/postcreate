@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+
+# Prepare a newly-created workspace here.

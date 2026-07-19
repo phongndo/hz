@@ -1,36 +1,29 @@
-# Benchmarks
+# hz benchmarks
 
-`hz-bench` contains headless benchmark utilities for the workspace CLI. It does
-not benchmark the old diff/TUI product; diff review benchmarks live with
-[`dx`](https://github.com/phongndo/dx).
-
-Build `hz`, then run the command benchmark:
+`hz-bench cmd` measures end-to-end CLI latency against a synthetic initialized
+workspace family.
 
 ```sh
 cargo build -p hz-cli --locked
-cargo run -p hz-bench -- cmd --hz target/debug/hz --worktrees 12 --iterations 10
+cargo run -p hz-bench -- cmd --hz target/debug/hz --workspaces 12 --iterations 10
 ```
 
-The benchmark creates an isolated temporary Git repo and HOME, creates synthetic
-`hz` worktrees, then measures end-to-end CLI latency for commands such as
-`hz git list`, `hz git path`, shell generation, and dynamic completion
-candidate lookup.
+The fixture creates an isolated Git repository and HOME, initializes the native
+COW strategy, creates child workspaces, and measures commands such as `hz list`,
+`hz path`, shell generation, and dynamic target completion. Use `--portable`
+only when testing command overhead on a filesystem without COW; reports record
+which materialization mode was used.
 
-Use JSON for machine-readable results:
+Include mutating create/trash measurements with:
 
 ```sh
 cargo run -p hz-bench -- cmd \
   --hz target/debug/hz \
-  --worktrees 50 \
-  --iterations 25 \
-  --json
+  --workspaces 12 \
+  --iterations 10 \
+  --mutating
 ```
 
-Use `--mutating` when you also want to measure create/remove latency:
-
-```sh
-cargo run -p hz-bench -- cmd --hz target/debug/hz --mutating
-```
-
-By default, fixtures are removed after the run. Pass `--keep <new-dir>` to keep
-the generated repo and isolated HOME for inspection.
+Use `--keep DIR` to preserve a fixture for inspection and `--json` for machine
+results. CI uses `--portable` for runner compatibility, while native APFS,
+btrfs, and reflink performance should be measured without it.

@@ -15,9 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
-crossterm.workspace = true
 hz-command.workspace = true
 hz-core.workspace = true
+serde.workspace = true
 serde_json.workspace = true
-time.workspace = true
-unicode-width.workspace = true

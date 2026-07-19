@@ -1,4 +1,4 @@
-use std::{fmt, io};
+use std::{fmt, io, path::PathBuf};
 
 pub type HzResult<T> = Result<T, HzError>;
 
@@ -6,7 +6,11 @@ pub type HzResult<T> = Result<T, HzError>;
 pub enum HzError {
     Io(io::Error),
     Json(serde_json::Error),
-    UnknownWorktree { target: String },
+    UnknownWorkspace { target: String },
+    WorkspaceNotInitialized(PathBuf),
+    MarkerMismatch(PathBuf),
+    MissingMarker(PathBuf),
+    CowUnavailable(String),
     Usage(String),
 }
 
@@ -15,11 +19,33 @@ impl fmt::Display for HzError {
         match self {
             Self::Io(error) => write!(formatter, "{error}"),
             Self::Json(error) => write!(formatter, "{error}"),
-            Self::UnknownWorktree { target } => write!(formatter, "unknown worktree: {target}"),
+            Self::UnknownWorkspace { target } => write!(formatter, "unknown workspace: {target}"),
+            Self::WorkspaceNotInitialized(path) => {
+                write!(
+                    formatter,
+                    "workspace is not initialized: {}",
+                    path.display()
+                )
+            }
+            Self::MarkerMismatch(path) => {
+                write!(
+                    formatter,
+                    "workspace marker does not match the registry: {}",
+                    path.display()
+                )
+            }
+            Self::MissingMarker(path) => {
+                write!(formatter, "workspace marker is missing: {}", path.display())
+            }
+            Self::CowUnavailable(message) => {
+                write!(formatter, "copy-on-write cloning unavailable: {message}")
+            }
             Self::Usage(message) => write!(formatter, "{message}"),
         }
     }
 }
+
+impl std::error::Error for HzError {}
 
 impl From<io::Error> for HzError {
     fn from(error: io::Error) -> Self {

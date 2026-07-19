@@ -5,254 +5,146 @@ function hz
         command hz
         return
     end
-
-    set cmd $argv[1]
+    set -l cmd $argv[1]
+    set -l navigate 0
     switch $cmd
+        case init new remove rm restore cd
+            set navigate 1
         case git
-            if test (count $argv) -lt 2
-                command hz $argv
-                return
-            end
-
-            set subcmd $argv[2]
-            switch $subcmd
-                case new fork handoff
-                    for arg in $argv
-                        switch $arg
-                            case --json --machine --path-only --help -h -j
-                                command hz $argv
-                                return
-                        end
-                    end
-
-                    set hz_target_path (command hz $argv --path-only)
-                    or return
-                    builtin cd "$hz_target_path"
-                    or return
-                case cd
-                    set rest $argv[3..-1]
-                    for arg in $rest
-                        switch $arg
-                            case --json --machine --path-only --help -h -j
-                                command hz $cmd $subcmd $rest
-                                return
-                        end
-                    end
-
-                    set hz_target_path (command hz $cmd path $rest)
-                    or return
-                    builtin cd "$hz_target_path"
-                    or return
-                case '*'
-                    command hz $argv
-            end
-        case '*'
-            command hz $argv
+            test (count $argv) -ge 2; and test "$argv[2]" = handoff; and set navigate 1
     end
+    if test $navigate -eq 1
+        for arg in $argv
+            if test "$arg" = --
+                break
+            end
+            switch $arg
+                case --json --machine --path-only --help -h -j
+                    command hz $argv
+                    return
+            end
+        end
+        if test "$cmd" = cd
+            set -e argv[1]
+            set -l path (command hz path $argv); or return
+            builtin cd "$path"
+        else
+            set -l hz_args
+            set -l inserted 0
+            for arg in $argv
+                if test $inserted -eq 0; and test "$arg" = --
+                    set -a hz_args --path-only
+                    set inserted 1
+                end
+                set -a hz_args "$arg"
+            end
+            if test $inserted -eq 0
+                set -a hz_args --path-only
+            end
+            set -l path (command hz $hz_args); or return
+            builtin cd "$path"
+        end
+        return
+    end
+    command hz $argv
 end
 
 function hzcd
-    hz git cd $argv
+    hz cd $argv
+end
+function hzroot
+    hz cd root $argv
 end
 
-function hzlocal
-    hz git cd local $argv
-end
-
-function __hz_complete_worktree_targets
-    set -l repo (__hz_current_repo_arg)
-    if test -n "$repo"
-        command hz __complete worktree-targets -r "$repo" 2>/dev/null
-    else
-        command hz __complete worktree-targets 2>/dev/null
-    end
-end
-
-function __hz_complete_removable_worktrees
-    set -l repo (__hz_current_repo_arg)
-    if test -n "$repo"
-        command hz __complete removable-worktrees -r "$repo" 2>/dev/null
-    else
-        command hz __complete removable-worktrees 2>/dev/null
-    end
-end
-
-function __hz_needs_git_subcommand
-    set -l cmd (__hz_command_token)
-    test "$cmd" = git; or return 1
-    set -l subcmd_index (__hz_subcommand_index)
-    test -z "$subcmd_index"
-end
-
-function __hz_is_global_flag
-    contains -- "$argv[1]" --machine -h --help -V --version
-end
-
-function __hz_completed_token_count
+function __hz_complete_targets
+    set -l kind $argv[1]
     set -l tokens (commandline -opc)
-    set -l current (commandline -ct)
-    set -l count (count $tokens)
-    test $count -gt 0; or return 1
-
-    if test "$tokens[$count]" = "$current"
-        set count (math $count - 1)
-    end
-
-    echo $count
-end
-
-function __hz_command_index
-    set -l tokens (commandline -opc)
-    set -l count (__hz_completed_token_count)
-    test -n "$count"; or return 1
-    test $count -ge 2; or return 1
-
-    for index in (seq 2 $count)
-        if __hz_is_global_flag "$tokens[$index]"
-            continue
-        end
-        echo $index
-        return 0
-    end
-    return 1
-end
-
-function __hz_command_token
-    set -l tokens (commandline -opc)
-    set -l index (__hz_command_index)
-    test -n "$index"; or return 1
-    echo $tokens[$index]
-end
-
-function __hz_subcommand_index
-    set -l tokens (commandline -opc)
-    set -l count (__hz_completed_token_count)
-    set -l command_index (__hz_command_index)
-    test -n "$count"; or return 1
-    test -n "$command_index"; or return 1
-
-    set -l start (math $command_index + 1)
-    test $start -le $count; or return 1
-
-    for index in (seq $start $count)
-        if __hz_is_global_flag "$tokens[$index]"
-            continue
-        end
-        echo $index
-        return 0
-    end
-    return 1
-end
-
-function __hz_subcommand_token
-    set -l tokens (commandline -opc)
-    set -l index (__hz_subcommand_index)
-    test -n "$index"; or return 1
-    echo $tokens[$index]
-end
-
-function __hz_top_command_is
-    set -l cmd (__hz_command_token)
-    contains -- "$cmd" $argv
-end
-
-function __hz_command_is
-    set -l cmd (__hz_command_token)
-    test -n "$cmd"; or return 1
-    if test "$cmd" = git
-        set cmd (__hz_subcommand_token)
-        test -n "$cmd"; or return 1
-    end
-
-    contains -- $cmd $argv
-end
-
-
-
-function __hz_current_repo_arg
-    set -l tokens (commandline -opc)
-    set -l count (count $tokens)
-    test $count -gt 0; or return
-
-    for index in (seq 1 $count)
-        switch $tokens[$index]
-            case -r --repo
-                set -l next_index (math $index + 1)
-                if test $next_index -le $count
-                    echo $tokens[$next_index]
-                    return
+    set -l at
+    set -l index 2
+    while test $index -le (count $tokens)
+        set -l token $tokens[$index]
+        switch $token
+            case --
+                break
+            case -a --at
+                set index (math $index + 1)
+                if test $index -le (count $tokens)
+                    set at $tokens[$index]
                 end
-            case '--repo=*'
-                string replace -- '--repo=' '' $tokens[$index]
-                return
+            case '--at=*'
+                set at (string replace -- '--at=' '' $token)
+            case '-a=*'
+                set at (string replace -- '-a=' '' $token)
+            case '-a?*'
+                set at (string sub --start 3 $token)
         end
+        set index (math $index + 1)
     end
-end
-
-function __hz_complete_git_refs
-    set -l repo (__hz_current_repo_arg)
-    if test -n "$repo"
-        command git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null
+    if test -n "$at"
+        command hz __complete $kind --at "$at" 2>/dev/null
     else
-        command git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null
+        command hz __complete $kind 2>/dev/null
     end
 end
 
-function __hz_previous_token
-    set -l tokens (commandline -opc)
-    set -l current (commandline -ct)
-    set -l count (count $tokens)
-    test $count -gt 0; or return
+function __hz_targets
+    __hz_complete_targets workspace-targets
+end
+function __hz_trash_targets
+    __hz_complete_targets trash-targets
+end
 
-    if test "$tokens[$count]" = "$current"
-        set count (math $count - 1)
+# Return command words after removing global options, whose positions are not
+# fixed because clap accepts them before or after subcommands.
+function __hz_command_tokens
+    set -l tokens (commandline -opc)
+    set -l index 2
+    while test $index -le (count $tokens)
+        set -l token $tokens[$index]
+        if not contains -- "$token" --machine -h --help -V --version
+            printf '%s\n' "$token"
+        end
+        set index (math $index + 1)
     end
-    test $count -gt 0; and echo $tokens[$count]
+end
+
+function __hz_top_level_is
+    set -l command_tokens (__hz_command_tokens)
+    test (count $command_tokens) -ge 1; and contains -- "$command_tokens[1]" $argv
+end
+
+function __hz_git_needs_subcommand
+    set -l command_tokens (__hz_command_tokens)
+    test (count $command_tokens) -eq 1; and test "$command_tokens[1]" = git
+end
+
+function __hz_git_needs_target
+    set -l command_tokens (__hz_command_tokens)
+    test (count $command_tokens) -ge 2; and test "$command_tokens[1]" = git; and contains -- "$command_tokens[2]" status handoff
+end
+
+function __hz_hg_needs_subcommand
+    set -l command_tokens (__hz_command_tokens)
+    test (count $command_tokens) -eq 1; and test "$command_tokens[1]" = hg
+end
+
+function __hz_hg_needs_target
+    set -l command_tokens (__hz_command_tokens)
+    test (count $command_tokens) -ge 2; and test "$command_tokens[1]" = hg; and test "$command_tokens[2]" = status
+end
+
+function __hz_config_needs_subcommand
+    set -l command_tokens (__hz_command_tokens)
+    test (count $command_tokens) -eq 1; and test "$command_tokens[1]" = config
 end
 
 complete -c hz -e
-complete -c hzcd -e
-complete -c hzlocal -e
-
 complete -c hz -f
-complete -c hz -n "not __fish_seen_subcommand_from init install shell update git" -a "init install shell update git"
-complete -c hz -n "__hz_needs_git_subcommand" -a "new fork path cd list ls pwd remove rm pin unpin handoff"
-
-complete -c hz -n "__hz_command_is cd path handoff" -a "(__hz_complete_worktree_targets)"
-complete -c hz -n "__hz_command_is rm remove pin unpin" -a "(__hz_complete_removable_worktrees)"
-complete -c hz -n "__hz_top_command_is init install shell" -a "zsh bash fish"
-complete -c hz -n "__hz_command_is new fork path cd list ls pwd remove rm pin unpin handoff init" -s r -l repo -r -F
-complete -c hz -n "__hz_command_is new fork" -s p -l path -r -F
-complete -c hz -n "__hz_command_is new" -s B -l base -r -a "(__hz_complete_git_refs)"
-complete -c hz -n "__hz_command_is new" -s b -l branch -r -a "(__hz_complete_git_refs)"
-complete -c hz -n "__hz_command_is new fork handoff" -l max-detached -r
-complete -c hz -n "__hz_command_is new handoff" -l max-branch-worktrees -r
-complete -c hz -n "__hz_command_is new" -l no-setup
-complete -c hz -n "__hz_command_is new" -l setup
-complete -c hz -n "__hz_command_is fork" -l no-diff
-complete -c hz -n "__hz_command_is list ls" -l pinned
-complete -c hz -n "__hz_command_is list ls" -l unpinned
-complete -c hz -n "__hz_command_is new fork path cd list ls pwd remove rm pin unpin handoff" -s j -l json
-complete -c hz -n "__hz_command_is new remove rm" -s d -l debug
-complete -c hz -n "__hz_command_is remove rm" -s f -l force
-complete -c hz -n "__hz_command_is remove rm" -l yes
-complete -c hz -n "__hz_command_is remove rm" -l no-cleanup
-complete -c hz -n "__hz_command_is remove rm" -l cleanup
-complete -c hz -n "__hz_command_is handoff" -s b -l branch
-complete -c hz -n "__hz_command_is handoff" -s n -l new
-complete -c hz -n "__hz_top_command_is update" -l target-version -r
-complete -c hz -n "__hz_top_command_is update" -l install-dir -r -F
-complete -c hz -l machine
-complete -c hz -s h -l help
-
-complete -c hzcd -f
-complete -c hzcd -a "(__hz_complete_worktree_targets)"
-complete -c hzcd -s r -l repo -r -F
-complete -c hzcd -s j -l json
-complete -c hzcd -s h -l help
-
-complete -c hzlocal -f
-complete -c hzlocal -s r -l repo -r -F
-complete -c hzlocal -s j -l json
-complete -c hzlocal -s h -l help
-complete -c hz -n "not __fish_seen_subcommand_from init install shell update git" -s V -l version
+complete -c hz -n 'not __fish_seen_subcommand_from init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell update' -a 'init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell update'
+complete -c hz -n '__hz_top_level_is path cd ancestors remove rm pin unpin' -a '(__hz_targets)'
+complete -c hz -n '__hz_top_level_is restore' -a '(__hz_trash_targets)'
+complete -c hz -n '__hz_git_needs_subcommand' -a 'status handoff'
+complete -c hz -n '__hz_git_needs_target' -a '(__hz_targets)'
+complete -c hz -n '__hz_hg_needs_subcommand' -a status
+complete -c hz -n '__hz_hg_needs_target' -a '(__hz_targets)'
+complete -c hz -n '__hz_config_needs_subcommand' -a init

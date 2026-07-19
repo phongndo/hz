@@ -1,987 +1,396 @@
 use super::*;
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-    process::Command as ProcessCommand,
-};
+use tempfile::TempDir;
 
 #[test]
-fn init_repo_creates_config_and_lifecycle_scripts_once() {
-    let test_dir = test_repo("hz-repo-init-test");
-
-    let init = init_repo(InitRepo {
-        repo: Some(test_dir.clone()),
+fn config_init_creates_new_workspace_lifecycle_files_once() {
+    let temp = TempDir::new().unwrap();
+    let first = init_config(InitConfig {
+        at: temp.path().to_path_buf(),
+    })
+    .unwrap();
+    let second = init_config(InitConfig {
+        at: temp.path().to_path_buf(),
     })
     .unwrap();
 
-    assert!(init.config_created);
-    assert!(init.setup_created);
-    assert!(init.cleanup_created);
-    assert_eq!(
-        fs::read_to_string(&init.config_path).unwrap(),
-        default_config()
-    );
-    assert!(
-        fs::read_to_string(&init.setup_path)
-            .unwrap()
-            .contains("Add repo setup commands here.")
-    );
-    assert!(
-        fs::read_to_string(&init.cleanup_path)
-            .unwrap()
-            .contains("Add repo cleanup commands here.")
+    assert!(first.config_created);
+    assert!(first.postcreate_created);
+    assert!(first.preremove_created);
+    assert!(!second.config_created);
+    assert!(!second.postcreate_created);
+    assert!(!second.preremove_created);
+    let config = HzConfig::load(temp.path()).unwrap();
+    assert!(config.lifecycle.postcreate.is_none());
+    assert!(config.lifecycle.preremove.is_none());
+}
+
+#[test]
+fn config_failure_precedes_workspace_activation() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join(".hz"), "blocks configuration").unwrap();
+    let mut manager = hz_workspace::Manager::open(temp.path().join("workspaces.sqlite")).unwrap();
+
+    let result = manager.init_with_setup(
+        InitWorkspace {
+            at: root.clone(),
+            here: true,
+            strategy: InitStrategy::Copy,
+        },
+        |at| {
+            init_config(InitConfig {
+                at: at.to_path_buf(),
+            })
+            .map_err(hz_workspace::Error::from)
+        },
     );
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        assert_ne!(
-            fs::metadata(&init.setup_path).unwrap().permissions().mode() & 0o111,
-            0
+    assert!(result.is_err());
+    assert!(!root.join(MARKER_FILE).exists());
+    assert!(matches!(
+        manager.current(&root),
+        Err(hz_workspace::Error::WorkspaceNotInitialized(path)) if path == std::fs::canonicalize(root).unwrap()
+    ));
+}
+
+#[test]
+fn legacy_hooks_remain_disabled_during_config_migration() {
+    let temp = TempDir::new().unwrap();
+    let hz = temp.path().join(".hz");
+    std::fs::create_dir(&hz).unwrap();
+    std::fs::write(
+        hz.join("hz.toml"),
+        r#"[worktree]
+auto_prune = true
+max_detached = 10
+max_branch_worktrees = 10
+
+[list]
+headers = "auto"
+columns = ["marker", "target", "status", "modified", "path"]
+
+[color]
+mode = "auto"
+scheme = "terminal"
+
+[lifecycle]
+setup = [".hz/environment/setup"]
+cleanup = [".hz/environment/cleanup"]
+"#,
+    )
+    .unwrap();
+
+    let initialized = init_config(InitConfig {
+        at: temp.path().to_path_buf(),
+    })
+    .unwrap();
+    let config = HzConfig::load(temp.path()).unwrap();
+
+    assert!(!initialized.config_created);
+    assert!(config.lifecycle.postcreate.is_none());
+    assert!(config.lifecycle.preremove.is_none());
+}
+
+#[test]
+fn current_hook_names_take_precedence_over_legacy_names() {
+    let temp = TempDir::new().unwrap();
+    let hz = temp.path().join(".hz");
+    std::fs::create_dir(&hz).unwrap();
+    std::fs::write(
+        hz.join("hz.toml"),
+        "[lifecycle]\nsetup = [\"old\"]\npostcreate = [\"new\"]\n",
+    )
+    .unwrap();
+
+    let config = HzConfig::load(temp.path()).unwrap();
+
+    assert_eq!(
+        config.lifecycle.postcreate.as_deref(),
+        Some(["new".to_owned()].as_slice())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_completions_route_nested_scm_targets_and_forward_at() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let shells = [
+        (
+            Shell::Bash,
+            "bash",
+            r#"
+source "$HZ_INTEGRATION"
+COMP_WORDS=(hz path --at "$HZ_AT" ""); COMP_CWORD=4; _hz_complete
+COMP_WORDS=(hz git handoff --at "$HZ_AT" ""); COMP_CWORD=5; _hz_complete
+COMP_WORDS=(hz git status --at "$HZ_AT" ""); COMP_CWORD=5; _hz_complete
+COMP_WORDS=(hz hg status --at "$HZ_AT" ""); COMP_CWORD=5; _hz_complete
+COMP_WORDS=(hz --machine git handoff --at "$HZ_AT" ""); COMP_CWORD=6; _hz_complete
+COMP_WORDS=(hz restore --at "$HZ_AT" ""); COMP_CWORD=4; _hz_complete
+"#,
+        ),
+        (
+            Shell::Zsh,
+            "zsh",
+            r#"
+source "$HZ_INTEGRATION"
+_arguments() { return 0 }
+_values() { return 0 }
+compadd() { return 0 }
+words=(hz path --at "$HZ_AT" ""); CURRENT=5; _hz_complete
+words=(hz git handoff --at "$HZ_AT" ""); CURRENT=6; _hz_complete
+words=(hz git status --at "$HZ_AT" ""); CURRENT=6; _hz_complete
+words=(hz hg status --at "$HZ_AT" ""); CURRENT=6; _hz_complete
+words=(hz --machine git handoff --at "$HZ_AT" ""); CURRENT=7; _hz_complete
+words=(hz restore --at "$HZ_AT" ""); CURRENT=5; _hz_complete
+"#,
+        ),
+        (
+            Shell::Fish,
+            "fish",
+            r#"
+source "$HZ_INTEGRATION"
+complete -C "hz path --at $HZ_AT " >/dev/null
+complete -C "hz git handoff --at $HZ_AT " >/dev/null
+complete -C "hz git status --at $HZ_AT " >/dev/null
+complete -C "hz hg status --at $HZ_AT " >/dev/null
+complete -C "hz --machine git handoff --at $HZ_AT " >/dev/null
+complete -C "hz restore --at $HZ_AT " >/dev/null
+"#,
+        ),
+    ];
+
+    for (shell, executable, command) in shells {
+        if Command::new(executable).arg("--version").output().is_err() {
+            continue;
+        }
+        let temp = TempDir::new().unwrap();
+        let bin = temp.path().join("bin");
+        let args = temp.path().join("args");
+        let at = temp.path().join("family");
+        let integration = temp.path().join("integration");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::create_dir(&at).unwrap();
+        std::fs::write(
+            bin.join("hz"),
+            "#!/bin/sh\nprintf 'CALL\\n' >> \"$HZ_ARGS\"\nprintf '%s\\n' \"$@\" >> \"$HZ_ARGS\"\nprintf 'alpha\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(bin.join("hz"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(&integration, shell_integration(shell)).unwrap();
+        let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .unwrap();
+
+        let output = Command::new(executable)
+            .args(["-c", command])
+            .env("PATH", path)
+            .env("HOME", temp.path())
+            .env("HZ_ARGS", &args)
+            .env("HZ_AT", &at)
+            .env("HZ_INTEGRATION", &integration)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{executable} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
-        assert_ne!(
-            fs::metadata(&init.cleanup_path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o111,
-            0
+        let workspace_call = format!(
+            "CALL\n__complete\nworkspace-targets\n--at\n{}\n",
+            at.display()
+        );
+        let trash_call = format!("CALL\n__complete\ntrash-targets\n--at\n{}\n", at.display());
+        assert_eq!(
+            std::fs::read_to_string(&args).unwrap(),
+            format!(
+                "{workspace_call}{workspace_call}{workspace_call}{workspace_call}{workspace_call}{trash_call}"
+            ),
+            "unexpected {executable} completion calls"
         );
     }
-
-    let second = init_repo(InitRepo {
-        repo: Some(test_dir.clone()),
-    })
-    .unwrap();
-    assert!(!second.config_created);
-    assert!(!second.setup_created);
-    assert!(!second.cleanup_created);
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn init_repo_uses_main_worktree_for_linked_worktree() {
-    let test_dir = test_repo("hz-repo-init-linked-test");
-    commit_initial(&test_dir);
-    let linked_dir = test_dir.with_file_name(format!(
-        "{}-linked",
-        test_dir.file_name().unwrap().to_string_lossy()
-    ));
-    let linked_arg = linked_dir.to_str().unwrap();
-    git(
-        &["worktree", "add", "-q", "--detach", linked_arg, "HEAD"],
-        &test_dir,
-    );
-
-    let init = init_repo(InitRepo {
-        repo: Some(linked_dir.clone()),
-    })
-    .unwrap();
-
-    assert_eq!(
-        fs::canonicalize(&init.repo).unwrap(),
-        fs::canonicalize(&test_dir).unwrap()
-    );
-    assert_eq!(
-        fs::canonicalize(init.config_path.parent().unwrap()).unwrap(),
-        fs::canonicalize(test_dir.join(".hz")).unwrap()
-    );
-    assert!(init.config_created);
-    assert!(!linked_dir.join(".hz").join("hz.toml").exists());
-
-    git(&["worktree", "remove", "-f", linked_arg], &test_dir);
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn init_repo_creates_hz_config_when_root_hz_toml_exists() {
-    let test_dir = test_repo("hz-repo-init-root-config-test");
-    fs::write(
-        test_dir.join("hz.toml"),
-        "[worktree]\ndefault_base = \"dev\"\n",
-    )
-    .unwrap();
-
-    let init = init_repo(InitRepo {
-        repo: Some(test_dir.clone()),
-    })
-    .unwrap();
-
-    assert!(init.config_created);
-    assert!(init.config_path.exists());
-    assert!(init.setup_created);
-    assert!(init.cleanup_created);
-
-    let config = load_repo_config(LoadRepoConfig {
-        repo: Some(test_dir.clone()),
-    })
-    .unwrap();
-    assert_eq!(config.default_base(), None);
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn lifecycle_setup_runs_configured_script_in_worktree() {
-    let test_dir = test_repo("hz-lifecycle-test");
-    fs::create_dir_all(test_dir.join(".hz").join("environment")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join(CONFIG_FILE),
-        "[lifecycle]\nsetup = [\".hz/environment/setup\"]\n",
-    )
-    .unwrap();
-    fs::write(
-        test_dir.join(".hz").join("environment").join("setup"),
-        "#!/usr/bin/env sh\nset -eu\nprintf '%s' \"$HZ_TARGET:$HZ_LIFECYCLE\" > lifecycle.out\n",
-    )
-    .unwrap();
-    make_executable(&test_dir.join(".hz").join("environment").join("setup")).unwrap();
-
-    let run = run_lifecycle(RunLifecycle {
-        target: None,
-        repo: Some(test_dir.clone()),
-        kind: LifecycleKind::Setup,
-    })
-    .unwrap();
-
-    assert!(run.configured);
-    assert_eq!(run.target, "local");
-    assert_eq!(
-        fs::read_to_string(test_dir.join("lifecycle.out")).unwrap(),
-        "local:setup"
-    );
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn lifecycle_command_streams_stdout_to_sink() {
-    let test_dir = test_repo("hz-lifecycle-stdout-test");
-    fs::create_dir_all(test_dir.join(".hz").join("environment")).unwrap();
-    let script = test_dir.join(".hz").join("environment").join("setup");
-    fs::write(&script, "#!/usr/bin/env sh\nprintf 'hello stdout'\n").unwrap();
-    make_executable(&script).unwrap();
-    let mut stdout = Vec::new();
-
-    run_lifecycle_command(
-        &test_dir,
-        &test_dir,
-        "local",
-        LifecycleKind::Setup,
-        &[".hz/environment/setup".to_owned()],
-        &mut stdout,
-    )
-    .unwrap();
-
-    assert_eq!(String::from_utf8(stdout).unwrap(), "hello stdout");
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn repo_config_loads_hz_directory_config() {
-    let test_dir = test_repo("hz-config-test");
-    fs::create_dir_all(test_dir.join(".hz")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join("hz.toml"),
-        "[worktree]\ndefault_base = \"dev\"\n",
-    )
-    .unwrap();
-
-    let config = load_repo_config(LoadRepoConfig {
-        repo: Some(test_dir.clone()),
-    })
-    .unwrap();
-
-    assert_eq!(config.default_base(), Some("dev"));
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn repo_config_ignores_root_hz_toml() {
-    let test_dir = test_repo("hz-config-root-test");
-    fs::write(
-        test_dir.join("hz.toml"),
-        "[worktree]\ndefault_base = \"dev\"\n",
-    )
-    .unwrap();
-
-    let config = load_repo_config(LoadRepoConfig {
-        repo: Some(test_dir.clone()),
-    })
-    .unwrap();
-
-    assert_eq!(config.default_base(), None);
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn repo_config_resolves_user_managed_worktree_roots() {
-    let repo = PathBuf::from("/repo/hz");
-    let home = PathBuf::from("/home/user");
-
-    assert_eq!(
-        resolve_user_managed_root_from_home(&repo, "../agent-worktrees", Some(&home)).unwrap(),
-        PathBuf::from("/repo/agent-worktrees")
-    );
-    assert_eq!(
-        resolve_user_managed_root_from_home(&repo, "~/agent-worktrees", Some(&home)).unwrap(),
-        PathBuf::from("/home/user/agent-worktrees")
-    );
-    assert_eq!(
-        resolve_user_managed_root_from_home(&repo, "/tmp/agent-worktrees", Some(&home)).unwrap(),
-        PathBuf::from("/tmp/agent-worktrees")
-    );
-    assert!(resolve_user_managed_root_from_home(&repo, "~/agent-worktrees", None).is_err());
-}
-
-#[test]
-fn repo_config_marks_git_worktree_paths_under_user_managed_roots() {
-    let test_dir = test_repo("hz-user-managed-roots-test");
-    let managed_root = test_dir.join("agent-worktrees");
-    let managed_path = managed_root.join("entry");
-    fs::create_dir_all(&managed_path).unwrap();
-    fs::create_dir_all(test_dir.join(".hz")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join("hz.toml"),
-        "[worktree]\nuser_managed_roots = [\"agent-worktrees\"]\n",
-    )
-    .unwrap();
-
-    let mut entry = WorktreeEntry {
-        id: "entry-id".to_owned(),
-        handle: "entry".to_owned(),
-        repo: test_dir.clone(),
-        path: managed_path,
-        branch: None,
-        base: None,
-        source: WorktreeSource::Git,
-        pinned: false,
-        created_at_unix: 0,
-        modified_at_unix: 0,
-        status: WorktreeStatus::Unknown,
-    };
-
-    assert!(is_user_managed_worktree_path(&entry).unwrap());
-    entry.path = test_dir.join("other").join("entry");
-    assert!(!is_user_managed_worktree_path(&entry).unwrap());
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn repo_config_marks_missing_paths_under_parent_relative_user_managed_roots() {
-    let test_dir = test_repo("hz-parent-user-managed-roots-test");
-    let managed_path = test_dir
-        .parent()
-        .unwrap()
-        .join("agent-worktrees")
-        .join("entry");
-    fs::create_dir_all(test_dir.join(".hz")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join("hz.toml"),
-        "[worktree]\nuser_managed_roots = [\"../agent-worktrees\"]\n",
-    )
-    .unwrap();
-
-    let entry = WorktreeEntry {
-        id: "entry-id".to_owned(),
-        handle: "entry".to_owned(),
-        repo: test_dir.clone(),
-        path: managed_path,
-        branch: None,
-        base: None,
-        source: WorktreeSource::Git,
-        pinned: false,
-        created_at_unix: 0,
-        modified_at_unix: 0,
-        status: WorktreeStatus::Unknown,
-    };
-
-    assert!(is_user_managed_worktree_path(&entry).unwrap());
-
-    fs::remove_dir_all(test_dir).unwrap();
 }
 
 #[cfg(unix)]
 #[test]
-fn user_managed_path_check_propagates_hz_namespace_errors() {
-    let entry = WorktreeEntry {
-        id: "entry-id".to_owned(),
-        handle: "entry".to_owned(),
-        repo: PathBuf::from("/"),
-        path: PathBuf::from("/worktrees/entry"),
-        branch: None,
-        base: None,
-        source: WorktreeSource::Git,
-        pinned: false,
-        created_at_unix: 0,
-        modified_at_unix: 0,
-        status: WorktreeStatus::Unknown,
-    };
+fn zsh_completion_dispatches_after_global_options() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
 
-    let error = is_user_managed_worktree_path(&entry).unwrap_err();
-
-    assert_eq!(error.to_string(), "repo path has no name: /");
-}
-
-#[test]
-fn create_worktree_defaults_base_from_repo_config() {
-    let test_dir = test_repo("hz-create-default-base-test");
-    fs::create_dir_all(test_dir.join(".hz")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join("hz.toml"),
-        "[worktree]\ndefault_base = \"dev\"\n",
+    if Command::new("zsh").arg("--version").output().is_err() {
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let bin = temp.path().join("bin");
+    let calls = temp.path().join("calls");
+    let values = temp.path().join("values");
+    let integration = temp.path().join("integration");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::write(
+        bin.join("hz"),
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$HZ_CALLS\"\n",
     )
     .unwrap();
-
-    let input = create_worktree_with_config_defaults(CreateWorktree {
-        name: Some("feature/ui".to_owned()),
-        repo: Some(test_dir.clone()),
-        path: None,
-        base: None,
-        branch: None,
-        detached: false,
-        max_detached_worktrees: None,
-        max_branch_worktrees: None,
-    })
+    std::fs::set_permissions(bin.join("hz"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(&integration, shell_integration(Shell::Zsh)).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
     .unwrap();
 
-    assert_eq!(input.base.as_deref(), Some("dev"));
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn create_worktree_keeps_explicit_base_over_repo_config() {
-    let test_dir = test_repo("hz-create-explicit-base-test");
-    fs::create_dir_all(test_dir.join(".hz")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join("hz.toml"),
-        "[worktree]\ndefault_base = \"dev\"\n",
-    )
-    .unwrap();
-
-    let input = create_worktree_with_config_defaults(CreateWorktree {
-        name: Some("feature/ui".to_owned()),
-        repo: Some(test_dir.clone()),
-        path: None,
-        base: Some("main".to_owned()),
-        branch: None,
-        detached: false,
-        max_detached_worktrees: None,
-        max_branch_worktrees: None,
-    })
-    .unwrap();
-
-    assert_eq!(input.base.as_deref(), Some("main"));
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn create_worktree_defaults_branch_limit_from_repo_config() {
-    let test_dir = test_repo("hz-create-branch-limit-test");
-    fs::create_dir_all(test_dir.join(".hz")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join("hz.toml"),
-        "[worktree]\nmax_branch_worktrees = 7\n",
-    )
-    .unwrap();
-
-    let input = create_worktree_with_config_defaults(CreateWorktree {
-        name: Some("feature/ui".to_owned()),
-        repo: Some(test_dir.clone()),
-        path: None,
-        base: None,
-        branch: None,
-        detached: false,
-        max_detached_worktrees: None,
-        max_branch_worktrees: None,
-    })
-    .unwrap();
-
-    assert_eq!(input.max_branch_worktrees, Some(7));
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn create_worktree_disables_detached_prune_when_auto_prune_false() {
-    let test_dir = test_repo("hz-create-auto-prune-detached-test");
-    fs::create_dir_all(test_dir.join(".hz")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join("hz.toml"),
-        "[worktree]\nauto_prune = false\nmax_detached = 7\n",
-    )
-    .unwrap();
-
-    let input = create_worktree_with_config_defaults(CreateWorktree {
-        name: None,
-        repo: Some(test_dir.clone()),
-        path: None,
-        base: None,
-        branch: None,
-        detached: false,
-        max_detached_worktrees: None,
-        max_branch_worktrees: None,
-    })
-    .unwrap();
-
-    assert_eq!(input.max_detached_worktrees, Some(0));
-    assert_eq!(input.max_branch_worktrees, None);
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn create_worktree_disables_branch_prune_when_auto_prune_false() {
-    let test_dir = test_repo("hz-create-auto-prune-branch-test");
-    fs::create_dir_all(test_dir.join(".hz")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join("hz.toml"),
-        "[worktree]\nauto_prune = false\nmax_branch_worktrees = 7\n",
-    )
-    .unwrap();
-
-    let input = create_worktree_with_config_defaults(CreateWorktree {
-        name: Some("feature/ui".to_owned()),
-        repo: Some(test_dir.clone()),
-        path: None,
-        base: None,
-        branch: None,
-        detached: false,
-        max_detached_worktrees: None,
-        max_branch_worktrees: None,
-    })
-    .unwrap();
-
-    assert_eq!(input.max_detached_worktrees, None);
-    assert_eq!(input.max_branch_worktrees, Some(0));
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn create_worktree_keeps_explicit_prune_limit_when_auto_prune_false() {
-    let test_dir = test_repo("hz-create-auto-prune-explicit-limit-test");
-    fs::create_dir_all(test_dir.join(".hz")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join("hz.toml"),
-        "[worktree]\nauto_prune = false\n",
-    )
-    .unwrap();
-
-    let input = create_worktree_with_config_defaults(CreateWorktree {
-        name: None,
-        repo: Some(test_dir.clone()),
-        path: None,
-        base: None,
-        branch: None,
-        detached: false,
-        max_detached_worktrees: Some(3),
-        max_branch_worktrees: None,
-    })
-    .unwrap();
-
-    assert_eq!(input.max_detached_worktrees, Some(3));
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn handoff_new_defaults_branch_limit_from_repo_config() {
-    let test_dir = test_repo("hz-handoff-branch-limit-test");
-    fs::create_dir_all(test_dir.join(".hz")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join("hz.toml"),
-        "[worktree]\nmax_branch_worktrees = 7\n",
-    )
-    .unwrap();
-
-    let input = with_configured_handoff_limits(HandoffWorktree {
-        target: Some("feature/ui".to_owned()),
-        mode: HandoffMode::Patch,
-        repo: Some(test_dir.clone()),
-        create: true,
-        max_detached_worktrees: None,
-        max_branch_worktrees: None,
-    })
-    .unwrap();
-
-    assert_eq!(input.max_branch_worktrees, Some(7));
-    assert_eq!(input.max_detached_worktrees, None);
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn fork_defaults_detached_limit_from_repo_config() {
-    let test_dir = test_repo("hz-fork-detached-limit-test");
-    fs::create_dir_all(test_dir.join(".hz")).unwrap();
-    fs::write(
-        test_dir.join(".hz").join("hz.toml"),
-        "[worktree]\nmax_detached = 6\n",
-    )
-    .unwrap();
-
-    let input = fork_worktree_with_config_defaults(ForkWorktree {
-        name: Some("copy".to_owned()),
-        repo: Some(test_dir.clone()),
-        path: None,
-        include_diff: true,
-        max_detached_worktrees: None,
-    })
-    .unwrap();
-
-    assert_eq!(input.max_detached_worktrees, Some(6));
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn lifecycle_is_noop_without_configured_command() {
-    let test_dir = test_repo("hz-lifecycle-noop-test");
-
-    let run = run_lifecycle(RunLifecycle {
-        target: None,
-        repo: Some(test_dir.clone()),
-        kind: LifecycleKind::Cleanup,
-    })
-    .unwrap();
-
-    assert!(!run.configured);
-    assert_eq!(run.target, "local");
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn lifecycle_target_is_consistent_for_created_and_found_worktrees() {
-    let created = CreatedWorktree {
-        id: "id".to_owned(),
-        name: "handle".to_owned(),
-        handle: "handle".to_owned(),
-        repo: PathBuf::from("/repo"),
-        path: PathBuf::from("/repo/../worktrees/handle"),
-        branch: Some("feature/login".to_owned()),
-        base: None,
-        source: WorktreeSource::Managed,
-        warnings: Vec::new(),
-    };
-    let found = WorktreeEntry {
-        id: "id".to_owned(),
-        handle: "handle".to_owned(),
-        repo: PathBuf::from("/repo"),
-        path: PathBuf::from("/repo/../worktrees/handle"),
-        branch: Some("feature/login".to_owned()),
-        base: None,
-        source: WorktreeSource::Managed,
-        pinned: false,
-        created_at_unix: 0,
-        modified_at_unix: 0,
-        status: WorktreeStatus::Unknown,
-    };
-
-    assert_eq!(created_worktree_target(&created), "feature/login");
-    assert_eq!(worktree_target(&found), "feature/login");
-
-    let detached = CreatedWorktree {
-        branch: None,
-        ..created
-    };
-    assert_eq!(created_worktree_target(&detached), "handle");
-}
-
-#[test]
-fn zsh_init_line_is_rc_file_friendly() {
-    assert_eq!(shell_init_line(Shell::Zsh), r#"eval "$(hz shell zsh)""#);
-}
-
-#[test]
-fn shell_rc_paths_respect_zdotdir_and_ignore_empty_xdg_config_home() {
-    let home = Some(PathBuf::from("/home/user"));
-
-    assert_eq!(
-        shell_rc_path_from_env(
-            Shell::Zsh,
-            home.clone(),
-            Some(PathBuf::from("/tmp/zdotdir")),
-            None,
-        )
-        .unwrap(),
-        PathBuf::from("/tmp/zdotdir/.zshrc")
-    );
-    assert_eq!(
-        shell_rc_path_from_env(Shell::Fish, home, None, Some(PathBuf::new())).unwrap(),
-        PathBuf::from("/home/user/.config/fish/config.fish")
-    );
-}
-
-#[test]
-fn shell_rc_paths_do_not_fall_back_to_empty_home() {
-    assert_eq!(
-        shell_rc_path_from_env(
-            Shell::Zsh,
-            Some(PathBuf::new()),
-            Some(PathBuf::from("/tmp/zdotdir")),
-            None,
-        )
-        .unwrap(),
-        PathBuf::from("/tmp/zdotdir/.zshrc")
-    );
-    assert_eq!(
-        shell_rc_path_from_env(
-            Shell::Fish,
-            Some(PathBuf::new()),
-            None,
-            Some(PathBuf::from("/tmp/config")),
-        )
-        .unwrap(),
-        PathBuf::from("/tmp/config/fish/config.fish")
-    );
-    assert!(shell_rc_path_from_env(Shell::Bash, Some(PathBuf::new()), None, None).is_err());
-}
-
-#[test]
-fn zsh_integration_wraps_new_and_cd() {
-    let script = shell_integration(Shell::Zsh);
-    let hzlocal_completion = script
-        .split("_hzlocal_completion() {")
-        .nth(1)
-        .and_then(|completion| completion.split("\n}").next())
-        .expect("hzlocal completion function should exist");
-
-    assert!(script.contains("command hz \"$@\" --path-only"));
-    assert!(script.contains("alias hz='noglob _hz'"));
-    assert!(script.contains("_hz() {"));
-    assert!(script.contains("alias hzcd='noglob _hzcd'"));
-    assert!(script.contains("_hzcd() {"));
-    assert!(script.contains("alias hzlocal='noglob _hzlocal'"));
-    assert!(script.contains("_hzlocal() {"));
-    assert!(script.contains("git)"));
-    assert!(script.contains("handoff)"));
-    assert!(script.contains("--json|--machine|--path-only|--help|-h|-j"));
-    assert!(script.contains("builtin cd \"$hz_target_path\" || return"));
-    assert!(script.contains("command hz __complete worktree-targets \"${complete_args[@]}\""));
-    assert!(script.contains("command hz __complete removable-worktrees \"${complete_args[@]}\""));
-    assert!(script.contains("complete_args=(-r \"$repo\")"));
-    assert!(script.contains("compdef _hz_completion hz _hz"));
-    assert!(script.contains("compdef _hzcd_completion hzcd _hzcd"));
-    assert!(script.contains("compdef _hzlocal_completion hzlocal _hzlocal"));
-    assert!(script.contains("_hz_deferred_register_completion()"));
-    assert!(script.contains("add-zsh-hook precmd _hz_deferred_register_completion"));
-    assert!(script.contains("compadd -- --machine -h --help -V --version"));
-    assert!(script.contains("if [[ \"$PREFIX\" == -* ]]; then"));
-    assert!(script.contains("_hz_complete_command_options \"$cmd\""));
-    assert!(script.contains("_hz_complete_command_positionals \"$cmd\""));
-    assert!(script.contains("_hz_complete_option_value \"$cmd\""));
-    assert!(script.contains("_hz_command_word_index"));
-    assert!(script.contains("_hz_subcommand_word_index"));
-    assert!(script.contains("_hz_is_global_flag"));
-    assert!(script.contains("_hz_git_refs"));
-    assert!(script.contains("--branch)"));
-    assert!(!script.contains("-b|--branch"));
-    assert!(script.contains("compinit -C"));
-    assert!(script.contains("shift $(( cmd_index - 1 )) words"));
-    assert!(script.contains("shift $(( subcmd_index - 1 )) words"));
-    assert!(script.contains("'rm:remove one or more worktrees'"));
-    assert!(script.contains("'install:install shell integration'"));
-    assert!(script.contains("'fork:fork the current worktree state'"));
-    assert!(script.contains("'update:update hz from GitHub releases'"));
-    assert!(!script.contains("'setup:run worktree setup'"));
-    assert!(!script.contains("'cleanup:run worktree cleanup'"));
-    assert!(!script.contains("'diff:review a git diff'"));
-    assert!(!script.contains("'ts:manage diff syntax highlighting languages'"));
-    assert!(!script.contains("tree-sitter"));
-    assert!(!script.contains("tui:open the terminal UI"));
-    assert!(script.contains("--setup"));
-    assert!(script.contains("--no-setup"));
-    assert!(script.contains("--cleanup"));
-    assert!(script.contains("--no-cleanup"));
-    assert!(script.contains("--max-detached"));
-    assert!(!script.contains("--force-self-update"));
-    assert!(!script.contains("--pr"));
-    assert!(!script.contains("--patch"));
-    assert!(!script.contains("--staged"));
-    assert!(!script.contains("--unstaged"));
-    assert!(!script.contains("--no-untracked"));
-    assert!(!script.contains("--no-watch"));
-    assert!(!script.contains("--no-syntax"));
-    assert!(hzlocal_completion.contains("_hz_complete_command_options cd"));
-    assert!(!hzlocal_completion.contains("_hz_complete_command_positionals cd"));
-}
-
-#[test]
-fn fish_integration_passes_json_short_flag_through() {
-    let script = shell_integration(Shell::Fish);
-
-    assert!(script.contains("case --json --machine --path-only --help -h -j"));
-    assert!(script.contains("or return"));
-    assert!(script.contains("command hz __complete worktree-targets -r \"$repo\""));
-    assert!(script.contains("command hz __complete removable-worktrees -r \"$repo\""));
-    assert!(script.contains("__hz_command_is"));
-    assert!(script.contains("__hz_top_command_is update"));
-    assert!(script.contains("__hz_command_token"));
-    assert!(script.contains("__hz_subcommand_token"));
-    assert!(script.contains("__hz_is_global_flag"));
-    assert!(script.contains("__hz_complete_git_refs"));
-    assert!(script.contains("complete -c hz -n \"__hz_command_is remove rm\""));
-    assert!(script.contains("init install shell update git"));
-    assert!(!script.contains(" worktree wt"));
-    assert!(!script.contains(" agent"));
-    assert!(!script.contains(" diff "));
-    assert!(!script.contains("__hz_command_is diff"));
-    assert!(!script.contains("tree-sitter"));
-    assert!(!script.contains("__hz_needs_ts_subcommand"));
-    assert!(script.contains("not __fish_seen_subcommand_from init install shell update"));
-    assert!(script.contains("-l setup"));
-    assert!(script.contains("-l no-setup"));
-    assert!(script.contains("-l cleanup"));
-    assert!(script.contains("-l no-cleanup"));
-    assert!(script.contains("-l max-detached"));
-    assert!(script.contains("-l no-diff"));
-    assert!(script.contains("-l target-version"));
-    assert!(!script.contains("-l force-self-update"));
-    assert!(!script.contains("tui"));
-}
-
-#[test]
-fn bash_integration_registers_completion() {
-    let script = shell_integration(Shell::Bash);
-    let git_completion = script
-        .split("if [[ \"$cmd\" == \"git\" ]]; then")
-        .nth(1)
-        .and_then(|completion| {
-            completion
-                .split("_hz_complete_command_args \"$cmd\"")
-                .next()
-        })
-        .expect("git completion branch should exist");
-
-    assert!(script.contains("complete -F _hz_completion hz"));
-    assert!(script.contains("_hz_dynamic_reply worktree-targets"));
-    assert!(script.contains("_hz_dynamic_reply removable-worktrees"));
-    assert!(script.contains("command hz __complete \"$command\" -r \"$repo\""));
-    assert!(script.contains("for ((index = 1; index < COMP_CWORD; index++))"));
-    assert!(!script.contains("_hz_agent_commands"));
-    assert!(script.contains("_hz_git_commands"));
-    assert!(script.contains("_hz_complete_option_value"));
-    assert!(script.contains("_hz_command_word_index"));
-    assert!(script.contains("_hz_subcommand_word_index"));
-    assert!(script.contains("_hz_is_global_flag"));
-    assert!(script.contains("_hz_git_ref_reply"));
-    assert!(script.contains("--branch)"));
-    assert!(!script.contains("-b|--branch"));
-    assert!(script.contains("init install shell update git"));
-    assert!(!script.contains(" worktree wt"));
-    assert!(!script.contains(" agent"));
-    assert!(!script.contains("tree-sitter"));
-    assert!(!script.contains("_hz_complete_ts_args"));
-    assert!(script.contains("--setup"));
-    assert!(script.contains("--no-setup"));
-    assert!(script.contains("--cleanup"));
-    assert!(script.contains("--no-cleanup"));
-    assert!(script.contains("--max-detached"));
-    assert!(script.contains("--target-version"));
-    assert!(!script.contains("--force-self-update"));
-    assert!(!script.contains("--pr"));
-    assert!(!script.contains("--patch"));
-    assert!(!script.contains("--staged"));
-    assert!(!script.contains("--unstaged"));
-    assert!(!script.contains("--no-untracked"));
-    assert!(!script.contains("--no-watch"));
-    assert!(!script.contains("--no-syntax"));
-    assert!(
-        git_completion
-            .contains("_hz_complete_command_args \"${COMP_WORDS[$subcmd_index]}\" \"$current\"")
-    );
-    assert!(!script.contains("tui"));
-}
-
-#[test]
-fn installs_line_once() {
-    let test_dir = env::temp_dir().join(format!(
-        "hz-init-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be after unix epoch")
-            .as_nanos()
-    ));
-    let rc_file = test_dir.join(".zshrc");
-
-    assert!(install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
-    assert!(!install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
-
-    let contents = fs::read_to_string(&rc_file).unwrap();
-    assert_eq!(contents.matches(shell_init_line(Shell::Zsh)).count(), 1);
-    assert_eq!(contents.matches(shell_init_comment()).count(), 1);
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn creates_backup_before_first_rc_file_install() {
-    let test_dir = shell_install_test_dir("hz-init-backup-test");
-    let rc_file = test_dir.join(".zshrc");
-    let original = "export PATH=\"$HOME/bin:$PATH\"\n";
-    fs::write(&rc_file, original).unwrap();
-
-    assert!(install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
-
-    let contents = fs::read_to_string(&rc_file).unwrap();
-    assert_eq!(
-        contents,
-        format!(
-            "{}{}\n{}\n",
-            original,
-            shell_init_comment(),
-            shell_init_line(Shell::Zsh)
-        )
-    );
-    assert_eq!(
-        fs::read_to_string(shell_rc_backup_path(&rc_file).unwrap()).unwrap(),
-        original
-    );
-    assert_no_shell_rc_temp_files(&test_dir);
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn does_not_overwrite_existing_rc_file_backup() {
-    let test_dir = shell_install_test_dir("hz-init-existing-backup-test");
-    let rc_file = test_dir.join(".zshrc");
-    let backup_file = shell_rc_backup_path(&rc_file).unwrap();
-    fs::write(&rc_file, "alias ll='ls -l'\n").unwrap();
-    fs::write(&backup_file, "user backup\n").unwrap();
-
-    assert!(install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
-
-    assert_eq!(fs::read_to_string(&backup_file).unwrap(), "user backup\n");
-    assert_no_shell_rc_temp_files(&test_dir);
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[cfg(unix)]
-#[test]
-fn installs_line_without_replacing_symlinked_rc_file() {
-    let test_dir = shell_install_test_dir("hz-init-symlink-test");
-    let target_dir = test_dir.join("dotfiles");
-    fs::create_dir_all(&target_dir).unwrap();
-    let rc_file = test_dir.join(".zshrc");
-    let target_file = target_dir.join("zshrc");
-    fs::write(&target_file, "# managed dotfile\n").unwrap();
-    std::os::unix::fs::symlink(&target_file, &rc_file).unwrap();
-
-    assert!(install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
-
-    assert!(
-        fs::symlink_metadata(&rc_file)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-    assert_eq!(
-        fs::read_to_string(&target_file).unwrap(),
-        format!(
-            "# managed dotfile\n{}\n{}\n",
-            shell_init_comment(),
-            shell_init_line(Shell::Zsh)
-        )
-    );
-    assert_eq!(
-        fs::read_to_string(shell_rc_backup_path(&rc_file).unwrap()).unwrap(),
-        "# managed dotfile\n"
-    );
-    assert_no_shell_rc_temp_files(&test_dir);
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-#[test]
-fn does_not_duplicate_existing_bare_line() {
-    let test_dir = env::temp_dir().join(format!(
-        "hz-init-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be after unix epoch")
-            .as_nanos()
-    ));
-    let rc_file = test_dir.join(".zshrc");
-    fs::create_dir_all(&test_dir).unwrap();
-    fs::write(&rc_file, format!("{}\n", shell_init_line(Shell::Zsh))).unwrap();
-
-    assert!(!install_line(&rc_file, shell_init_line(Shell::Zsh)).unwrap());
-
-    let contents = fs::read_to_string(&rc_file).unwrap();
-    assert_eq!(contents.matches(shell_init_line(Shell::Zsh)).count(), 1);
-    assert_eq!(contents.matches(shell_init_comment()).count(), 0);
-
-    fs::remove_dir_all(test_dir).unwrap();
-}
-
-fn shell_install_test_dir(prefix: &str) -> PathBuf {
-    let test_dir = env::temp_dir().join(format!(
-        "{prefix}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be after unix epoch")
-            .as_nanos()
-    ));
-    fs::create_dir_all(&test_dir).unwrap();
-    test_dir
-}
-
-fn assert_no_shell_rc_temp_files(path: &Path) {
-    assert!(!fs::read_dir(path).unwrap().any(|entry| {
-        entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".tmp")
-    }));
-}
-
-fn test_repo(prefix: &str) -> PathBuf {
-    let test_dir = env::temp_dir().join(format!(
-        "{prefix}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be after unix epoch")
-            .as_nanos()
-    ));
-    fs::create_dir_all(&test_dir).unwrap();
-    let status = ProcessCommand::new("git")
-        .arg("init")
-        .arg("-q")
-        .arg(&test_dir)
-        .status()
-        .unwrap();
-    assert!(status.success());
-    test_dir
-}
-
-fn commit_initial(repo: &Path) {
-    git(&["config", "user.email", "test@example.com"], repo);
-    git(&["config", "user.name", "Test"], repo);
-    fs::write(repo.join("file.txt"), "base\n").unwrap();
-    git(&["add", "file.txt"], repo);
-    git(&["commit", "-q", "-m", "init"], repo);
-}
-
-fn git(args: &[&str], cwd: &Path) {
-    let output = ProcessCommand::new("git")
-        .current_dir(cwd)
-        .args(args)
+    let output = Command::new("zsh")
+        .args([
+            "-c",
+            r#"
+source "$HZ_INTEGRATION"
+_arguments() { return 0 }
+_values() { printf '%s\n' "$@" >> "$HZ_VALUES" }
+compadd() { return 0 }
+words=(hz --machine git ""); CURRENT=4; _hz_complete
+words=(hz --machine path ""); CURRENT=4; _hz_complete
+"#,
+        ])
+        .env("PATH", path)
+        .env("HOME", temp.path())
+        .env("HZ_CALLS", &calls)
+        .env("HZ_VALUES", &values)
+        .env("HZ_INTEGRATION", &integration)
         .output()
-        .expect("git should run");
+        .unwrap();
+
     assert!(
         output.status.success(),
-        "git failed: {}",
+        "zsh failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert_eq!(
+        std::fs::read_to_string(values).unwrap(),
+        "git command\nstatus\nhandoff\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(calls).unwrap(),
+        "__complete\nworkspace-targets\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bash_target_completion_preserves_whitespace_and_glob_characters() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    if Command::new("bash").arg("--version").output().is_err() {
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let bin = temp.path().join("bin");
+    let integration = temp.path().join("integration");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::write(
+        bin.join("hz"),
+        "#!/bin/sh\nprintf '%s\\n' 'parser fix' 'parser * fix' other\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("hz"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(&integration, shell_integration(Shell::Bash)).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+
+    let output = Command::new("bash")
+        .args([
+            "-c",
+            r#"
+source "$HZ_INTEGRATION"
+COMP_WORDS=(hz path "parser"); COMP_CWORD=2; _hz_complete
+[[ "${#COMPREPLY[@]}" -eq 2 ]]
+[[ "${COMPREPLY[0]}" == "parser fix" ]]
+[[ "${COMPREPLY[1]}" == "parser * fix" ]]
+"#,
+        ])
+        .env("PATH", path)
+        .env("HOME", temp.path())
+        .env("HZ_INTEGRATION", integration)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "bash failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_wrappers_insert_path_only_before_argument_terminators() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let shells = [
+        (
+            Shell::Bash,
+            "bash",
+            "source \"$HZ_INTEGRATION\"; hz new -- -scratch",
+        ),
+        (
+            Shell::Zsh,
+            "zsh",
+            "source \"$HZ_INTEGRATION\"; eval 'hz new -- -scratch'",
+        ),
+        (
+            Shell::Fish,
+            "fish",
+            "source \"$HZ_INTEGRATION\"; hz new -- -scratch",
+        ),
+    ];
+
+    for (shell, executable, command) in shells {
+        if Command::new(executable).arg("--version").output().is_err() {
+            continue;
+        }
+        let temp = TempDir::new().unwrap();
+        let bin = temp.path().join("bin");
+        let target = temp.path().join("target");
+        let args = temp.path().join("args");
+        let integration = temp.path().join("integration");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(
+            bin.join("hz"),
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HZ_ARGS\"\nprintf '%s\\n' \"$HZ_TARGET\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(bin.join("hz"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(&integration, shell_integration(shell)).unwrap();
+        let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .unwrap();
+
+        let output = Command::new(executable)
+            .args(["-c", command])
+            .env("PATH", path)
+            .env("HOME", temp.path())
+            .env("HZ_ARGS", &args)
+            .env("HZ_TARGET", &target)
+            .env("HZ_INTEGRATION", &integration)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{executable} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(args).unwrap(),
+            "new\n--path-only\n--\n-scratch\n"
+        );
+    }
 }

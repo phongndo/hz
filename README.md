@@ -1,228 +1,190 @@
 # hz
 
-[![Quality](https://github.com/phongndo/hz/actions/workflows/quality.yml/badge.svg)](https://github.com/phongndo/hz/actions/workflows/quality.yml)
-[![Release](https://github.com/phongndo/hz/actions/workflows/release.yml/badge.svg)](https://github.com/phongndo/hz/actions/workflows/release.yml)
+`hz` creates fast, isolated copy-on-write workspaces for parallel humans and
+agents. Workspaces are independent directories arranged in a logical ancestry
+tree; source control is an integration, not the workspace substrate.
 
-`hz` is a fast terminal workflow for parallel development with agents. It
-creates isolated Git workspaces, makes it fast to move between them, hands off
-diffs safely, and runs repo-local lifecycle hooks.
-
-## Status
-
-`hz` is pre-1.0. The current release is usable for local Git worktree, handoff,
-lifecycle, shell integration, machine-readable JSON output, and install/update
-workflows. Prefer `--machine` or `--json` for scripts, and expect command shapes
-to keep tightening before 1.0.
-
-## What hz does today
-
-- Creates isolated Git worktrees for parallel human or AI-agent tasks.
-- Forks the current worktree state into a detached scratch worktree.
-- Installs shell integration so `hz git new`, `hz git fork`, `hz git cd`, and `hz git handoff`
-  can change your current directory.
-- Applies uncommitted changes between linked worktrees without forcing a commit.
-- Moves branch ownership between worktrees when both sides are clean.
-- Runs repo-local setup and cleanup hooks on explicit opt-in create/remove flags for reproducible agent workspaces.
-- Exposes JSON and `--machine` modes for agents and automation.
-- Lists, finds, prunes, and removes managed and unmanaged worktrees.
-- Pins managed worktrees so auto-prune will not remove them.
-- Installs and updates release binaries from GitHub releases.
+> Hz is pre-1.0. Native copy-on-write currently targets macOS and Linux;
+> `hz init --copy` provides an explicit portable fallback.
 
 ## Quickstart
 
 ```sh
-# one-time repo setup
+cd ~/code/app
 hz init
+
 git add .hz
-git commit -m "Add hz lifecycle config"
-hz install zsh      # or bash/fish; restart or source your shell rc file
+# Commit the generated lifecycle configuration when this is a Git repository.
 
-# create an isolated workspace for a task/agent and cd into it
-hz git new fix-login
+hz install zsh                 # or bash/fish; restart or source your rc
+hz new parser-fix              # creates a child and enters it
 
-# run your terminal AI agent or manual workflow here
-# ...edit files...
+# Work in the independent workspace, then inspect or hand changes back.
+hz pwd
+hz ls --tree
+hz git status
+hz git handoff root
 
-# hand the diff back to the linked local worktree and return there
-hz git handoff
-
-# review with dx if desired, then clean up
-dx
-hz git rm -f fix-login    # force is needed if the source worktree still has handed-off changes
+hz rm parser-fix               # moves its subtree to trash
+hz gc                          # physically deletes trash
 ```
 
-Without shell integration, use `hz git path <target>` to print a worktree path and
-`cd "$(hz git path <target>)"` from your shell.
-
-For agents and scripts, prefer the machine-readable surface:
+Without shell integration:
 
 ```sh
-hz --machine git new fix-login --repo .
-hz --machine git list --repo .
-hz --machine git handoff fix-login --repo .
-hz --machine git remove fix-login --repo . --force
+cd "$(hz new parser-fix --path-only)"
+cd "$(hz path root)"
 ```
 
-`hz init` writes repo-local lifecycle files under `.hz/`. Commit them before
-starting the task flow above so the destination worktree is clean when
-`hz git handoff` applies changes back to it. For a throwaway first demo where you do
-not need lifecycle hooks, skip `hz init`.
+## Workspace model
 
-## Installation
-
-Install the latest release with the shell installer:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh
-```
-
-The curl installer is the only supported install path for now. Homebrew, mise,
-Cargo, and other package-manager installs are deprecated; reinstall with the
-command above if you used one of those paths before.
-
-The installer downloads the matching GitHub release archive for macOS or Linux,
-verifies its SHA-256 file with `shasum` or `sha256sum`, and installs `hz` to
-`~/.local/bin` by default. Set `HZ_ALLOW_UNVERIFIED=1` only when you explicitly
-want to install without checksum verification.
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_VERSION=0.6.0 sh
-curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | HZ_INSTALL_DIR=/usr/local/bin sh
-```
-
-Verify the installed binary:
-
-```sh
-which -a hz
-hz --version
-```
-
-The default curl install path is `~/.local/bin/hz`; if you set
-`HZ_INSTALL_DIR`, the first `hz` on `PATH` should come from that directory.
-
-Update a curl-installed binary in place:
-
-```sh
-hz update
-hz update --target-version 0.6.0
-```
-
-After installing the binary, install shell integration for auto-cd and
-completions:
-
-```sh
-hz install zsh
-source ~/.zshrc
-```
-
-## Core workflows
-
-### Worktrees
-
-`hz git new` creates a scratch Git worktree with a human-facing handle and a UUID
-directory under `~/.hz/worktrees/<repo>/` by default. Pass a name or `--branch`
-to create a branch-backed worktree:
-
-```sh
-hz git new fix-login
-hz git fork
-hz git new
-hz git ls
-hz git pwd
-hz git path fix-login
-hz git cd fix-login
-hz git cd
-hz git rm fix-login
-```
-
-`hz git new` without a name generates a four-character lowercase alphanumeric handle
-and leaves the worktree on a detached `HEAD`. Managed worktrees are registered
-in `~/.hz/registry.json`.
-
-`hz git pwd` prints the current worktree target (`local`, a branch name, or a
-detached handle). Pass `--json` to include the target, repo, and path.
-
-`hz git fork` creates a new detached worktree at the current `HEAD` and applies the
-current worktree diff there, including untracked files. The source worktree is
-left unchanged. Pass an optional handle to name the detached fork, or
-`--no-diff` to fork only the current `HEAD` without copying local changes:
-
-```sh
-hz git fork
-hz git fork alt-try
-hz git fork --no-diff
-```
-
-`hz git ls`, `hz git cd`, and `hz git rm` also detect unmanaged Git worktrees created by
-other tools. Removing an unmanaged worktree outside `~/.hz/worktrees/<repo>/`
-asks for confirmation because the path is not in `hz`'s worktree namespace. Add
-`[worktree].user_managed_roots` in `.hz/hz.toml` for other directories that
-should be treated as user-managed by `hz`.
-
-Detached scratch worktrees are capped at 10 by default. Creating another
-detached worktree auto-removes the oldest clean managed detached worktrees until
-the cap is satisfied. Pinned, branch-backed, unmanaged, dirty, unknown, and
-current worktrees are not auto-removed. If there are not enough removable
-worktrees, `hz git new` and `hz git handoff --new` refuse to create another detached
-worktree. Set `[worktree].max_detached` in `.hz/hz.toml`, or pass
-`--max-detached <count>` to `hz git new` or `hz git handoff --new`; `0` disables
-auto-pruning.
-
-Branch-backed worktrees are also capped at 10 by default. Creating another
-branch-backed worktree auto-removes the oldest clean managed branch-backed
-worktrees until the cap is satisfied. Removing a branch-backed worktree removes
-only the checkout; the Git branch remains in the repo and can be checked out
-again later. Pinned, detached, unmanaged, dirty, unknown, and current
-worktrees are not auto-removed. Set `[worktree].max_branch_worktrees` in
-`.hz/hz.toml`, or pass `--max-branch-worktrees <count>` to `hz git new` or
-branch-backed `hz git handoff --new`; `0` disables auto-pruning.
-
-Use `hz git pin <target...>` to keep managed worktrees out of auto-prune, and
-`hz git unpin <target...>` to make them eligible again. `hz git ls --pinned` shows only
-pinned worktrees; `hz git ls --unpinned` shows only unpinned worktrees. Pinned
-worktrees can still be removed explicitly with `hz git rm`.
-
-Auto-pruning is enabled by default. Set `[worktree].auto_prune = false` to opt
-into keeping managed worktrees instead of deleting them at the configured
-limits. Dirty and current worktrees are still protected from auto-removal.
-
-Repo config can set the default base branch for new worktrees and additional
-user-managed worktree roots:
-
-```toml
-# .hz/hz.toml
-[worktree]
-auto_prune = true
-max_detached = 10
-max_branch_worktrees = 10
-default_base = "dev"
-user_managed_roots = ["~/.codex/worktrees"]
-```
-
-With that config, `hz git new feature/ui` behaves like
-`hz git new feature/ui --base dev`. Passing `--base main` still wins for deliberate
-main-based work.
-
-Ignored local files are not present in a fresh Git worktree. To copy selected
-ignored setup files into new managed `hz` worktrees, add a root
-`.worktreeinclude` file using Gitignore-style patterns:
+Every managed workspace has a stable ULID in `.hz-workspace`. A central SQLite
+registry records its path, handle, root, immediate parent, materialization
+strategy, source-control integrations, and lifecycle state.
 
 ```text
-# .worktreeinclude
-.env
-.env.local
-config/secrets.json
+app (root)
+├── parser-fix
+│   └── parser-follow-up
+└── schema-work
 ```
 
-`hz` copies only ignored files that match `.worktreeinclude`; tracked files and
-other untracked files are left alone. Source symlinks are skipped, and existing
-destination files are never overwritten.
+Ancestry is logical. Descendants normally share one flat storage directory next
+to the root:
 
-### Shell integration
+```text
+~/code/app/
+~/code/.hz-workspaces/app-01ABCDEF/<workspace-id>/
+~/code/.hz-workspaces/app-01ABCDEF/.trash/<workspace-id>/
+```
 
-`hz git cd` prints a path for scripts. To make `hz git new` and `hz git cd` change the
-current shell directory, run `hz install <shell>` once to update your shell rc
-file:
+The adjacent location keeps source and destination on the same filesystem.
+Handles are for people; IDs name physical directories and remain stable.
+
+## Commands
+
+Workspace lifecycle occupies the top-level command namespace:
+
+```text
+hz init [PATH] [--here] [--copy]
+hz new [NAME] [--from PATH] [--into DIR] [--filtered] [--no-hooks]
+hz list|ls [--tree] [--children] [--roots]
+hz pwd
+hz path|cd [TARGET]
+hz ancestors [TARGET]
+hz remove|rm [TARGET] [--children] [--force] [--no-hooks]
+hz pin <TARGET...>
+hz unpin <TARGET...>
+hz restore <TARGET>
+hz gc
+hz adopt PATH
+hz doctor [--fix]
+```
+
+Targets may be handles, IDs, unambiguous ID prefixes, or paths. `root` and
+`local` both select the current workspace family's root.
+
+`hz new` snapshots the selected workspace's current filesystem state. Creating
+from a child records that child as the immediate parent while continuing to use
+the root family's storage.
+
+### Copy modes
+
+Creation uses native copy-on-write by default. APFS clones and btrfs subvolume
+snapshots take the fastest whole-tree path; an ordinary btrfs root is instead
+reflink-imported into its first child. These paths share existing data blocks,
+so only blocks changed afterward require additional storage.
+
+Use `--filtered` to omit heavyweight regenerable artifacts such as
+`node_modules`, `target`, virtual environments, framework caches, `dist`,
+`build`, and `coverage`. Filtering requires walking the tree and can be slower
+than a native whole-directory snapshot.
+
+### Removal and recovery
+
+Removing a child moves its full logical subtree into same-filesystem trash with
+atomic renames; the removal hot path does not walk or unlink workspace files.
+`--children` preserves the selected workspace and removes only descendants.
+Removing a root requires `--force`; its directory remains in place while its
+marker is removed.
+
+`hz restore` reverses a logical removal. `hz gc` physically deletes trash.
+After manually moving a workspace, `hz adopt PATH` updates its registered path.
+`hz doctor --fix` reconciles interrupted create/remove/restore operations. It
+reports missing active markers without recreating them because a registered
+path alone cannot prove ownership of the directory now at that path. After
+independently verifying the directory, `hz init --here` explicitly restores it.
+
+## Source control
+
+Source-control operations live below their source-control namespace. Git and
+Mercurial are the first built-in integrations:
+
+```sh
+hz git status [TARGET]
+hz git handoff [TARGET]
+hz hg status [TARGET]
+```
+
+Workspace lifecycle operations never invoke source-control subprocesses. Hz
+adds repository-local Git or Mercurial ignore protection for the
+`.hz-workspace` identity marker, then treats source-control metadata as ordinary
+filesystem state copied by the selected workspace strategy. Other metadata is
+not normalized, so linked checkout semantics remain the source-control tool's
+responsibility.
+
+`hz git status`, `hz git handoff`, and `hz hg status` are explicit operations
+layered over a selected workspace. `hz git handoff` applies the current
+workspace's patch to another clean Git workspace and defaults to the immediate
+parent. Additional source-control behavior can be added without changing
+workspace identity or storage.
+
+## Filesystem support
+
+| Platform | Strategy |
+| --- | --- |
+| macOS/APFS | `clonefile`, with per-entry cloning for filtered copies |
+| Linux/btrfs | writable snapshots or filtered reflink imports |
+| Linux/XFS and compatible filesystems | per-file `FICLONE` reflinks |
+| Windows | explicit portable copying with `hz init --copy` |
+
+`hz init` verifies that the selected root can support native copy-on-write. On
+btrfs, an ordinary live root remains in place because it cannot be snapshotted
+atomically without risking concurrent writes; child workspaces are
+reflink-imported into subvolumes. Roots that are already subvolumes use writable
+snapshots for unfiltered children. There is no silent byte-copy fallback;
+`hz init --copy` explicitly opts a workspace family into portable byte copying
+when COW is not available.
+
+## Lifecycle configuration
+
+`hz init` registers the root and creates:
+
+```text
+.hz/
+  hz.toml
+  environment/
+    postcreate
+    preremove
+```
+
+Hooks are disabled by default to keep creation and removal on the filesystem-only
+hot path. Enable them explicitly when needed:
+
+```toml
+[lifecycle]
+postcreate = [".hz/environment/postcreate"]
+preremove = [".hz/environment/preremove"]
+```
+
+Post-create hooks run in the active destination with `HZ_ROOT`, `HZ_SOURCE`,
+`HZ_WORKSPACE`, `HZ_WORKSPACE_ID`, `HZ_PARENT_ID`, and `HZ_LIFECYCLE`. A failing
+post-create hook leaves the workspace active and reports its path. Use
+`--no-hooks` to skip configured hooks.
+
+Use `hz config init [PATH]` when only the configuration files are needed.
+
+## Shell and machine integration
 
 ```sh
 hz install zsh
@@ -230,188 +192,38 @@ hz install bash
 hz install fish
 ```
 
-For zsh, this updates `~/.zshrc`. Restart your shell or run `source ~/.zshrc`
-after install. With the integration loaded, plain `hz git new ...` or `hz git fork ...`
-creates the worktree and changes into it, and `hz git cd` returns to the local repo
-root.
-`--json`, `--path-only`, and help calls still pass through to the real binary
-without changing directories.
+The shell wrapper lets `hz init`, `hz new`, `hz cd`, `hz rm`, `hz restore`, and
+`hz git handoff` change the caller's directory. `--json`, `--machine`, help, and
+path-only calls never change directories.
 
-The shell integration also installs completions for zsh, bash, and fish.
-Completions include command aliases such as `hz git cd`, `hz git ls`, and `hz git rm`,
-nested `hz git ...` commands, command flags such as `--machine`, shell
-names for `hz init`/`hz shell`, and live worktree targets for commands that
-accept them.
-
-### Human and machine-readable output
-
-By default, commands are human-facing. They keep terminal output
-readable and, when shell integration is installed, commands such as `hz git new`,
-`hz git fork`, `hz git cd`, and `hz git handoff` can change the current shell directory.
-
-Pass `--json` to data-producing commands when another process needs parseable
-stdout. Pass `--machine` to force JSON, bypass shell auto-cd, and refuse unsafe
-prompts in non-interactive paths:
+For automation, `--machine` forces JSON output and bypasses shell navigation:
 
 ```sh
-hz git pwd --json
-hz git path fix-login --json
-hz --machine git list
+hz --machine new parser-fix
+hz --machine list
+hz --machine git status parser-fix
 ```
-
-### Handoff
-
-`hz git handoff` applies the current worktree's uncommitted diff to its linked
-counterpart by default. From a linked worktree it applies the patch to `local`.
-From `local`, pass a worktree handle such as `hz git handoff fix-login` to apply the
-local patch there. After a patch handoff, running `hz git handoff` from `local`
-defaults back to the last linked worktree. The destination must be clean unless
-its current diff still matches the last patch handed off between that pair; in
-that case `hz` safely replaces it with the source diff. Source changes are left
-in place. With shell integration loaded, successful handoffs change into the
-destination worktree unless `--json`, `--machine`, `--path-only`, or help is
-passed.
-
-Use `hz git handoff --new` to create a new detached destination worktree and apply
-the current patch there. Use `hz git handoff --new fix-login` to create a
-branch-backed destination worktree named `fix-login`.
-
-Use `hz git handoff <worktree> --branch` to move branch ownership instead of
-applying a patch. Branch handoff is clean-only on both sides.
-
-### Diff review
-
-Diff review now lives in the separate [`dx`](https://github.com/phongndo/dx) CLI.
-Use `dx` from any `hz` worktree when you want the terminal review UI or plain
-diff output:
-
-```sh
-dx
-dx --staged
-dx --base main
-dx --pr 123
-dx --patch changes.diff
-```
-
-### Repo lifecycle
-
-`hz init` initializes repo-local lifecycle config:
-
-```text
-.hz/hz.toml
-.hz/environment/setup
-.hz/environment/cleanup
-```
-
-`.hz/hz.toml` declares the commands `hz` should run:
-
-```toml
-[worktree]
-max_detached = 10
-max_branch_worktrees = 10
-# user_managed_roots = ["~/.codex/worktrees"]
-
-[lifecycle]
-setup = [".hz/environment/setup"]
-cleanup = [".hz/environment/cleanup"]
-```
-
-`.hz/environment/setup` and `.hz/environment/cleanup` are executable script
-files. Edit them to contain the repo setup and cleanup commands an agent
-worktree should run. `hz git new --setup` runs the configured setup command after
-creating a worktree, and `hz git rm --cleanup` runs the configured cleanup command
-before removing one. Use `--no-setup` or `--no-cleanup` to explicitly suppress a
-hook when using aliases or wrapper scripts. Hook stdout is forwarded to stderr
-so `--json` and `--path-only` output stays machine-readable.
-
-Lifecycle config is read from the target worktree. Commit `.hz/hz.toml` and any
-referenced scripts before opting in to `hz git new --setup` for newly created
-worktrees.
-
-### Config and display
-
-`hz git ls` display is configurable from `.hz/hz.toml`:
-
-```toml
-[list]
-headers = "auto" # auto | always | never
-columns = ["marker", "target", "status", "modified", "path"]
-compact_columns = ["marker", "target", "status"]
-
-[color]
-mode = "auto" # auto | always | never
-scheme = "terminal"
-```
-
-Columns can include `marker`, `target`, `branch`, `handle`, `status`, `base`,
-`modified`, and `path`. Color defaults to terminal-native ANSI colors so the
-user's terminal color scheme decides the actual palette. Custom `hz git ls` color
-schemes can opt into different ANSI color names while still letting the terminal
-theme provide the actual colors.
-
-See [docs/config.md](docs/config.md) for the full config reference.
-
-For compatibility, `hz init <shell>` still installs shell integration, but
-`hz install <shell>` is the documented command for shell setup.
-
-## CLI reference
-
-See [docs/cli.md](docs/cli.md) for the full human and machine command reference,
-common options, and scripting notes.
-
-## Architecture
-
-```text
-crates/hz-cli       command parsing, terminal output, install/update, and CLI UX
-crates/hz-bench     headless command benchmark utilities
-crates/hz-command   command facade shared by CLI and future runtime callers
-crates/hz-core      shared errors and common models
-crates/hz-git       low-level Git integration boundary
-crates/hz-worktree  worktree domain boundary: new, path, list, handoff, remove
-```
-
-The command crate is the main extension seam. CLI and future runtime code should
-call `hz-command` instead of duplicating workflow logic. Provider or agent-runtime
-integrations can sit beside these crates without forcing the existing command
-surface to depend on plugin machinery.
 
 ## Development
 
-Install the repo Rust toolchain:
-
 ```sh
-rustup show
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+./scripts/smoke-zsh
 ```
 
-Or enter the Nix development shell:
+The primary implementation boundaries are:
 
-```sh
-nix develop
+```text
+crates/hz-workspace  workspace identity, ancestry, SQLite, COW lifecycle
+crates/hz-scm        explicit source-control status boundary and shared types
+crates/hz-git        explicit Git status and handoff operations
+crates/hz-hg         explicit Mercurial status operations
+crates/hz-command    configuration, hooks, and command orchestration
+crates/hz-cli        CLI, output, completion, and shell navigation
 ```
-
-Run local checks:
-
-```sh
-just setup
-just hooks       # validate hk.pkl config
-just hk-check     # run git pre-commit checks via hk
-just check
-just test
-just build
-just smoke
-```
-
-For contribution guidelines, dev-shell details, and CI expectations, see
-[CONTRIBUTING.md](CONTRIBUTING.md).
-
-## CI and releases
-
-`.github/workflows/quality.yml` runs rust-analyzer diagnostics, formatter,
-Clippy, workspace tests, a full workspace build, a headless `hz-bench` smoke,
-and installer/update smoke tests against a local release fixture.
-`.github/workflows/release.yml` builds release archives with SHA-256 checksum
-files for supported macOS and Linux targets when a `v*.*.*` tag is pushed.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT

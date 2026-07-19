@@ -1,92 +1,104 @@
-# hz CLI reference
+# hz CLI
 
-`hz` has two command surfaces:
+Workspace lifecycle is source-control-neutral and uses top-level commands.
+Source-control-specific operations use namespaces such as `hz git`.
 
-- Human commands optimize for terminal use, shell integration, and readable
-  output.
-- `--json` and `--machine` optimize the same commands for agents and scripts.
-  `--json` prints JSON for one command. `--machine` forces JSON, avoids shell
-  auto-cd, and fails instead of prompting when a safe non-interactive answer is
-  required.
+## Workspace lifecycle
 
-## Usage
+### `hz init [PATH] [--here] [--copy]`
 
-```sh
-hz [command] [options]
-hz git <command> [options]
-```
+Registers a root, writes `.hz-workspace`, validates native copy-on-write support,
+and creates `.hz/` lifecycle configuration. Without `--here`, Hz selects an
+existing managed ancestor; otherwise it initializes the requested directory.
+`--copy` explicitly selects portable byte-copy materialization for filesystems
+without native COW support.
 
-Running `hz` without a command prints help.
+### `hz new [NAME]`
 
-## Human commands
+Creates a child snapshot of the nearest managed workspace.
 
 ```sh
-hz git new [name]                  # Create a managed worktree
-hz git fork [name]                 # Fork the current worktree state
-hz git path [target]               # Print a worktree path; alias: cd
-hz git list                        # List worktrees; alias: ls
-hz git pwd                         # Print current target: local, branch, or handle
-hz git remove <target...>          # Remove worktrees; alias: rm
-hz git pin <target...>             # Keep worktrees out of auto-prune
-hz git unpin <target...>           # Make worktrees eligible for auto-prune
-hz git handoff [target]            # Apply changes between linked worktrees
-hz init                                 # Create repo-local .hz config and lifecycle files
-hz install <zsh|bash|fish>              # Install shell integration
-hz shell <zsh|bash|fish>                # Print shell integration
-hz update                               # Update a curl-installed hz binary
+hz new parser-fix
+hz new --from ~/code/app
+hz new parser-fix --into /same-filesystem/workspaces
+hz new parser-fix --filtered
+hz new parser-fix --no-hooks
 ```
 
-Most commands that return data accept `--json` (`-j`). With shell integration
-loaded, `hz git new`, `hz git fork`, `hz git cd`, and
-`hz git handoff` may change the current directory unless `--json`,
-`--machine`, `--path-only`, or help is passed.
+Default creation takes a complete COW snapshot for the lowest creation latency
+and shares existing data blocks. `--filtered` omits known regenerable dependency,
+build, and cache artifacts at the cost of walking the source tree.
 
-## Machine-readable mode
+### Navigation
 
 ```sh
-hz --machine git new [name]            # Create a worktree and print JSON
-hz --machine git fork [name]           # Fork the current state and print JSON
-hz --machine git path [target]         # Print a target path as JSON; alias: cd
-hz --machine git list                  # List worktrees as JSON; alias: ls
-hz --machine git pwd                   # Print current target/repo/path as JSON
-hz --machine git remove <target...>    # Remove worktrees and print a JSON array; alias: rm
-hz --machine git pin <target...>       # Pin worktrees and print JSON
-hz --machine git unpin <target...>     # Unpin worktrees and print JSON
-hz --machine git handoff [target]      # Handoff changes and print JSON
+hz pwd
+hz path parser-fix
+hz cd parser-fix
+hz path root
+hz ancestors
+hz ls
+hz ls --tree
+hz ls --children
+hz ls --roots
 ```
 
-`--machine` is a global flag, so it can be passed before or after the command:
-`hz --machine git list` and `hz git list --machine` are equivalent.
+`cd` is a shell-integrated alias of `path`. `root` and `local` select the current
+family root.
 
-Use this surface when another program needs stable stdout:
+### Retention
 
 ```sh
-hz --machine git new fix-login --repo .
-hz --machine git list --repo .
-hz --machine git handoff fix-login --repo .
-hz --machine git remove fix-login --repo . --force
+hz pin parser-fix
+hz unpin parser-fix
+hz rm parser-fix
+hz rm parser-fix --children
+hz rm --force                 # unregister current root
+hz restore parser-fix
+hz gc
+hz adopt /new/path/to/workspace
+hz doctor --fix
 ```
 
-Safety behavior is unchanged. For example, `hz --machine git remove`
-refuses to remove an unmanaged worktree without `--force` instead of asking for
-confirmation. It always returns an array, even when one target was requested.
-Lifecycle hook stdout is forwarded to stderr so JSON stdout remains parseable.
+Removal uses same-filesystem renames into trash and does not walk workspace
+files. `hz gc` performs the slower physical unlinking later. On Windows, the
+calling shell must change outside a workspace before removing that workspace so
+its directory handle is not locked. `--children`
+preserves the selected workspace. Root unregistration requires `--force` and
+preserves the root directory.
 
-## Common options
+## Git
 
-| Option | Commands | Description |
-| --- | --- | --- |
-| `-r`, `--repo <path>` | git, init | Repository to operate on |
-| `-p`, `--path <path>` | `git new`, `git fork` | Destination path for the worktree |
-| `-B`, `--base <rev>` | `git new` | Base revision for the new worktree |
-| `-b`, `--branch <name>` | `git new` | Create or use a branch-backed worktree |
-| `--max-detached <n>` | `git new`, `git fork`, `git handoff --new` | Override detached worktree cap |
-| `--max-branch-worktrees <n>` | `git new`, branch `git handoff --new` | Override branch-backed worktree cap |
-| `--pinned`, `--unpinned` | `git list` | Filter listed worktrees by pin state |
-| `-j`, `--json` | data-producing Git commands | Print JSON |
-| `--machine` | Git commands | Force JSON and avoid shell side effects |
-| `-f`, `--force`, `--yes` | `git remove` | Skip removal confirmation and pass force to Git |
-| `--setup`, `--no-setup` | `git new` | Run or suppress setup lifecycle |
-| `--cleanup`, `--no-cleanup` | `git remove` | Run or suppress cleanup lifecycle |
+```sh
+hz git status [TARGET]
+hz git handoff [TARGET]
+```
 
-See [config.md](config.md) for repo-local defaults and display settings.
+Status is evaluated only when explicitly requested. Handoff applies the current
+workspace patch to a clean destination and defaults to the immediate parent.
+Workspace creation does not invoke Git; it only ensures the repository-local
+exclude rules protect the `.hz-workspace` identity marker.
+
+## Mercurial
+
+```sh
+hz hg status [TARGET]
+```
+
+Status is evaluated only when explicitly requested. Workspace creation does not
+invoke Mercurial; it adds a repository-local ignore for the `.hz-workspace`
+identity marker and otherwise treats `.hg` as ordinary filesystem state.
+
+## Configuration and utilities
+
+```sh
+hz config init [PATH]
+hz install zsh|bash|fish
+hz shell zsh|bash|fish
+hz update
+```
+
+## Machine output
+
+Data-producing commands accept `--json`. Global `--machine` forces JSON and
+prevents shell wrappers from changing directory.

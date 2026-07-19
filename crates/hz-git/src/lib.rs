@@ -1,364 +1,145 @@
 use std::{
-    ffi::OsString,
     fs,
     io::{ErrorKind, Write},
     path::{Path, PathBuf},
-    process::{self, Command},
+    process::{self, Command, Output, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(unix)]
+use std::ffi::OsString;
+
 use hz_core::{HzError, HzResult};
+use hz_scm::{SourceControl, SourceStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitWorktree {
-    pub path: PathBuf,
-    pub branch: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitWorktreeState {
+pub struct GitStatus {
     pub dirty: bool,
     pub modified_at_unix: u64,
 }
 
-pub fn repository_root(repo: Option<&Path>) -> HzResult<PathBuf> {
-    let mut command = Command::new("git");
-    if let Some(repo) = repo {
-        command.arg("-C").arg(repo);
-    }
-    command.args(["rev-parse", "--show-toplevel"]);
+const WORKSPACE_MARKER: &str = ".hz-workspace";
 
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(git_error("failed to find git repository root", &output));
-    }
-
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if root.is_empty() {
-        return Err(HzError::Usage("git repository root was empty".to_owned()));
-    }
-
-    Ok(PathBuf::from(root))
-}
-
-pub fn add_worktree(
-    repo: &Path,
-    path: &Path,
-    branch: Option<&str>,
-    base: Option<&str>,
-) -> HzResult<()> {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(repo).args(["worktree", "add"]);
-    if let Some(branch) = branch {
-        command.args(["-b", branch]);
-    } else {
-        command.arg("--detach");
-    }
-    command.arg("--").arg(path);
-
-    if let Some(base) = base {
-        command.arg(base);
-    }
-
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(git_error("failed to add git worktree", &output));
-    }
-
-    Ok(())
-}
-
-pub fn remove_worktree(repo: &Path, path: &Path) -> HzResult<()> {
-    remove_worktree_with_force(repo, path, false)
-}
-
-pub fn remove_worktree_with_force(repo: &Path, path: &Path, force: bool) -> HzResult<()> {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(repo).args(["worktree", "remove"]);
-    if force {
-        command.arg("--force");
-    }
-    command.arg("--").arg(path);
-
-    let output = command.output()?;
-
-    if !output.status.success() {
-        return Err(git_error("failed to remove git worktree", &output));
-    }
-
-    Ok(())
-}
-
-pub fn list_worktrees(repo: &Path) -> HzResult<Vec<GitWorktree>> {
-    let output = worktree_list_output(repo)?;
-
-    Ok(parse_worktree_list(&output.stdout))
-}
-
-pub fn main_worktree(repo: &Path) -> HzResult<PathBuf> {
-    let output = worktree_list_output(repo)?;
-    parse_main_worktree_path(&output.stdout).ok_or_else(|| empty_worktree_list_error(repo))
-}
-
-fn worktree_list_output(repo: &Path) -> HzResult<process::Output> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["worktree", "list", "--porcelain", "-z"])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(git_error("failed to list git worktrees", &output));
-    }
-
-    Ok(output)
-}
-
-pub fn worktree_state(path: &Path) -> HzResult<GitWorktreeState> {
+pub fn status(path: &Path) -> HzResult<GitStatus> {
     let output = Command::new("git")
         .arg("-C")
         .arg(path)
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
         .output()?;
-
     if !output.status.success() {
-        return Err(git_error("failed to read git worktree status", &output));
+        return Err(git_error("failed to read Git status", &output));
     }
-
-    if output.stdout.is_empty() {
-        return Ok(GitWorktreeState {
-            dirty: false,
-            modified_at_unix: 0,
-        });
-    }
-
-    Ok(GitWorktreeState {
-        dirty: true,
-        modified_at_unix: status_paths_modified_at(path, &output.stdout),
+    let paths = status_paths(&output.stdout)
+        .into_iter()
+        .filter(|candidate| candidate != Path::new(WORKSPACE_MARKER))
+        .collect::<Vec<_>>();
+    Ok(GitStatus {
+        dirty: !paths.is_empty(),
+        modified_at_unix: status_paths_modified_at(path, &paths),
     })
 }
 
-pub fn current_branch(repo: &Path) -> HzResult<Option<String>> {
+pub fn current_branch(repository: &Path) -> HzResult<Option<String>> {
     let output = Command::new("git")
         .arg("-C")
-        .arg(repo)
+        .arg(repository)
         .args(["branch", "--show-current"])
         .output()?;
-
     if !output.status.success() {
-        return Err(git_error("failed to read current git branch", &output));
+        return Err(git_error("failed to read current Git branch", &output));
     }
-
     let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if branch.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(branch))
-    }
+    Ok((!branch.is_empty()).then_some(branch))
 }
 
-pub fn current_head(repo: &Path) -> HzResult<String> {
+pub fn current_head(repository: &Path) -> HzResult<String> {
     let output = Command::new("git")
         .arg("-C")
-        .arg(repo)
+        .arg(repository)
         .args(["rev-parse", "--verify", "HEAD"])
         .output()?;
-
     if !output.status.success() {
-        return Err(git_error("failed to read current git HEAD", &output));
+        return Err(git_error("failed to read current Git HEAD", &output));
     }
-
     let head = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if head.is_empty() {
-        return Err(HzError::Usage("git HEAD was empty".to_owned()));
-    }
-
-    Ok(head)
-}
-
-pub fn remote_url(repo: &Path, remote: &str) -> HzResult<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["remote", "get-url", remote])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(git_error("failed to read git remote URL", &output));
-    }
-
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if url.is_empty() {
-        return Err(HzError::Usage(format!("git remote {remote} URL was empty")));
-    }
-
-    Ok(url)
-}
-
-pub fn branch_exists(repo: &Path, branch: &str) -> HzResult<bool> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["show-ref", "--verify", "--quiet"])
-        .arg(format!("refs/heads/{branch}"))
-        .output()?;
-
-    match output.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => Err(git_error("failed to check git branch", &output)),
+        Err(HzError::Usage("Git HEAD was empty".to_owned()))
+    } else {
+        Ok(head)
     }
 }
 
-pub fn delete_branch(repo: &Path, branch: &str) -> HzResult<()> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["branch", "-D", "--"])
-        .arg(branch)
-        .output()?;
-
-    if !output.status.success() {
-        return Err(git_error("failed to delete git branch", &output));
-    }
-
-    Ok(())
-}
-
-pub fn switch_branch(repo: &Path, branch: &str) -> HzResult<()> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["switch", "--"])
-        .arg(branch)
-        .output()?;
-
-    if !output.status.success() {
-        return Err(git_error("failed to switch git branch", &output));
-    }
-
-    Ok(())
-}
-
-pub fn switch_detached(repo: &Path) -> HzResult<()> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["switch", "--detach"])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(git_error("failed to detach git worktree", &output));
-    }
-
-    Ok(())
-}
-
-pub fn switch_detached_at(repo: &Path, rev: &str) -> HzResult<()> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["switch", "--detach"])
-        .arg("--")
-        .arg(rev)
-        .output()?;
-
-    if !output.status.success() {
-        return Err(git_error("failed to detach git worktree", &output));
-    }
-
-    Ok(())
-}
-
-pub fn diff_patch(repo: &Path) -> HzResult<Vec<u8>> {
-    let untracked = untracked_paths(repo)?;
+/// Build a binary patch containing tracked, staged, and untracked state.
+pub fn diff_patch(repository: &Path) -> HzResult<Vec<u8>> {
+    let untracked = untracked_pathspecs(repository)?;
     if untracked.is_empty() {
-        return diff_patch_with_index(repo, None);
+        return diff_patch_with_index(repository, None);
     }
 
-    let index_path = git_path(repo, "index")?;
-    let temp_index = create_temp_index(&index_path)?;
-
+    let index_path = git_path(repository, "index")?;
+    let temp_index = create_temp_index(repository, &index_path)?;
     let result = (|| {
-        let mut add = Command::new("git");
-        add.arg("-C")
-            .arg(repo)
-            .env("GIT_INDEX_FILE", &temp_index)
-            .args(["add", "-N", "--"])
-            .args(&untracked);
-        let output = add.output()?;
-        if !output.status.success() {
-            return Err(git_error(
-                "failed to prepare untracked files for diff",
-                &output,
-            ));
-        }
-
-        diff_patch_with_index(repo, Some(&temp_index))
+        prepare_untracked_files(repository, &temp_index, &untracked)?;
+        diff_patch_with_index(repository, Some(&temp_index))
     })();
-
     let _ = fs::remove_file(&temp_index);
     result
 }
 
-pub fn apply_patch(repo: &Path, patch: &[u8]) -> HzResult<bool> {
-    if patch.iter().all(|byte| byte.is_ascii_whitespace()) {
-        return Ok(false);
-    }
-
-    apply_patch_command(repo, patch, true, false)?;
-    apply_patch_command(repo, patch, false, false)?;
-    Ok(true)
-}
-
-pub fn apply_patch_reverse(repo: &Path, patch: &[u8]) -> HzResult<bool> {
-    if patch.iter().all(|byte| byte.is_ascii_whitespace()) {
-        return Ok(false);
-    }
-
-    apply_patch_command(repo, patch, true, true)?;
-    apply_patch_command(repo, patch, false, true)?;
-    Ok(true)
-}
-
-pub fn hash_bytes(repo: &Path, bytes: &[u8]) -> HzResult<String> {
+fn prepare_untracked_files(repository: &Path, index: &Path, pathspecs: &[Vec<u8>]) -> HzResult<()> {
     let mut child = Command::new("git")
         .arg("-C")
-        .arg(repo)
-        .args(["hash-object", "--stdin"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .arg(repository)
+        .arg("--literal-pathspecs")
+        .env("GIT_INDEX_FILE", index)
+        .args(["add", "-N", "--pathspec-from-file=-", "--pathspec-file-nul"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()?;
-    child
+    let mut stdin = child
         .stdin
-        .as_mut()
-        .ok_or_else(|| HzError::Usage("failed to open git hash-object stdin".to_owned()))?
-        .write_all(bytes)?;
+        .take()
+        .ok_or_else(|| HzError::Usage("failed to open Git pathspec input".to_owned()))?;
+    let write_result = (|| -> std::io::Result<()> {
+        for pathspec in pathspecs {
+            stdin.write_all(pathspec)?;
+            stdin.write_all(&[0])?;
+        }
+        Ok(())
+    })();
+    drop(stdin);
     let output = child.wait_with_output()?;
-
     if !output.status.success() {
-        return Err(git_error("failed to hash bytes", &output));
+        return Err(git_error(
+            "failed to prepare untracked files for diff",
+            &output,
+        ));
     }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    write_result?;
+    Ok(())
 }
 
-fn apply_patch_command(repo: &Path, patch: &[u8], check: bool, reverse: bool) -> HzResult<()> {
+pub fn apply_patch(repository: &Path, patch: &[u8]) -> HzResult<bool> {
+    if patch.iter().all(|byte| byte.is_ascii_whitespace()) {
+        return Ok(false);
+    }
+    apply_patch_command(repository, patch, true)?;
+    apply_patch_command(repository, patch, false)?;
+    Ok(true)
+}
+
+fn apply_patch_command(repository: &Path, patch: &[u8], check: bool) -> HzResult<()> {
     let mut command = Command::new("git");
-    command.arg("-C").arg(repo).arg("apply");
+    command.arg("-C").arg(repository).arg("apply");
     if check {
         command.arg("--check");
     }
-    if reverse {
-        command.arg("--reverse");
-    }
     command.arg("--binary");
-
     let mut child = command
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()?;
     child
         .stdin
@@ -366,115 +147,102 @@ fn apply_patch_command(repo: &Path, patch: &[u8], check: bool, reverse: bool) ->
         .ok_or_else(|| HzError::Usage("failed to open git apply stdin".to_owned()))?
         .write_all(patch)?;
     let output = child.wait_with_output()?;
-
-    if !output.status.success() {
-        return Err(git_error("failed to apply git patch", &output));
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(git_error("failed to apply Git patch", &output))
     }
-
-    Ok(())
 }
 
-fn diff_patch_with_index(repo: &Path, index: Option<&Path>) -> HzResult<Vec<u8>> {
+fn diff_patch_with_index(repository: &Path, index: Option<&Path>) -> HzResult<Vec<u8>> {
+    let base = diff_base(repository)?;
     let mut command = Command::new("git");
     command
         .arg("-C")
-        .arg(repo)
-        .args(["diff", "--binary", "HEAD"]);
+        .arg(repository)
+        .args(["diff", "--no-color", "--binary"])
+        .arg(&base)
+        .args(["--", ":(exclude,top).hz-workspace"]);
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
     let output = command.output()?;
-
-    if !output.status.success() {
-        return Err(git_error("failed to create git patch", &output));
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(git_error("failed to create Git patch", &output))
     }
-
-    Ok(output.stdout)
 }
 
-fn untracked_paths(repo: &Path) -> HzResult<Vec<PathBuf>> {
+fn diff_base(repository: &Path) -> HzResult<String> {
     let output = Command::new("git")
         .arg("-C")
-        .arg(repo)
+        .arg(repository)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .output()?;
+    match output.status.code() {
+        Some(0) => Ok("HEAD".to_owned()),
+        Some(1) => empty_tree(repository),
+        _ => Err(git_error("failed to resolve Git HEAD", &output)),
+    }
+}
+
+fn empty_tree(repository: &Path) -> HzResult<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(["hash-object", "-t", "tree", "--stdin"])
+        .stdin(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        return Err(git_error("failed to resolve Git's empty tree", &output));
+    }
+    let object = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if object.is_empty() {
+        Err(HzError::Usage("Git's empty tree ID was empty".to_owned()))
+    } else {
+        Ok(object)
+    }
+}
+
+fn untracked_pathspecs(repository: &Path) -> HzResult<Vec<Vec<u8>>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository)
         .args(["ls-files", "--others", "--exclude-standard", "-z"])
         .output()?;
-
-    if !output.status.success() {
-        return Err(git_error("failed to list untracked files", &output));
-    }
-
-    Ok(parse_untracked_paths(&output.stdout))
-}
-
-pub fn ignored_paths_matching(repo: &Path, pathspecs: &[String]) -> HzResult<Vec<PathBuf>> {
-    if pathspecs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args([
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "-z",
-            "--",
-        ])
-        .args(pathspecs)
-        .output()?;
-
-    if !output.status.success() {
-        return Err(git_error("failed to list ignored files", &output));
-    }
-
-    Ok(parse_untracked_paths(&output.stdout))
-}
-
-pub fn path_is_ignored(repo: &Path, path: &Path) -> HzResult<bool> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["check-ignore", "--quiet", "--"])
-        .arg(path)
-        .output()?;
-
     if output.status.success() {
-        return Ok(true);
+        Ok(parse_nul_paths(&output.stdout)
+            .into_iter()
+            .filter(|path| path.as_slice() != WORKSPACE_MARKER.as_bytes())
+            .collect())
+    } else {
+        Err(git_error("failed to list untracked files", &output))
     }
-    if output.status.code() == Some(1) {
-        return Ok(false);
-    }
-
-    Err(git_error("failed to check ignored path", &output))
 }
 
-pub fn git_path(repo: &Path, path: &str) -> HzResult<PathBuf> {
+fn git_path(repository: &Path, path: &str) -> HzResult<PathBuf> {
     let output = Command::new("git")
         .arg("-C")
-        .arg(repo)
+        .arg(repository)
         .args(["rev-parse", "--git-path", path])
         .output()?;
-
     if !output.status.success() {
-        return Err(git_error("failed to resolve git path", &output));
+        return Err(git_error("failed to resolve Git path", &output));
     }
-
     let path = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if path.is_empty() {
-        return Err(HzError::Usage("git path was empty".to_owned()));
+        return Err(HzError::Usage("Git path was empty".to_owned()));
     }
-
     let path = PathBuf::from(path);
     if path.is_absolute() {
         Ok(path)
     } else {
-        Ok(repo.join(path))
+        Ok(repository.join(path))
     }
 }
 
-fn create_temp_index(index_path: &Path) -> HzResult<PathBuf> {
+fn create_temp_index(repository: &Path, index_path: &Path) -> HzResult<PathBuf> {
     for attempt in 0..16 {
         let temp_path = temp_index_path(index_path, attempt)?;
         let mut temp_file = match create_private_temp_file(&temp_path) {
@@ -482,32 +250,52 @@ fn create_temp_index(index_path: &Path) -> HzResult<PathBuf> {
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.into()),
         };
-
-        initialize_temp_index(index_path, &temp_path, &mut temp_file)?;
+        let result = if index_path.exists() {
+            initialize_temp_index(index_path, &mut temp_file)
+        } else {
+            drop(temp_file);
+            initialize_empty_temp_index(repository, index_path, &temp_path)
+        };
+        if let Err(error) = result {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error);
+        }
         return Ok(temp_path);
     }
-
     Err(HzError::Usage(
-        "failed to create a unique temporary git index".to_owned(),
+        "failed to create a unique temporary Git index".to_owned(),
     ))
 }
 
-fn initialize_temp_index(
+fn initialize_temp_index(index_path: &Path, temp_file: &mut fs::File) -> HzResult<()> {
+    let mut source = fs::File::open(index_path)?;
+    std::io::copy(&mut source, temp_file)?;
+    temp_file.sync_all()?;
+    Ok(())
+}
+
+fn initialize_empty_temp_index(
+    repository: &Path,
     index_path: &Path,
     temp_path: &Path,
-    temp_file: &mut fs::File,
 ) -> HzResult<()> {
-    let copy_result = (|| -> HzResult<()> {
-        if index_path.exists() {
-            let mut index_file = fs::File::open(index_path)?;
-            std::io::copy(&mut index_file, temp_file)?;
-        }
-        temp_file.sync_all()?;
-        Ok(())
-    })();
-    if let Err(error) = copy_result {
-        let _ = fs::remove_file(temp_path);
-        return Err(error);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .env("GIT_INDEX_FILE", index_path)
+        .args(["read-tree", "--empty", "--index-output"])
+        .arg(temp_path)
+        .output()?;
+    if !output.status.success() {
+        return Err(git_error(
+            "failed to initialize a temporary Git index",
+            &output,
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(temp_path, fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }
@@ -526,458 +314,249 @@ fn create_private_temp_file(path: &Path) -> std::io::Result<fs::File> {
 fn temp_index_path(index_path: &Path, attempt: u32) -> HzResult<PathBuf> {
     let parent = index_path.parent().ok_or_else(|| {
         HzError::Usage(format!(
-            "git index path has no parent: {}",
+            "Git index path has no parent: {}",
             index_path.display()
         ))
     })?;
     Ok(parent.join(format!(
-        ".hz-git-index-{}-{}-{}.tmp",
+        ".hz-git-index-{}-{}-{attempt}.tmp",
         process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|error| HzError::Usage(format!("system time before unix epoch: {error}")))?
+            .map_err(|error| HzError::Usage(format!("system time before Unix epoch: {error}")))?
             .as_nanos(),
-        attempt
     )))
 }
 
-fn parse_untracked_paths(output: &[u8]) -> Vec<PathBuf> {
+fn parse_nul_paths(output: &[u8]) -> Vec<Vec<u8>> {
     output
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
-        .map(path_from_git_bytes)
+        .map(<[u8]>::to_vec)
         .collect()
 }
 
-fn status_paths_modified_at(repo: &Path, status: &[u8]) -> u64 {
-    status_paths(status)
-        .into_iter()
-        .filter_map(|path| path_modified_at(&repo.join(path)))
+fn status_paths_modified_at(repository: &Path, paths: &[PathBuf]) -> u64 {
+    if paths.is_empty() {
+        return 0;
+    }
+    paths
+        .iter()
+        .filter_map(|path| path_modified_at(&repository.join(path)))
         .max()
-        .unwrap_or_else(|| path_modified_at(repo).unwrap_or(0))
+        .unwrap_or_else(|| path_modified_at(repository).unwrap_or(0))
 }
 
-fn status_paths(status: &[u8]) -> Vec<PathBuf> {
+fn status_paths(porcelain: &[u8]) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    let mut fields = status
+    let mut fields = porcelain
         .split(|byte| *byte == 0)
         .filter(|field| !field.is_empty());
-
     while let Some(field) = fields.next() {
         if field.len() < 4 || field[2] != b' ' {
             continue;
         }
-
-        let status = &field[..2];
+        let state = &field[..2];
         paths.push(path_from_git_bytes(&field[3..]));
-
-        if status.iter().any(|byte| matches!(byte, b'R' | b'C')) {
+        if state.iter().any(|byte| matches!(byte, b'R' | b'C')) {
             let _ = fields.next();
         }
     }
-
     paths
 }
 
-#[cfg(unix)]
-fn path_from_git_bytes(bytes: &[u8]) -> PathBuf {
-    use std::os::unix::ffi::OsStringExt;
-
-    PathBuf::from(OsString::from_vec(bytes.to_vec()))
-}
-
-#[cfg(not(unix))]
-fn path_from_git_bytes(bytes: &[u8]) -> PathBuf {
-    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
-}
-
 fn path_modified_at(path: &Path) -> Option<u64> {
-    let metadata = fs::symlink_metadata(path).ok()?;
-    metadata
+    fs::symlink_metadata(path)
+        .ok()?
         .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
         .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs())
 }
 
-fn parse_worktree_list(output: &[u8]) -> Vec<GitWorktree> {
-    let mut worktrees = Vec::new();
-    let mut path = None;
-    let mut branch = None;
-
-    for field in output.split(|byte| *byte == 0) {
-        if field.is_empty() {
-            if let Some(path) = path.take() {
-                worktrees.push(GitWorktree { path, branch });
-                branch = None;
-            }
-            continue;
-        }
-
-        if let Some(value) = field.strip_prefix(b"worktree ") {
-            path = Some(path_from_git_bytes(value));
-        } else if let Some(value) = field.strip_prefix(b"branch refs/heads/") {
-            branch = Some(String::from_utf8_lossy(value).into_owned());
-        }
-    }
-
-    if let Some(path) = path {
-        worktrees.push(GitWorktree { path, branch });
-    }
-
-    worktrees
+#[cfg(unix)]
+fn path_from_git_bytes(path: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    PathBuf::from(OsString::from_vec(path.to_vec()))
 }
 
-fn parse_main_worktree_path(output: &[u8]) -> Option<PathBuf> {
-    output
-        .split(|byte| *byte == 0)
-        .find_map(|field| field.strip_prefix(b"worktree ").map(path_from_git_bytes))
+#[cfg(not(unix))]
+fn path_from_git_bytes(path: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(path).into_owned())
 }
 
-fn empty_worktree_list_error(repo: &Path) -> HzError {
-    HzError::Usage(format!(
-        "git worktree list returned no entries for {}; unexpected repository state",
-        repo.display()
-    ))
-}
-
-fn git_error(context: &str, output: &std::process::Output) -> HzError {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let detail = stderr.trim();
-    if detail.is_empty() {
-        HzError::Usage(context.to_owned())
+fn git_error(context: &str, output: &Output) -> HzError {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if stderr.is_empty() {
+        HzError::Usage(format!("{context}: Git exited with {}", output.status))
     } else {
-        HzError::Usage(format!("{context}: {detail}"))
+        HzError::Usage(format!("{context}: {stderr}"))
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GitSourceControl;
+
+impl SourceControl for GitSourceControl {
+    fn kind(&self) -> &'static str {
+        "git"
+    }
+
+    fn status(&self, workspace: &Path) -> HzResult<SourceStatus> {
+        if !workspace.join(".git").exists() {
+            return Ok(SourceStatus::Unknown);
+        }
+        Ok(if status(workspace)?.dirty {
+            SourceStatus::Dirty
+        } else {
+            SourceStatus::Clean
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        env,
-        process::Command,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    #[test]
-    fn parses_porcelain_worktree_list() {
-        let output = b"worktree /repo\0HEAD abc\0branch refs/heads/main\0\0worktree /repo-feature\0HEAD def\0branch refs/heads/feature\0\0";
-
-        let worktrees = parse_worktree_list(output);
-
-        assert_eq!(
-            worktrees,
-            vec![
-                GitWorktree {
-                    path: PathBuf::from("/repo"),
-                    branch: Some("main".to_owned())
-                },
-                GitWorktree {
-                    path: PathBuf::from("/repo-feature"),
-                    branch: Some("feature".to_owned())
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn parses_main_worktree_path_from_porcelain_list() {
-        let output = b"worktree /repo\0HEAD abc\0branch refs/heads/main\0\0worktree /repo-feature\0HEAD def\0branch refs/heads/feature\0\0";
-
-        assert_eq!(
-            parse_main_worktree_path(output),
-            Some(PathBuf::from("/repo"))
-        );
-        assert_eq!(parse_main_worktree_path(b""), None);
-    }
-
-    #[test]
-    fn status_paths_read_nul_porcelain_records() {
-        assert_eq!(
-            status_paths(b" M src/lib.rs\0?? nested/file.txt\0R  new-name.rs\0old-name.rs\0"),
-            vec![
-                PathBuf::from("src/lib.rs"),
-                PathBuf::from("nested/file.txt"),
-                PathBuf::from("new-name.rs")
-            ]
-        );
-    }
-
-    #[test]
-    fn status_paths_preserve_newlines_in_paths() {
-        assert_eq!(
-            status_paths(b" M line\nbreak.txt\0"),
-            vec![PathBuf::from("line\nbreak.txt")]
-        );
-    }
-
-    #[test]
-    fn untracked_paths_read_nul_records() {
-        assert_eq!(
-            parse_untracked_paths(b"line\nbreak.txt\0nested/file.txt\0"),
-            vec![
-                PathBuf::from("line\nbreak.txt"),
-                PathBuf::from("nested/file.txt")
-            ]
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn untracked_paths_preserve_non_utf8_paths() {
-        use std::os::unix::ffi::OsStringExt;
-
-        assert_eq!(
-            parse_untracked_paths(b"invalid-\xff.txt\0"),
-            vec![PathBuf::from(OsString::from_vec(
-                b"invalid-\xff.txt".to_vec()
-            ))]
-        );
-    }
-
-    #[test]
-    fn temp_index_is_removed_when_initialization_fails() {
-        let test_dir = env::temp_dir().join(format!(
-            "hz-git-temp-index-cleanup-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time should be after unix epoch")
-                .as_nanos()
-        ));
-        let index_path = test_dir.join("index-directory");
-        let temp_path = test_dir.join("temp-index");
-        fs::create_dir_all(&index_path).expect("index directory should be created");
-        let mut temp_file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-            .expect("temp index should be created");
-
-        let result = initialize_temp_index(&index_path, &temp_path, &mut temp_file);
-
-        assert!(result.is_err());
-        assert!(!temp_path.exists());
-        fs::remove_dir_all(test_dir).expect("test directory should be removed");
-    }
-
-    #[test]
-    fn temp_index_paths_are_adjacent_to_source_index() {
-        let index = PathBuf::from("/repo/.git/worktrees/feature/index");
-        let temp = temp_index_path(&index, 0).expect("temp index path should resolve");
-
-        assert_eq!(temp.parent(), index.parent());
-        assert!(
-            temp.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with(".hz-git-index-")
-        );
-    }
-
-    #[test]
-    fn worktree_state_reads_concrete_untracked_files() {
-        let test_dir = env::temp_dir().join(format!(
-            "hz-git-status-untracked-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time should be after unix epoch")
-                .as_nanos()
-        ));
-        let repo = test_dir.join("repo");
-        let nested_file = repo.join("nested").join("file.txt");
-        fs::create_dir_all(nested_file.parent().unwrap())
-            .expect("test directory should be created");
-
-        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
-        fs::write(&nested_file, "untracked\n").expect("untracked file should be written");
-
-        let state = worktree_state(&repo).expect("worktree state should be read");
-
-        assert!(state.dirty);
-        assert_eq!(
-            state.modified_at_unix,
-            path_modified_at(&nested_file).expect("file mtime should be read")
-        );
-
-        fs::remove_dir_all(test_dir).expect("test directory should be removed");
-    }
-
-    #[test]
-    fn patch_diff_includes_modified_and_untracked_files() {
-        let test_dir = env::temp_dir().join(format!(
-            "hz-git-patch-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time should be after unix epoch")
-                .as_nanos()
-        ));
-        let repo = test_dir.join("repo");
-        let destination = test_dir.join("destination");
-        fs::create_dir_all(&test_dir).expect("test directory should be created");
-
-        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
-        git(["config", "user.email", "test@example.com"], &repo);
-        git(["config", "user.name", "Test"], &repo);
-        fs::write(repo.join("file.txt"), "base\n").expect("tracked file should be written");
-        git(["add", "file.txt"], &repo);
-        git(["commit", "-q", "-m", "init"], &repo);
-        git(
-            [
-                "worktree",
-                "add",
-                "-q",
-                "--detach",
-                destination.to_str().unwrap(),
-                "HEAD",
-            ],
-            &repo,
-        );
-
-        fs::write(repo.join("file.txt"), "base\nchanged\n")
-            .expect("tracked file should be changed");
-        fs::write(repo.join("new.txt"), "new\n").expect("untracked file should be written");
-
-        let patch = diff_patch(&repo).expect("patch should be created");
-        assert!(apply_patch(&destination, &patch).expect("patch should apply"));
-
-        assert_eq!(
-            fs::read_to_string(destination.join("file.txt")).unwrap(),
-            "base\nchanged\n"
-        );
-        assert_eq!(
-            fs::read_to_string(destination.join("new.txt")).unwrap(),
-            "new\n"
-        );
-
-        fs::remove_dir_all(test_dir).expect("test directory should be removed");
-    }
-
-    #[test]
-    fn reverse_patch_restores_worktree() {
-        let test_dir = env::temp_dir().join(format!(
-            "hz-git-reverse-patch-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time should be after unix epoch")
-                .as_nanos()
-        ));
-        let repo = test_dir.join("repo");
-        fs::create_dir_all(&test_dir).expect("test directory should be created");
-
-        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
-        git(["config", "user.email", "test@example.com"], &repo);
-        git(["config", "user.name", "Test"], &repo);
-        fs::write(repo.join("file.txt"), "base\n").expect("tracked file should be written");
-        git(["add", "file.txt"], &repo);
-        git(["commit", "-q", "-m", "init"], &repo);
-
-        fs::write(repo.join("file.txt"), "base\nchanged\n")
-            .expect("tracked file should be changed");
-        let patch = diff_patch(&repo).expect("patch should be created");
-        assert!(apply_patch_reverse(&repo, &patch).expect("patch should reverse"));
-
-        assert_eq!(fs::read_to_string(repo.join("file.txt")).unwrap(), "base\n");
-        assert!(!worktree_state(&repo).unwrap().dirty);
-
-        fs::remove_dir_all(test_dir).expect("test directory should be removed");
-    }
-
-    #[test]
-    fn hash_bytes_changes_when_input_changes() {
-        let test_dir = env::temp_dir().join(format!(
-            "hz-git-hash-bytes-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time should be after unix epoch")
-                .as_nanos()
-        ));
-        let repo = test_dir.join("repo");
-        fs::create_dir_all(&test_dir).expect("test directory should be created");
-
-        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
-
-        assert_ne!(
-            hash_bytes(&repo, b"one").unwrap(),
-            hash_bytes(&repo, b"two").unwrap()
-        );
-
-        fs::remove_dir_all(test_dir).expect("test directory should be removed");
-    }
-
-    #[test]
-    fn add_worktree_without_branch_creates_detached_worktree() {
-        let test_dir = env::temp_dir().join(format!(
-            "hz-git-detached-worktree-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time should be after unix epoch")
-                .as_nanos()
-        ));
-        let repo = test_dir.join("repo");
-        let destination = test_dir.join("destination");
-        fs::create_dir_all(&test_dir).expect("test directory should be created");
-
-        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
-        git(["config", "user.email", "test@example.com"], &repo);
-        git(["config", "user.name", "Test"], &repo);
-        fs::write(repo.join("file.txt"), "base\n").expect("tracked file should be written");
-        git(["add", "file.txt"], &repo);
-        git(["commit", "-q", "-m", "init"], &repo);
-
-        add_worktree(&repo, &destination, None, None).expect("detached worktree should be added");
-
-        assert_eq!(current_branch(&destination).unwrap(), None);
-        let destination = fs::canonicalize(&destination).unwrap();
-        assert!(list_worktrees(&repo).unwrap().into_iter().any(|worktree| {
-            fs::canonicalize(worktree.path).unwrap() == destination && worktree.branch.is_none()
-        }));
-
-        fs::remove_dir_all(test_dir).expect("test directory should be removed");
-    }
-
-    #[test]
-    fn switch_detached_at_restores_specific_head() {
-        let test_dir = env::temp_dir().join(format!(
-            "hz-git-detached-head-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time should be after unix epoch")
-                .as_nanos()
-        ));
-        let repo = test_dir.join("repo");
-        fs::create_dir_all(&test_dir).expect("test directory should be created");
-
-        git(["init", "-q", repo.to_str().unwrap()], &test_dir);
-        git(["config", "user.email", "test@example.com"], &repo);
-        git(["config", "user.name", "Test"], &repo);
-        fs::write(repo.join("file.txt"), "base\n").expect("tracked file should be written");
-        git(["add", "file.txt"], &repo);
-        git(["commit", "-q", "-m", "init"], &repo);
-        let first = current_head(&repo).expect("first HEAD should be read");
-
-        fs::write(repo.join("file.txt"), "base\nchanged\n")
-            .expect("tracked file should be changed");
-        git(["commit", "-q", "-am", "change"], &repo);
-
-        switch_detached_at(&repo, &first).expect("worktree should detach at first commit");
-
-        assert_eq!(current_branch(&repo).unwrap(), None);
-        assert_eq!(current_head(&repo).unwrap(), first);
-
-        fs::remove_dir_all(test_dir).expect("test directory should be removed");
-    }
+    use tempfile::TempDir;
 
     fn git<const N: usize>(args: [&str; N], cwd: &Path) {
         let output = Command::new("git")
             .current_dir(cwd)
             .args(args)
             .output()
-            .expect("git should run");
+            .unwrap();
         assert!(
             output.status.success(),
             "git failed: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn repository() -> (TempDir, PathBuf) {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        git(["init", "-q", repo.to_str().unwrap()], temp.path());
+        git(["config", "user.email", "test@example.com"], &repo);
+        git(["config", "user.name", "Test"], &repo);
+        fs::write(repo.join("file.txt"), "base\n").unwrap();
+        git(["add", "file.txt"], &repo);
+        git(["commit", "-q", "-m", "init"], &repo);
+        (temp, repo)
+    }
+
+    #[test]
+    fn status_and_patches_ignore_untracked_and_tracked_workspace_markers() {
+        let (_temp, repo) = repository();
+        fs::write(repo.join(WORKSPACE_MARKER), "workspace-id\n").unwrap();
+
+        assert!(!status(&repo).unwrap().dirty);
+        assert!(diff_patch(&repo).unwrap().is_empty());
+
+        git(["add", WORKSPACE_MARKER], &repo);
+        git(["commit", "-q", "-m", "track marker"], &repo);
+        fs::write(repo.join(WORKSPACE_MARKER), "child-workspace-id\n").unwrap();
+        git(["add", WORKSPACE_MARKER], &repo);
+
+        assert!(!status(&repo).unwrap().dirty);
+        assert!(diff_patch(&repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn status_preserves_untracked_and_modified_paths() {
+        let (_temp, repo) = repository();
+        fs::write(repo.join("file.txt"), "changed\n").unwrap();
+        fs::write(repo.join("new.txt"), "new\n").unwrap();
+        assert!(status(&repo).unwrap().dirty);
+    }
+
+    #[test]
+    fn patch_contains_tracked_and_untracked_state() {
+        let (temp, repo) = repository();
+        let destination = temp.path().join("destination");
+        git(
+            [
+                "clone",
+                "-q",
+                "--no-hardlinks",
+                repo.to_str().unwrap(),
+                destination.to_str().unwrap(),
+            ],
+            temp.path(),
+        );
+        fs::write(repo.join("file.txt"), "changed\n").unwrap();
+        fs::write(repo.join("new.txt"), "new\n").unwrap();
+        let patch = diff_patch(&repo).unwrap();
+        assert!(apply_patch(&destination, &patch).unwrap());
+        assert_eq!(
+            fs::read_to_string(destination.join("file.txt")).unwrap(),
+            "changed\n"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("new.txt")).unwrap(),
+            "new\n"
+        );
+    }
+
+    #[test]
+    fn patch_supports_an_unborn_head() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        git(["init", "-q", source.to_str().unwrap()], temp.path());
+        git(["init", "-q", destination.to_str().unwrap()], temp.path());
+        fs::write(source.join("staged.txt"), "staged\n").unwrap();
+        git(["add", "staged.txt"], &source);
+        fs::write(source.join("untracked.txt"), "untracked\n").unwrap();
+
+        let patch = diff_patch(&source).unwrap();
+        assert!(apply_patch(&destination, &patch).unwrap());
+        assert_eq!(
+            fs::read_to_string(destination.join("staged.txt")).unwrap(),
+            "staged\n"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("untracked.txt")).unwrap(),
+            "untracked\n"
+        );
+    }
+
+    #[test]
+    fn patch_ignores_forced_git_color_configuration() {
+        let (temp, repo) = repository();
+        let destination = temp.path().join("destination");
+        git(
+            [
+                "clone",
+                "-q",
+                "--no-hardlinks",
+                repo.to_str().unwrap(),
+                destination.to_str().unwrap(),
+            ],
+            temp.path(),
+        );
+        git(["config", "color.ui", "always"], &repo);
+        fs::write(repo.join("file.txt"), "changed\n").unwrap();
+
+        let patch = diff_patch(&repo).unwrap();
+        assert!(!patch.contains(&0x1b));
+        assert!(apply_patch(&destination, &patch).unwrap());
+    }
+
+    #[test]
+    fn status_parser_preserves_newlines() {
+        assert_eq!(
+            status_paths(b" M line\nbreak.txt\0"),
+            vec![PathBuf::from("line\nbreak.txt")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nul_path_parser_preserves_non_utf8_paths() {
+        assert_eq!(
+            parse_nul_paths(b"invalid-\xff.txt\0"),
+            vec![b"invalid-\xff.txt".to_vec()]
         );
     }
 }

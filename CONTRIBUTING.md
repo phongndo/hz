@@ -8,14 +8,14 @@ boundaries.
 
 - Headless first: every workflow should be scriptable before it needs an
   interactive UI.
-- Git native: prefer Git worktrees, diffs, branches, and plain files over hidden
-  state.
-- Safe by default: do not remove or overwrite user work without a clean check or
-  explicit confirmation.
-- Provider agnostic: agent/runtime integrations should not leak into core
-  worktree behavior.
-- Boring code wins: preserve public CLI behavior unless a change intentionally
-  documents a compatibility break.
+- Workspace first: identity, ancestry, storage, and lifecycle must not depend on
+  a particular source control.
+- Safe by default: destructive operations move complete logical subtrees to
+  recoverable trash before garbage collection.
+- Source-control agnostic: Git, Mercurial, Jujutsu, and future integrations must
+  sit behind capabilities rather than leak into core workspace behavior.
+- Boring code wins: prefer explicit state transitions, repairable metadata, and
+  stable machine output.
 
 ## Setup
 
@@ -87,7 +87,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-targets --all-features --locked
 cargo build --workspace --all-targets --all-features --locked
-cargo run -p hz-bench --locked -- cmd --hz target/debug/hz --worktrees 2 --warmup 0 --iterations 1
+cargo run -p hz-bench --locked -- cmd --hz target/debug/hz --workspaces 2 --warmup 0 --iterations 1
 ```
 
 The same checks are available through Nix:
@@ -101,20 +101,20 @@ nix develop -c cargo build --workspace --all-targets --all-features --locked
 ```
 
 `just hz ...` is useful for commands that print output, but it cannot change the
-current shell directory. Use plain `hz git new` or `hz git cd` inside interactive
+current shell directory. Use plain `hz new` or `hz cd` inside interactive
 `nix develop` to exercise auto-cd behavior from the development binary without
 editing your shell rc file.
 
 Use `hz install zsh` only when you want to update your real shell rc file for an
 installed `hz` binary. `just smoke-zsh` verifies the zsh integration in an
-isolated shell, including branch names such as `fix(scope)/name` that zsh would
-otherwise treat as globs. `just smoke` also runs the installer/update smoke
+isolated shell, including handles containing shell glob characters. `just smoke`
+also runs the installer/update smoke
 against a temporary local release fixture. `just smoke-curl-install` exercises
 the published curl install path when you want live release coverage.
 
-Bash cannot run unquoted branch names containing parentheses, such as
-`fix(scope)/name`, because bash parses `(` as syntax before `hz` can receive the
-argument. Quote those names in bash or use the zsh integration.
+Bash cannot run unquoted handles containing parentheses because it parses `(`
+as syntax before `hz` can receive the argument. Quote those handles in Bash or
+use the Zsh integration.
 
 ## Pull requests
 

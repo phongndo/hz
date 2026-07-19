@@ -1,46 +1,31 @@
 mod config;
-mod init;
-mod lifecycle;
 mod shell;
+mod source_control;
+mod workspace;
+
 #[cfg(test)]
 mod tests;
-mod worktree;
-
-pub use hz_worktree::{
-    CreateWorktree, CreatedWorktree, FindWorktree, FindWorktrees, ForkWorktree, ForkedWorktree,
-    HandoffMode, HandoffWorktree, ListWorktrees, LocalWorktree, LocalWorktreeInfo, PathWorktree,
-    PinWorktrees, RemoveWorktree, WorktreeEntry, WorktreeHandoff, WorktreeSource, WorktreeStatus,
-};
 
 pub use config::{
-    ColorConfig, ColorMode, ColorSchemeConfig, HzConfig, LifecycleConfig, ListColumn, ListConfig,
-    ListHeaders, LoadRepoConfig, WorktreeConfig, load_repo_config, load_repo_config_at,
-};
-pub use init::{InitRepo, RepoInit, init_repo};
-pub use lifecycle::{
-    LifecycleKind, LifecycleRun, RunLifecycle, run_lifecycle, run_lifecycle_for_entry,
+    HzConfig, InitConfig, InitializedConfig, LifecycleConfig, config_path, init_config,
 };
 pub use shell::{
     Shell, ShellInit, install_shell_integration, shell_init_comment, shell_init_line,
     shell_integration,
 };
-pub use worktree::{
-    create_worktree, create_worktree_with_lifecycle, current_worktree_path, find_worktree,
-    find_worktrees, fork_worktree, handoff_worktree, is_user_managed_worktree_path,
-    list_worktree_targets, list_worktree_targets_with_repo, list_worktrees,
-    list_worktrees_with_local, local_worktree, path_worktree, pin_worktrees, remove_found_worktree,
-    remove_found_worktree_with_force, remove_worktree,
+pub use source_control::{
+    GitHandoff, GitWorkspaceStatus, MercurialWorkspaceStatus, git_handoff, git_status,
+    mercurial_status,
+};
+pub use workspace::{
+    WorkspaceInitialization, adopt_workspace, create_workspace, current_workspace,
+    doctor_workspaces, gc_workspaces, init_workspace, list_workspaces, pin_workspaces,
+    remove_workspace, resolve_workspace, restore_workspace, trashed_workspaces,
+    workspace_ancestors, workspace_manager,
 };
 
-const HZ_DIR: &str = ".hz";
-const CONFIG_FILE: &str = "hz.toml";
-const ENVIRONMENT_DIR: &str = "environment";
-const SETUP_SCRIPT: &str = "setup";
-const CLEANUP_SCRIPT: &str = "cleanup";
-
-pub(crate) use config::*;
-#[cfg(test)]
-pub(crate) use init::*;
-pub(crate) use lifecycle::*;
-#[cfg(test)]
-pub(crate) use shell::*;
+pub use hz_workspace::{
+    CopyMode, CreateWorkspace, CreatedWorkspace, DoctorIssue, DoctorReport, GarbageCollection,
+    InitOutcome, InitStrategy, InitWorkspace, InitializedWorkspace, ListScope, ListWorkspaces,
+    MARKER_FILE, Materializer, RemoveMode, RemovedWorkspaces, Workspace, WorkspaceState,
+};

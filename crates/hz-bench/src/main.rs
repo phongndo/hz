@@ -85,9 +85,9 @@ struct CmdArgs {
     /// hz binary to benchmark. Defaults to target/debug/hz from the current repo.
     #[arg(long, value_name = "PATH", default_value = "target/debug/hz")]
     hz: PathBuf,
-    /// Synthetic worktrees to create before measuring read-only commands.
+    /// Synthetic workspaces to create before measuring read-only commands.
     #[arg(long, default_value_t = 12)]
-    worktrees: usize,
+    workspaces: usize,
     /// Warmup runs per measured command.
     #[arg(long, default_value_t = 3)]
     warmup: usize,
@@ -97,6 +97,9 @@ struct CmdArgs {
     /// Also measure create/remove command latency.
     #[arg(long)]
     mutating: bool,
+    /// Use explicit byte-copy materialization instead of benchmarking native COW.
+    #[arg(long)]
+    portable: bool,
     /// Keep the fixture directory at this path instead of using a temporary directory.
     #[arg(long, value_name = "DIR")]
     keep: Option<PathBuf>,
@@ -127,9 +130,10 @@ struct CmdBenchReport {
     hz: String,
     fixture_root: String,
     repo: String,
-    worktrees: usize,
+    workspaces: usize,
     warmup: usize,
     iterations: usize,
+    materialization: String,
     runs: Vec<CommandReport>,
 }
 
@@ -146,7 +150,12 @@ struct CommandReport {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct CreatedWorktreeJson {
+struct CreatedWorkspaceJson {
+    workspace: CreatedWorkspaceRecord,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CreatedWorkspaceRecord {
     path: PathBuf,
 }
 
@@ -179,7 +188,7 @@ fn bench_cmd(args: CmdArgs) -> BenchResult<()> {
         )?);
     }
     if args.mutating {
-        runs.push(measure_create_remove(
+        runs.extend(measure_create_remove(
             &hz,
             &fixture,
             args.warmup,
@@ -192,9 +201,10 @@ fn bench_cmd(args: CmdArgs) -> BenchResult<()> {
         hz: hz.display().to_string(),
         fixture_root: fixture.root.display().to_string(),
         repo: fixture.repo.display().to_string(),
-        worktrees: fixture.targets.len(),
+        workspaces: fixture.targets.len(),
         warmup: args.warmup,
         iterations: args.iterations,
+        materialization: if args.portable { "copy" } else { "native_cow" }.to_owned(),
         runs,
     };
 
@@ -205,8 +215,26 @@ fn bench_cmd(args: CmdArgs) -> BenchResult<()> {
     }
 
     if !fixture.keep {
-        fs::remove_dir_all(&fixture.root)?;
+        cleanup_fixture(&hz, &fixture)?;
     }
+    Ok(())
+}
+
+fn cleanup_fixture(hz: &Path, fixture: &Fixture) -> BenchResult<()> {
+    let context = RunContext::new(hz, &fixture.home, &fixture.config_home, &fixture.repo);
+    run_hz(
+        &context,
+        &[
+            "remove".into(),
+            "--at".into(),
+            fixture.repo.as_os_str().to_owned(),
+            "--force".into(),
+            "--no-hooks".into(),
+            "--json".into(),
+        ],
+    )?;
+    run_hz(&context, &["gc".into(), "--json".into()])?;
+    fs::remove_dir_all(&fixture.root)?;
     Ok(())
 }
 
@@ -248,33 +276,32 @@ fn create_fixture(hz: &Path, args: &CmdArgs) -> BenchResult<Fixture> {
     write_file(&repo.join("README.md"), b"# hz bench\n")?;
     git(&repo, &["add", "."])?;
     git(&repo, &["commit", "-m", "initial"])?;
-    run_hz(
-        &RunContext::new(hz, &home, &config_home, &repo),
-        &["init".into()],
-    )?;
+    let mut init_args = vec!["init".into()];
+    if args.portable {
+        init_args.push("--copy".into());
+    }
+    run_hz(&RunContext::new(hz, &home, &config_home, &repo), &init_args)?;
     git(&repo, &["add", ".hz"])?;
     git(&repo, &["commit", "-m", "add hz lifecycle config"])?;
 
-    let mut targets = Vec::with_capacity(args.worktrees);
+    let mut targets = Vec::with_capacity(args.workspaces);
     let context = RunContext::new(hz, &home, &config_home, &repo);
-    for index in 0..args.worktrees {
-        let target = format!("bench/{index:04}");
+    for index in 0..args.workspaces {
+        let target = format!("bench-{index:04}");
         let output = run_hz(
             &context,
             &[
-                "git".into(),
                 "new".into(),
                 target.clone().into(),
-                "--repo".into(),
+                "--from".into(),
                 repo.as_os_str().to_owned(),
-                "--max-branch-worktrees".into(),
-                "0".into(),
+                "--no-hooks".into(),
                 "--json".into(),
             ],
         )?;
-        let created: CreatedWorktreeJson = serde_json::from_slice(&output.stdout)?;
+        let created: CreatedWorkspaceJson = serde_json::from_slice(&output.stdout)?;
         if index == 0 {
-            write_file(&created.path.join("dirty.txt"), b"dirty\n")?;
+            write_file(&created.workspace.path.join("dirty.txt"), b"dirty\n")?;
         }
         targets.push(target);
     }
@@ -308,35 +335,22 @@ fn read_only_command_specs(fixture: &Fixture) -> Vec<CommandSpec> {
         },
         CommandSpec {
             name: "list-human",
-            args: vec!["git".into(), "list".into(), "--repo".into(), repo.clone()],
+            args: vec!["list".into(), "--at".into(), repo.clone()],
         },
         CommandSpec {
             name: "list-json",
-            args: vec![
-                "git".into(),
-                "list".into(),
-                "--repo".into(),
-                repo.clone(),
-                "--json".into(),
-            ],
+            args: vec!["list".into(), "--at".into(), repo.clone(), "--json".into()],
         },
         CommandSpec {
-            name: "path-local",
-            args: vec![
-                "git".into(),
-                "path".into(),
-                "local".into(),
-                "--repo".into(),
-                repo.clone(),
-            ],
+            name: "path-root",
+            args: vec!["path".into(), "root".into(), "--at".into(), repo.clone()],
         },
         CommandSpec {
-            name: "path-worktree",
+            name: "path-workspace",
             args: vec![
-                "git".into(),
                 "path".into(),
                 sample_target.into(),
-                "--repo".into(),
+                "--at".into(),
                 repo.clone(),
             ],
         },
@@ -344,17 +358,17 @@ fn read_only_command_specs(fixture: &Fixture) -> Vec<CommandSpec> {
             name: "complete-targets",
             args: vec![
                 "__complete".into(),
-                "worktree-targets".into(),
-                "--repo".into(),
+                "workspace-targets".into(),
+                "--at".into(),
                 repo.clone(),
             ],
         },
         CommandSpec {
-            name: "complete-removable",
+            name: "complete-trash",
             args: vec![
                 "__complete".into(),
-                "removable-worktrees".into(),
-                "--repo".into(),
+                "trash-targets".into(),
+                "--at".into(),
                 repo,
             ],
         },
@@ -398,71 +412,85 @@ fn measure_create_remove(
     fixture: &Fixture,
     warmup: usize,
     iterations: usize,
-) -> BenchResult<CommandReport> {
+) -> BenchResult<[CommandReport; 2]> {
     let context = RunContext::new(hz, &fixture.home, &fixture.config_home, &fixture.repo);
     for index in 0..warmup {
-        create_and_remove(&context, &fixture.repo, &format!("bench/warmup-{index:04}"))?;
+        create_and_remove(&context, &fixture.repo, &format!("bench-warmup-{index:04}"))?;
     }
 
-    let mut samples = Vec::with_capacity(iterations);
-    let mut stdout_bytes = 0usize;
-    let mut stderr_bytes = 0usize;
+    let mut create_samples = Vec::with_capacity(iterations);
+    let mut remove_samples = Vec::with_capacity(iterations);
+    let mut create_stdout_bytes = 0usize;
+    let mut create_stderr_bytes = 0usize;
+    let mut remove_stdout_bytes = 0usize;
+    let mut remove_stderr_bytes = 0usize;
     for index in 0..iterations {
-        let target = format!("bench/mutate-{index:04}");
-        let start = Instant::now();
-        let outputs = create_and_remove(&context, &fixture.repo, &target)?;
-        let elapsed = start.elapsed().as_micros();
-        stdout_bytes = stdout_bytes.saturating_add(outputs.0.stdout.len() + outputs.1.stdout.len());
-        stderr_bytes = stderr_bytes.saturating_add(outputs.0.stderr.len() + outputs.1.stderr.len());
-        samples.push(elapsed);
+        let target = format!("bench-mutate-{index:04}");
+        let (create, create_elapsed, remove, remove_elapsed) =
+            create_and_remove(&context, &fixture.repo, &target)?;
+        create_stdout_bytes = create_stdout_bytes.saturating_add(create.stdout.len());
+        create_stderr_bytes = create_stderr_bytes.saturating_add(create.stderr.len());
+        remove_stdout_bytes = remove_stdout_bytes.saturating_add(remove.stdout.len());
+        remove_stderr_bytes = remove_stderr_bytes.saturating_add(remove.stderr.len());
+        create_samples.push(create_elapsed);
+        remove_samples.push(remove_elapsed);
     }
 
-    Ok(command_report(
-        "create-remove",
-        samples,
-        stdout_bytes,
-        stderr_bytes,
-    ))
+    Ok([
+        command_report(
+            "create",
+            create_samples,
+            create_stdout_bytes,
+            create_stderr_bytes,
+        ),
+        command_report(
+            "remove",
+            remove_samples,
+            remove_stdout_bytes,
+            remove_stderr_bytes,
+        ),
+    ])
 }
 
 fn create_and_remove(
     context: &RunContext<'_>,
     repo: &Path,
     target: &str,
-) -> BenchResult<(Output, Output)> {
+) -> BenchResult<(Output, u128, Output, u128)> {
+    let create_start = Instant::now();
     let create = run_hz(
         context,
         &[
-            "git".into(),
             "new".into(),
             target.into(),
-            "--repo".into(),
+            "--from".into(),
             repo.as_os_str().to_owned(),
-            "--max-branch-worktrees".into(),
-            "0".into(),
+            "--no-hooks".into(),
             "--json".into(),
         ],
     )?;
-    let created: CreatedWorktreeJson = serde_json::from_slice(&create.stdout)?;
+    let create_elapsed = create_start.elapsed().as_micros();
+    let created: CreatedWorkspaceJson = serde_json::from_slice(&create.stdout)?;
+    let remove_start = Instant::now();
     let remove = run_hz(
         context,
         &[
-            "git".into(),
             "remove".into(),
             target.into(),
-            "--repo".into(),
+            "--at".into(),
             repo.as_os_str().to_owned(),
-            "--force".into(),
+            "--no-hooks".into(),
             "--json".into(),
         ],
     )?;
-    if created.path.exists() {
+    let remove_elapsed = remove_start.elapsed().as_micros();
+    if created.workspace.path.exists() {
         return Err(BenchError::Usage(format!(
             "mutating benchmark did not remove {}",
-            created.path.display()
+            created.workspace.path.display()
         )));
     }
-    Ok((create, remove))
+    Ok((create, create_elapsed, remove, remove_elapsed))
 }
 
 fn command_report(
@@ -493,8 +521,12 @@ fn command_report(
 
 fn print_cmd_report(report: &CmdBenchReport) {
     println!(
-        "fixture={} repo={} worktrees={} iterations={}",
-        report.fixture_root, report.repo, report.worktrees, report.iterations
+        "fixture={} repo={} workspaces={} iterations={} materialization={}",
+        report.fixture_root,
+        report.repo,
+        report.workspaces,
+        report.iterations,
+        report.materialization
     );
     println!(
         "{:<20} {:>6} {:>10} {:>10} {:>10} {:>11} {:>11}",
@@ -546,6 +578,7 @@ fn run_command(program: &Path, context: &RunContext<'_>, args: &[OsString]) -> B
         .current_dir(context.cwd)
         .env("HOME", context.home)
         .env("XDG_CONFIG_HOME", context.config_home)
+        .env("HZ_DATABASE", context.config_home.join("state.sqlite"))
         .env("HZ_ASCII", "1")
         .output()?;
     if output.status.success() {

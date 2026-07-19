@@ -3,25 +3,16 @@ set -euo pipefail
 
 repo_dir="${0:A:h:h}"
 cd "$repo_dir"
-
 cargo build -p hz-cli --locked
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
-
 mkdir -p "$tmp_dir/bin" "$tmp_dir/target"
 cat > "$tmp_dir/bin/hz" <<'SH'
 #!/usr/bin/env sh
 set -eu
 if [ "${1:-}" = "__complete" ]; then
-  case "${2:-}" in
-    worktree-targets)
-      printf '%s\n' alpha beta
-      ;;
-    removable-worktrees)
-      printf '%s\n' alpha
-      ;;
-  esac
+  printf '%s\n' alpha beta
   exit 0
 fi
 printf '%s\n' "$@" > "$HZ_ARGS"
@@ -38,80 +29,45 @@ PATH="$tmp_dir/bin:$PATH" \
 HZ_INTEGRATION="$tmp_dir/hz.zsh" \
 zsh -fc '
   setopt nomatch
+  (( ! $+functions[compdef] ))
   source "$HZ_INTEGRATION"
 
-  eval "hz git new fix(broker)/help"
-  [[ "$PWD" == "$HZ_TARGET" ]]
-  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" git new "fix(broker)/help" --path-only)" ]]
+  (( $+functions[compdef] ))
+  [[ "${_comps[hz]:-}" == "_hz_complete" ]]
+  [[ "${_comps[_hz]:-}" == "_hz_complete" ]]
 
-  eval "hzcd fix(broker)/help"
+  eval "hz new fix(broker)"
   [[ "$PWD" == "$HZ_TARGET" ]]
-  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" git path "fix(broker)/help")" ]]
+  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" new "fix(broker)" --path-only)" ]]
 
-  eval "hzlocal fix(broker)/help"
+  eval "hz new -- -scratch"
   [[ "$PWD" == "$HZ_TARGET" ]]
-  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" git path local "fix(broker)/help")" ]]
+  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" new --path-only -- -scratch)" ]]
+
+  eval "hzcd fix(broker)"
+  [[ "$PWD" == "$HZ_TARGET" ]]
+  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" path "fix(broker)")" ]]
+
+  eval "hz git handoff root"
+  [[ "$PWD" == "$HZ_TARGET" ]]
+  [[ "$(cat "$HZ_ARGS")" == "$(printf "%s\n" git handoff root --path-only)" ]]
 
   [[ "${aliases[hz]:-}" == "noglob _hz" ]]
   [[ "${aliases[hzcd]:-}" == "noglob _hzcd" ]]
-  [[ "${aliases[hzlocal]:-}" == "noglob _hzlocal" ]]
-  [[ "${_comps[hz]:-}" == "_hz_completion" ]]
-  [[ "${_comps[_hz]:-}" == "_hz_completion" ]]
-  [[ "${_comps[hzcd]:-}" == "_hzcd_completion" ]]
-  [[ "${_comps[_hzcd]:-}" == "_hzcd_completion" ]]
-  [[ "${_comps[hzlocal]:-}" == "_hzlocal_completion" ]]
-  [[ "${_comps[_hzlocal]:-}" == "_hzlocal_completion" ]]
+  [[ "${aliases[hzroot]:-}" == "noglob _hzroot" ]]
 
   compadd() {
     while [[ "$#" -gt 0 ]]; do
-      case "$1" in
-        -a)
-          shift
-          eval "print -rl -- \"\${${1}[@]}\"" >> "$HZ_COMPLETIONS"
-          ;;
-        --)
-          shift
-          print -rl -- "$@" >> "$HZ_COMPLETIONS"
-          return
-          ;;
-        -*)
-          ;;
-        *)
-          print -r -- "$1" >> "$HZ_COMPLETIONS"
-          ;;
-      esac
+      if [[ "$1" == "-a" ]]; then
+        shift
+        eval "print -rl -- \"\${${1}[@]}\"" >> "$HZ_COMPLETIONS"
+      fi
       shift
     done
   }
 
-  _describe() {
-    local array_name="${argv[-1]}"
-    eval "print -rl -- \"\${${array_name}[@]}\"" >> "$HZ_COMPLETIONS"
-  }
-
   : > "$HZ_COMPLETIONS"
-  _hz_complete_command_options ls
-  grep -qx -- "--json" "$HZ_COMPLETIONS"
-
-  : > "$HZ_COMPLETIONS"
-  words=(hz --machine g)
-  CURRENT=3
-  PREFIX=g
-  _hz_completion
-  grep -qx -- "git:Git worktree commands" "$HZ_COMPLETIONS"
-
-  : > "$HZ_COMPLETIONS"
-  words=(hz --machine git list -)
-  CURRENT=5
-  PREFIX=-
-  _hz_completion
-  grep -qx -- "--json" "$HZ_COMPLETIONS"
-
-  : > "$HZ_COMPLETIONS"
-  words=(hz git cd "")
-  CURRENT=4
-  PREFIX=""
-  _hz_worktree_targets
+  _hz_targets
   grep -qx -- "alpha" "$HZ_COMPLETIONS"
   grep -qx -- "beta" "$HZ_COMPLETIONS"
 '

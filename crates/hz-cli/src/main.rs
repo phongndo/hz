@@ -1,48 +1,87 @@
 mod args;
 mod complete;
-mod removal;
 mod repo_shell;
 #[cfg(test)]
 mod tests;
 mod update;
-mod worktree_output;
+mod workspace_output;
 
 use std::{
     fmt,
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
     process::ExitCode,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use clap::{CommandFactory, Parser};
 use hz_core::{HzError, HzResult};
 
 use crate::{
-    args::{
-        Cli, Command, ForkWorktreeArgs, GitCommand, HandoffWorktreeArgs, ListWorktreeArgs,
-        NewWorktreeArgs, PathWorktreeArgs, PinWorktreeArgs, PwdWorktreeArgs, RemoveWorktreeArgs,
-    },
+    args::{Cli, Command, ConfigCommand, GitCommand, HgCommand},
     complete::complete,
-    removal::{handoff_worktree, remove_worktree, remove_worktree_json_array},
-    repo_shell::{init_repo_or_shell, install_shell, shell_script},
+    repo_shell::{install_shell, shell_script},
     update::update,
-    worktree_output::{
-        StyleColor, create_worktree, fork_worktree, list_worktrees, path_worktree, pin_worktree,
-        pwd_worktree, styled, unpin_worktree,
+    workspace_output::{
+        adopt, ancestors, config_init, doctor, gc, git_handoff, git_status, init_workspace,
+        list_workspaces, mercurial_status, new_workspace, path_workspace, pin_workspaces,
+        pwd_workspace, remove_workspace, restore_workspace,
     },
 };
 
+static MACHINE_OUTPUT: AtomicBool = AtomicBool::new(false);
+
 fn main() -> ExitCode {
-    match run() {
+    let machine = machine_requested(std::env::args_os());
+    MACHINE_OUTPUT.store(machine, Ordering::Relaxed);
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) if machine && error.exit_code() != 0 => {
+            return finish(Err(CliError::from(HzError::Usage(error.to_string()))));
+        }
+        Err(error) => error.exit(),
+    };
+    finish(run(cli))
+}
+
+fn finish(result: CliResult<()>) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) if is_clean_exit_error(&error) => ExitCode::SUCCESS,
         Err(error) => {
-            let _ = write_stderr(format_args!(
-                "{} {error}\n",
-                styled("hz:", StyleColor::Red, io::stderr().is_terminal())
-            ));
+            if MACHINE_OUTPUT.load(Ordering::Relaxed) {
+                let (code, path) = machine_error_fields(&error);
+                let value = serde_json::json!({
+                    "status": "error",
+                    "error": {
+                        "code": code,
+                        "message": error.to_string(),
+                        "path": path,
+                    }
+                });
+                let _ = write_stderr(format_args!("{value}\n"));
+            } else {
+                let _ = write_stderr(format_args!("hz: {error}\n"));
+            }
             ExitCode::from(1)
         }
     }
+}
+
+fn machine_requested<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    for argument in args.into_iter().skip(1) {
+        let argument = argument.as_ref();
+        if argument == "--" {
+            break;
+        }
+        if argument == "--machine" {
+            return true;
+        }
+    }
+    false
 }
 
 pub(crate) type CliResult<T> = Result<T, CliError>;
@@ -105,14 +144,33 @@ fn is_clean_exit_error(error: &CliError) -> bool {
     matches!(error, CliError::StdoutBrokenPipe)
 }
 
-fn run() -> CliResult<()> {
-    let cli = Cli::parse();
+fn run(cli: Cli) -> CliResult<()> {
     let machine = cli.machine;
-
     match cli.command {
         None => write_default_help(io::stdout().lock()),
-        Some(Command::Git { command }) => run_git_command(command, machine),
-        Some(Command::Init(args)) => init_repo_or_shell(args),
+        Some(Command::Init(args)) => init_workspace(args, machine),
+        Some(Command::New(args)) => new_workspace(args, machine),
+        Some(Command::Path(args)) => path_workspace(args, machine),
+        Some(Command::List(args)) => list_workspaces(args, machine),
+        Some(Command::Pwd(args)) => pwd_workspace(args, machine),
+        Some(Command::Ancestors(args)) => ancestors(args, machine),
+        Some(Command::Remove(args)) => remove_workspace(args, machine),
+        Some(Command::Pin(args)) => pin_workspaces(args, machine, true),
+        Some(Command::Unpin(args)) => pin_workspaces(args, machine, false),
+        Some(Command::Restore(args)) => restore_workspace(args, machine),
+        Some(Command::Gc(args)) => gc(args, machine),
+        Some(Command::Adopt(args)) => adopt(args, machine),
+        Some(Command::Doctor(args)) => doctor(args, machine),
+        Some(Command::Git { command }) => match command {
+            GitCommand::Status(args) => git_status(args, machine),
+            GitCommand::Handoff(args) => git_handoff(args, machine),
+        },
+        Some(Command::Hg { command }) => match command {
+            HgCommand::Status(args) => mercurial_status(args, machine),
+        },
+        Some(Command::Config { command }) => match command {
+            ConfigCommand::Init(args) => config_init(args, machine),
+        },
         Some(Command::Install(args)) => install_shell(args),
         Some(Command::Shell(args)) => shell_script(args),
         Some(Command::Update(args)) => update(args),
@@ -120,86 +178,25 @@ fn run() -> CliResult<()> {
     }
 }
 
-fn run_git_command(command: GitCommand, machine: bool) -> CliResult<()> {
-    match command {
-        GitCommand::New(args) => create_worktree(machine_new_args(args, machine)),
-        GitCommand::Fork(args) => fork_worktree(machine_fork_args(args, machine)),
-        GitCommand::Path(args) => path_worktree(machine_path_args(args, machine)),
-        GitCommand::List(args) => list_worktrees(machine_list_args(args, machine)),
-        GitCommand::Pwd(args) => pwd_worktree(machine_pwd_args(args, machine)),
-        GitCommand::Remove(args) => {
-            if machine {
-                remove_worktree_json_array(machine_remove_args(args, true))
-            } else {
-                remove_worktree(args)
-            }
+fn machine_error_fields(error: &CliError) -> (&'static str, Option<String>) {
+    match error {
+        CliError::Hz(HzError::Io(_)) => ("io", None),
+        CliError::Hz(HzError::Json(_)) => ("json", None),
+        CliError::Hz(HzError::UnknownWorkspace { .. }) => ("unknown_workspace", None),
+        CliError::Hz(HzError::WorkspaceNotInitialized(path)) => (
+            "workspace_not_initialized",
+            Some(path.display().to_string()),
+        ),
+        CliError::Hz(HzError::MarkerMismatch(path)) => {
+            ("marker_mismatch", Some(path.display().to_string()))
         }
-        GitCommand::Pin(args) => pin_worktree(machine_pin_args(args, machine)),
-        GitCommand::Unpin(args) => unpin_worktree(machine_pin_args(args, machine)),
-        GitCommand::Handoff(args) => handoff_worktree(machine_handoff_args(args, machine)),
+        CliError::Hz(HzError::MissingMarker(path)) => {
+            ("missing_marker", Some(path.display().to_string()))
+        }
+        CliError::Hz(HzError::CowUnavailable(_)) => ("cow_unavailable", None),
+        CliError::Hz(HzError::Usage(_)) => ("usage", None),
+        CliError::StdoutBrokenPipe => ("broken_pipe", None),
     }
-}
-
-fn machine_new_args(mut args: NewWorktreeArgs, machine: bool) -> NewWorktreeArgs {
-    if machine {
-        args.json = true;
-        args.debug = false;
-        args.path_only = false;
-    }
-    args
-}
-
-fn machine_fork_args(mut args: ForkWorktreeArgs, machine: bool) -> ForkWorktreeArgs {
-    if machine {
-        args.json = true;
-        args.path_only = false;
-    }
-    args
-}
-
-fn machine_path_args(mut args: PathWorktreeArgs, machine: bool) -> PathWorktreeArgs {
-    if machine {
-        args.json = true;
-        args.path_only = false;
-    }
-    args
-}
-
-fn machine_list_args(mut args: ListWorktreeArgs, machine: bool) -> ListWorktreeArgs {
-    if machine {
-        args.json = true;
-    }
-    args
-}
-
-fn machine_pwd_args(mut args: PwdWorktreeArgs, machine: bool) -> PwdWorktreeArgs {
-    if machine {
-        args.json = true;
-    }
-    args
-}
-
-fn machine_remove_args(mut args: RemoveWorktreeArgs, machine: bool) -> RemoveWorktreeArgs {
-    if machine {
-        args.json = true;
-        args.debug = false;
-    }
-    args
-}
-
-fn machine_pin_args(mut args: PinWorktreeArgs, machine: bool) -> PinWorktreeArgs {
-    if machine {
-        args.json = true;
-    }
-    args
-}
-
-fn machine_handoff_args(mut args: HandoffWorktreeArgs, machine: bool) -> HandoffWorktreeArgs {
-    if machine {
-        args.json = true;
-        args.path_only = false;
-    }
-    args
 }
 
 fn write_default_help(mut writer: impl Write) -> CliResult<()> {
@@ -209,19 +206,4 @@ fn write_default_help(mut writer: impl Write) -> CliResult<()> {
         .map_err(stdout_write_error)?;
     writer.write_all(b"\n").map_err(stdout_write_error)?;
     Ok(())
-}
-
-#[cfg(test)]
-fn write_all_ignore_broken_pipe(mut writer: impl Write, bytes: &[u8]) -> CliResult<()> {
-    match writer.write_all(bytes) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
-        Err(error) => return Err(stdout_write_error(error)),
-    }
-
-    match writer.flush() {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        Err(error) => Err(stdout_write_error(error)),
-    }
 }

@@ -5,14 +5,14 @@ mode="${1:-smoke}"
 case "$mode" in
   smoke)
     profile="debug"
-    worktrees=2
+    workspaces=2
     warmup=0
     iterations=1
-    mutating=""
+    mutating="--mutating"
     ;;
   extended)
     profile="release"
-    worktrees=12
+    workspaces=12
     warmup=1
     iterations=3
     mutating="--mutating"
@@ -33,8 +33,9 @@ fi
 # shellcheck disable=SC2086
 cargo run -p hz-bench --locked -- cmd \
   --hz "target/$profile/hz" \
-  --worktrees "$worktrees" \
+  --workspaces "$workspaces" \
   --warmup "$warmup" \
   --iterations "$iterations" \
+  --portable \
   $mutating \
   --json

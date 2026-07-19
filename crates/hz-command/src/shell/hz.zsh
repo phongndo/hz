@@ -2,461 +2,130 @@
 
 alias hz='noglob _hz'
 alias hzcd='noglob _hzcd'
-alias hzlocal='noglob _hzlocal'
+alias hzroot='noglob _hzroot'
 
 _hz() {
-  if [[ "$#" -eq 0 ]]; then
-    command hz
+  if [[ "$#" -eq 0 ]]; then command hz; return; fi
+  local cmd="$1" navigate=0
+  case "$cmd" in
+    init|new|remove|rm|restore|cd) navigate=1 ;;
+    git) [[ "${2-}" == "handoff" ]] && navigate=1 ;;
+  esac
+  if [[ "$navigate" -eq 1 ]]; then
+    local arg
+    for arg in "$@"; do
+      case "$arg" in
+        --) break ;;
+        --json|--machine|--path-only|--help|-h|-j) command hz "$@"; return ;;
+      esac
+    done
+    local hz_target_path
+    if [[ "$cmd" == "cd" ]]; then
+      shift
+      hz_target_path="$(command hz path "$@")" || return
+    else
+      local -a hz_args=()
+      local inserted=0
+      for arg in "$@"; do
+        if [[ "$inserted" -eq 0 && "$arg" == "--" ]]; then
+          hz_args+=(--path-only)
+          inserted=1
+        fi
+        hz_args+=("$arg")
+      done
+      if [[ "$inserted" -eq 0 ]]; then hz_args+=(--path-only); fi
+      hz_target_path="$(command hz "${hz_args[@]}")" || return
+    fi
+    [[ -n "$hz_target_path" ]] && builtin cd -- "$hz_target_path"
     return
   fi
-
-  local cmd="$1"
-  case "$cmd" in
-    git)
-      if [[ "$#" -lt 2 ]]; then
-        command hz "$@"
-        return
-      fi
-
-      local subcmd="$2"
-      case "$subcmd" in
-        new|fork|handoff)
-          local arg
-          for arg in "$@"; do
-            case "$arg" in
-              --json|--machine|--path-only|--help|-h|-j)
-                command hz "$@"
-                return
-                ;;
-            esac
-          done
-
-          local hz_target_path
-          hz_target_path="$(command hz "$@" --path-only)" || return
-          builtin cd "$hz_target_path" || return
-          ;;
-        cd)
-          shift 2
-          local arg
-          for arg in "$@"; do
-            case "$arg" in
-              --json|--machine|--path-only|--help|-h|-j)
-                command hz "$cmd" "$subcmd" "$@"
-                return
-                ;;
-            esac
-          done
-
-          local hz_target_path
-          hz_target_path="$(command hz "$cmd" path "$@")" || return
-          builtin cd "$hz_target_path" || return
-          ;;
-        *)
-          command hz "$@"
-          ;;
-      esac
-      ;;
-    *)
-      command hz "$@"
-      ;;
-  esac
+  command hz "$@"
 }
 
-_hzcd() {
-  _hz git cd "$@"
-}
+_hzcd() { _hz cd "$@"; }
+_hzroot() { _hz cd root "$@"; }
 
-_hzlocal() {
-  _hz git cd local "$@"
-}
-
-_hz_worktree_targets() {
-  local repo
-  local -a complete_args
-  repo="$(_hz_current_repo_arg)"
-  if [[ -n "$repo" ]]; then
-    complete_args=(-r "$repo")
-  fi
-
-  local -a targets
-  targets=("${(@f)$(command hz __complete worktree-targets "${complete_args[@]}" 2>/dev/null)}")
-  compadd -a targets
-}
-
-_hz_removable_worktrees() {
-  local repo
-  local -a complete_args
-  repo="$(_hz_current_repo_arg)"
-  if [[ -n "$repo" ]]; then
-    complete_args=(-r "$repo")
-  fi
-
-  local -a targets
-  targets=("${(@f)$(command hz __complete removable-worktrees "${complete_args[@]}" 2>/dev/null)}")
-  compadd -a targets
-}
-
-_hz_current_repo_arg() {
-  local index word
-  for (( index = 2; index < CURRENT; index++ )); do
-    word="${words[$index]}"
-    case "$word" in
-      -r|--repo)
+_hz_completion_context() {
+  local index at=""
+  reply=()
+  for (( index=2; index < CURRENT; index++ )); do
+    case "${words[index]}" in
+      --) break ;;
+      -a|--at)
         if (( index + 1 < CURRENT )); then
-          print -r -- "${words[$(( index + 1 ))]}"
-          return
+          at="${words[index + 1]}"
+          (( index++ ))
         fi
         ;;
-      --repo=*)
-        print -r -- "${word#--repo=}"
-        return
-        ;;
+      --at=*) at="${words[index]#--at=}" ;;
+      -a=*) at="${words[index]#-a=}" ;;
+      -a?*) at="${words[index]#-a}" ;;
     esac
   done
+  [[ -n "$at" ]] && reply=(--at "$at")
 }
 
-_hz_git_refs() {
-  local repo
-  local -a refs
-  repo="$(_hz_current_repo_arg)"
-  if [[ -n "$repo" ]]; then
-    refs=("${(@f)$(command git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null)}")
-  else
-    refs=("${(@f)$(command git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/tags 2>/dev/null)}")
-  fi
-  compadd -a refs
+_hz_targets() {
+  local -a targets context
+  _hz_completion_context
+  context=("${reply[@]}")
+  targets=("${(@f)$(command hz __complete workspace-targets "${context[@]}" 2>/dev/null)}")
+  compadd -a targets
 }
 
-_hz_complete_main() {
-  local -a commands
-  commands=(
-    'init:initialize hz repo config'
-    'install:install shell integration'
-    'shell:print shell integration'
-    'update:update hz from GitHub releases'
-    'git:Git worktree commands'
-  )
-
-  _describe -t commands 'hz command' commands
+_hz_trash_targets() {
+  local -a targets context
+  _hz_completion_context
+  context=("${reply[@]}")
+  targets=("${(@f)$(command hz __complete trash-targets "${context[@]}" 2>/dev/null)}")
+  compadd -a targets
 }
 
-_hz_complete_git_subcommand() {
-  local -a commands
-  commands=(
-    'new:create a worktree'
-    'fork:fork the current worktree state'
-    'path:print a worktree path'
-    'cd:change to a worktree'
-    'list:list worktrees'
-    'ls:list worktrees'
-    'pwd:print the current worktree target'
-    'remove:remove one or more worktrees'
-    'rm:remove one or more worktrees'
-    'pin:pin worktrees'
-    'unpin:unpin worktrees'
-    'handoff:apply changes between linked worktrees'
-  )
+_hz_complete() {
+  local state command="" subcommand="" index
+  _arguments -C \
+    '--machine[emit stable machine-readable output]' \
+    '1:command:(init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell update)' \
+    '*::arg:->args'
 
-  _describe -t commands 'hz git command' commands
-}
-
-
-_hz_complete_shells() {
-  compadd zsh bash fish
-}
-
-_hz_is_global_flag() {
-  case "$1" in
-    --machine|-h|--help|-V|--version)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-_hz_command_word_index() {
-  local index word
-  for (( index = 2; index < CURRENT; index++ )); do
-    word="${words[$index]}"
-    if _hz_is_global_flag "$word"; then
-      continue
-    fi
-    print -r -- "$index"
-    return 0
+  # Global options may precede the command, so positional word indexes are not
+  # stable. Find the first non-global word and, for command groups, the next.
+  for (( index=2; index < CURRENT; index++ )); do
+    case "${words[index]}" in
+      --machine|-h|--help|-V|--version) ;;
+      *) command="${words[index]}"; break ;;
+    esac
   done
-  return 1
-}
+  if [[ "$command" == "git" || "$command" == "hg" || "$command" == "config" ]]; then
+    for (( index++; index < CURRENT; index++ )); do
+      case "${words[index]}" in
+        --machine|-h|--help|-V|--version) ;;
+        *) subcommand="${words[index]}"; break ;;
+      esac
+    done
+  fi
 
-_hz_subcommand_word_index() {
-  local command_index="$1"
-  local index word
-  for (( index = command_index + 1; index < CURRENT; index++ )); do
-    word="${words[$index]}"
-    if _hz_is_global_flag "$word"; then
-      continue
-    fi
-    print -r -- "$index"
-    return 0
-  done
-  return 1
-}
-
-_hz_complete_option_value() {
-  local cmd="$1"
-  local previous="${words[$(( CURRENT - 1 ))]}"
-
-  case "$previous" in
-    -r|--repo)
-      case "$cmd" in
-        new|fork|path|cd|list|ls|pwd|remove|rm|pin|unpin|handoff|init)
-          _files -/
-          return 0
-          ;;
+  case "$command" in
+    path|cd|ancestors|remove|rm|pin|unpin) _hz_targets ;;
+    restore) _hz_trash_targets ;;
+    git)
+      case "$subcommand" in
+        status|handoff) _hz_targets ;;
+        *) _values 'git command' status handoff ;;
       esac
       ;;
-    -p|--path)
-      if [[ "$cmd" == "new" || "$cmd" == "fork" ]]; then
-        _files -/
-        return 0
-      fi
-      ;;
-    -B)
-      case "$cmd" in
-        new)
-          _hz_git_refs
-          return 0
-          ;;
+    hg)
+      case "$subcommand" in
+        status) _hz_targets ;;
+        *) _values 'hg command' status ;;
       esac
       ;;
-    -b)
-      case "$cmd" in
-        new)
-          _hz_git_refs
-          return 0
-          ;;
-      esac
-      ;;
-    --base)
-      case "$cmd" in
-        new)
-          _hz_git_refs
-          return 0
-          ;;
-      esac
-      ;;
-    --branch)
-      case "$cmd" in
-        new)
-          _hz_git_refs
-          return 0
-          ;;
-      esac
-      ;;
-    --max-detached)
-      case "$cmd" in
-        new|fork|handoff)
-          _message 'count'
-          return 0
-          ;;
-      esac
-      ;;
-    --max-branch-worktrees)
-      case "$cmd" in
-        new|handoff)
-          _message 'count'
-          return 0
-          ;;
-      esac
-      ;;
-    --target-version)
-      if [[ "$cmd" == "update" ]]; then
-        _message 'version'
-        return 0
-      fi
-      ;;
-    --install-dir)
-      if [[ "$cmd" == "update" ]]; then
-        _files -/
-        return 0
-      fi
-      ;;
-  esac
-
-  return 1
-}
-
-_hz_complete_command_options() {
-  local cmd="$1"
-
-  case "$cmd" in
-    new)
-      compadd -- -r --repo -p --path -B --base -b --branch --max-detached --max-branch-worktrees -j --json -d --debug --setup --no-setup --machine -h --help
-      ;;
-    fork)
-      compadd -- -r --repo -p --path --no-diff --max-detached -j --json --machine -h --help
-      ;;
-    path|cd)
-      compadd -- -r --repo -j --json --machine -h --help
-      ;;
-    list|ls)
-      compadd -- -r --repo --pinned --unpinned -j --json --machine -h --help
-      ;;
-    pwd)
-      compadd -- -r --repo -j --json --machine -h --help
-      ;;
-    remove|rm)
-      compadd -- -r --repo -j --json -f --force --yes -d --debug --cleanup --no-cleanup --machine -h --help
-      ;;
-    pin|unpin)
-      compadd -- -r --repo -j --json --machine -h --help
-      ;;
-    handoff)
-      compadd -- -b --branch -n --new --max-detached --max-branch-worktrees -r --repo -j --json --machine -h --help
-      ;;
-    init)
-      compadd -- -r --repo --machine -h --help
-      ;;
-    install|shell)
-      compadd -- --machine -h --help
-      ;;
-    update)
-      compadd -- --target-version --install-dir --machine -h --help
-      ;;
+    config) _values 'config command' init ;;
   esac
 }
-
-
-_hz_complete_command_positionals() {
-  local cmd="$1"
-
-  case "$cmd" in
-    path|cd)
-      _arguments \
-        '1:worktree target:_hz_worktree_targets'
-      ;;
-    remove|rm|pin|unpin)
-      _arguments \
-        '*:worktree targets:_hz_removable_worktrees'
-      ;;
-    handoff)
-      _arguments \
-        '1:worktree target:_hz_worktree_targets'
-      ;;
-    init|install|shell)
-      _arguments \
-        '1:shell:_hz_complete_shells'
-      ;;
-  esac
-}
-
-_hz_complete_command_args() {
-  local cmd="$1"
-
-  if _hz_complete_option_value "$cmd"; then
-    return
-  fi
-
-  if [[ "$PREFIX" == -* ]]; then
-    _hz_complete_command_options "$cmd"
-    return
-  fi
-
-  _hz_complete_command_positionals "$cmd"
-}
-
-_hz_completion() {
-  local cmd_index
-  cmd_index="$(_hz_command_word_index)"
-  if [[ -z "$cmd_index" ]]; then
-    if [[ "$PREFIX" == -* ]]; then
-      compadd -- --machine -h --help -V --version
-      return
-    fi
-    _hz_complete_main
-    return
-  fi
-
-  local cmd="${words[$cmd_index]}"
-  if [[ "$cmd" == "git" ]]; then
-    local subcmd_index
-    subcmd_index="$(_hz_subcommand_word_index "$cmd_index")"
-    if [[ -z "$subcmd_index" ]]; then
-      if [[ "$PREFIX" == -* ]]; then
-        compadd -- --machine -h --help
-      else
-        _hz_complete_git_subcommand
-      fi
-      return
-    fi
-    local subcmd="${words[$subcmd_index]}"
-    shift $(( subcmd_index - 1 )) words
-    (( CURRENT -= subcmd_index - 1 ))
-    _hz_complete_command_args "$subcmd"
-    return
-  fi
-
-
-  shift $(( cmd_index - 1 )) words
-  (( CURRENT -= cmd_index - 1 ))
-  _hz_complete_command_args "$cmd"
-}
-
-_hzcd_completion() {
-  if _hz_complete_option_value cd; then
-    return
-  fi
-
-  if [[ "$PREFIX" == -* ]]; then
-    _hz_complete_command_options cd
-    return
-  fi
-
-  _hz_complete_command_positionals cd
-}
-
-_hzlocal_completion() {
-  if _hz_complete_option_value cd; then
-    return
-  fi
-
-  if [[ "$PREFIX" == -* ]]; then
-    _hz_complete_command_options cd
-    return
-  fi
-
-  return 0
-}
-
-_hz_register_completion() {
-  if ! (( $+functions[compdef] )); then
-    autoload -Uz compinit
-    compinit -C
-  fi
-
-  if (( $+functions[compdef] )); then
-    compdef _hz_completion hz _hz
-    compdef _hzcd_completion hzcd _hzcd
-    compdef _hzlocal_completion hzlocal _hzlocal
-  fi
-}
-
-_hz_deferred_register_completion() {
-  _hz_register_completion
-
-  if (( $+functions[add-zsh-hook] )); then
-    add-zsh-hook -d precmd _hz_deferred_register_completion
-  fi
-
-  unfunction _hz_deferred_register_completion
-  unfunction _hz_register_completion
-}
-
-_hz_register_completion
-
-if ! (( $+functions[add-zsh-hook] )); then
-  autoload -Uz add-zsh-hook
+if (( ! $+functions[compdef] )); then
+  autoload -Uz compinit && compinit
 fi
-
-if (( $+functions[add-zsh-hook] )); then
-  add-zsh-hook precmd _hz_deferred_register_completion
+if (( $+functions[compdef] )); then
+  compdef _hz_complete hz _hz
 fi

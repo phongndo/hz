@@ -17,17 +17,14 @@ options:
 {options}
 
 examples:
-  hz
   hz init
-  hz install zsh
-  hz git new feature/ui
-  hz --machine git list
-  hz git fork
-  hz git ls
-  hz git pwd
-  hz git rm -f feature/ui
-  hz git cd feature/ui
-  hz git handoff feature/ui";
+  hz new parser-fix
+  hz ls --tree
+  hz cd parser-fix
+  hz git status
+  hz git handoff root
+  hz rm parser-fix
+  hz gc";
 
 pub(crate) const INSTALL_SCRIPT: &str = include_str!("../../../scripts/install.sh");
 pub(crate) const RELEASE_REPO: &str = "phongndo/hz";
@@ -36,14 +33,14 @@ pub(crate) const RELEASE_REPO: &str = "phongndo/hz";
 #[command(
     name = "hz",
     version,
-    about = "Terminal workspace manager for parallel AI agents",
+    about = "Copy-on-write workspaces for parallel development",
     help_template = HELP_TEMPLATE,
     next_help_heading = "options",
     subcommand_help_heading = "commands",
     styles = help_styles()
 )]
 pub(crate) struct Cli {
-    /// Use stable JSON output and disable interactive shell side effects.
+    /// Emit stable JSON and disable interactive shell behavior.
     #[arg(long, global = true)]
     pub(crate) machine: bool,
     #[command(subcommand)]
@@ -60,90 +57,65 @@ pub(crate) fn help_styles() -> Styles {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    #[command(about = "Manage Git worktrees")]
+    #[command(about = "Initialize and register a workspace root")]
+    Init(InitWorkspaceArgs),
+    #[command(about = "Create an isolated child workspace")]
+    New(NewWorkspaceArgs),
+    #[command(alias = "cd", about = "Print a workspace path")]
+    Path(PathWorkspaceArgs),
+    #[command(alias = "ls", about = "List managed workspaces")]
+    List(ListWorkspaceArgs),
+    #[command(about = "Print the current workspace")]
+    Pwd(PwdWorkspaceArgs),
+    #[command(about = "List logical workspace ancestors")]
+    Ancestors(AncestorsArgs),
+    #[command(alias = "rm", about = "Move a workspace subtree to trash")]
+    Remove(RemoveWorkspaceArgs),
+    #[command(about = "Protect workspaces from retention policies")]
+    Pin(TargetsArgs),
+    #[command(about = "Make workspaces eligible for retention policies")]
+    Unpin(TargetsArgs),
+    #[command(about = "Restore a workspace subtree from trash")]
+    Restore(RestoreWorkspaceArgs),
+    #[command(about = "Physically delete trashed workspaces")]
+    Gc(JsonArgs),
+    #[command(about = "Adopt a managed workspace after its directory moved")]
+    Adopt(AdoptArgs),
+    #[command(about = "Inspect and optionally repair workspace state")]
+    Doctor(DoctorArgs),
+    #[command(about = "Git operations across Hz workspaces")]
     Git {
         #[command(subcommand)]
         command: GitCommand,
     },
-    #[command(about = "Initialize hz repo lifecycle config")]
-    Init(InitArgs),
+    #[command(about = "Mercurial operations across Hz workspaces")]
+    Hg {
+        #[command(subcommand)]
+        command: HgCommand,
+    },
+    #[command(about = "Manage Hz configuration")]
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     #[command(about = "Install shell integration into your shell rc file")]
     Install(ShellArgs),
     #[command(about = "Print shell integration script")]
     Shell(ShellArgs),
-    #[command(
-        about = "Update this curl-installed hz binary from GitHub releases",
-        after_help = "\
-examples:
-  hz update
-  hz update --target-version 0.1.5
-  hz update --install-dir ~/.local/bin"
-    )]
+    #[command(about = "Update this curl-installed hz binary")]
     Update(UpdateArgs),
     #[command(name = "__complete", hide = true)]
     Complete(CompleteArgs),
 }
 
-#[derive(Debug, Subcommand)]
-pub(crate) enum GitCommand {
-    #[command(about = "Create an isolated Git worktree for a task or agent")]
-    New(NewWorktreeArgs),
-    #[command(about = "Fork the current worktree state into a detached worktree")]
-    Fork(ForkWorktreeArgs),
-    #[command(alias = "cd", about = "Print the directory for a worktree")]
-    Path(PathWorktreeArgs),
-    #[command(alias = "ls", about = "List worktrees")]
-    List(ListWorktreeArgs),
-    #[command(about = "Print the current worktree target")]
-    Pwd(PwdWorktreeArgs),
-    #[command(alias = "rm", about = "Remove one or more worktrees")]
-    Remove(RemoveWorktreeArgs),
-    #[command(about = "Pin worktrees so auto-prune will not remove them")]
-    Pin(PinWorktreeArgs),
-    #[command(about = "Unpin worktrees so auto-prune may remove them")]
-    Unpin(PinWorktreeArgs),
-    #[command(about = "Apply changes between local and a linked worktree")]
-    Handoff(HandoffWorktreeArgs),
-}
-
 #[derive(Debug, Args)]
-pub(crate) struct NewWorktreeArgs {
-    pub(crate) name: Option<String>,
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
-    #[arg(short = 'p', long)]
-    pub(crate) path: Option<PathBuf>,
-    #[arg(short = 'B', long)]
-    pub(crate) base: Option<String>,
-    #[arg(short = 'b', long)]
-    pub(crate) branch: Option<String>,
-    #[arg(long)]
-    pub(crate) max_detached: Option<usize>,
-    #[arg(long)]
-    pub(crate) max_branch_worktrees: Option<usize>,
-    #[arg(short = 'j', long)]
-    pub(crate) json: bool,
-    #[arg(short = 'd', long)]
-    pub(crate) debug: bool,
-    #[arg(long)]
-    pub(crate) setup: bool,
-    #[arg(long)]
-    pub(crate) no_setup: bool,
-    #[arg(long, hide = true)]
-    pub(crate) path_only: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct ForkWorktreeArgs {
-    pub(crate) name: Option<String>,
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
-    #[arg(short = 'p', long)]
+pub(crate) struct InitWorkspaceArgs {
     pub(crate) path: Option<PathBuf>,
     #[arg(long)]
-    pub(crate) no_diff: bool,
+    pub(crate) here: bool,
+    /// Use an explicit portable byte copy instead of native copy-on-write.
     #[arg(long)]
-    pub(crate) max_detached: Option<usize>,
+    pub(crate) copy: bool,
     #[arg(short = 'j', long)]
     pub(crate) json: bool,
     #[arg(long, hide = true)]
@@ -151,20 +123,42 @@ pub(crate) struct ForkWorktreeArgs {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct PathWorktreeArgs {
+pub(crate) struct NewWorkspaceArgs {
+    pub(crate) name: Option<String>,
+    #[arg(short = 'f', long = "from")]
+    pub(crate) from: Option<PathBuf>,
+    #[arg(short = 'i', long)]
+    pub(crate) into: Option<PathBuf>,
+    /// Skip known regenerable dependency, build, and cache artifacts.
+    #[arg(long)]
+    pub(crate) filtered: bool,
+    #[arg(long)]
+    pub(crate) no_hooks: bool,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
+    #[arg(long, hide = true)]
+    pub(crate) path_only: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PathWorkspaceArgs {
     pub(crate) target: Option<String>,
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
+    #[arg(short = 'a', long = "at")]
+    pub(crate) at: Option<PathBuf>,
     #[arg(short = 'j', long)]
     pub(crate) json: bool,
-    #[arg(long, hide = true)]
-    pub(crate) path_only: bool,
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct ListWorktreeArgs {
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
+pub(crate) struct ListWorkspaceArgs {
+    #[arg(short = 'a', long = "at")]
+    pub(crate) at: Option<PathBuf>,
+    #[arg(long, conflicts_with = "children")]
+    pub(crate) roots: bool,
+    #[arg(long)]
+    pub(crate) children: bool,
+    #[arg(long)]
+    pub(crate) tree: bool,
     #[arg(long, conflicts_with = "unpinned")]
     pub(crate) pinned: bool,
     #[arg(long)]
@@ -174,54 +168,33 @@ pub(crate) struct ListWorktreeArgs {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct PwdWorktreeArgs {
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
+pub(crate) struct PwdWorkspaceArgs {
+    #[arg(short = 'a', long = "at")]
+    pub(crate) at: Option<PathBuf>,
     #[arg(short = 'j', long)]
     pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct RemoveWorktreeArgs {
-    #[arg(value_name = "TARGET", required = true, num_args = 1..)]
-    pub(crate) targets: Vec<String>,
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
-    #[arg(short = 'j', long)]
-    pub(crate) json: bool,
-    #[arg(short = 'f', long, alias = "yes")]
-    pub(crate) force: bool,
-    #[arg(short = 'd', long)]
-    pub(crate) debug: bool,
-    #[arg(long)]
-    pub(crate) cleanup: bool,
-    #[arg(long)]
-    pub(crate) no_cleanup: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct PinWorktreeArgs {
-    #[arg(value_name = "TARGET", required = true, num_args = 1..)]
-    pub(crate) targets: Vec<String>,
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
-    #[arg(short = 'j', long)]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct HandoffWorktreeArgs {
+pub(crate) struct AncestorsArgs {
     pub(crate) target: Option<String>,
-    #[arg(short = 'b', long)]
-    pub(crate) branch: bool,
-    #[arg(short = 'n', long = "new")]
-    pub(crate) create: bool,
+    #[arg(short = 'a', long = "at")]
+    pub(crate) at: Option<PathBuf>,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct RemoveWorkspaceArgs {
+    pub(crate) target: Option<String>,
+    #[arg(short = 'a', long = "at")]
+    pub(crate) at: Option<PathBuf>,
     #[arg(long)]
-    pub(crate) max_detached: Option<usize>,
+    pub(crate) children: bool,
+    #[arg(short = 'f', long)]
+    pub(crate) force: bool,
     #[arg(long)]
-    pub(crate) max_branch_worktrees: Option<usize>,
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
+    pub(crate) no_hooks: bool,
     #[arg(short = 'j', long)]
     pub(crate) json: bool,
     #[arg(long, hide = true)]
@@ -229,11 +202,92 @@ pub(crate) struct HandoffWorktreeArgs {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct InitArgs {
-    #[arg(value_enum)]
-    pub(crate) shell: Option<ShellArg>,
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
+pub(crate) struct TargetsArgs {
+    #[arg(value_name = "TARGET", required = true, num_args = 1..)]
+    pub(crate) targets: Vec<String>,
+    #[arg(short = 'a', long = "at")]
+    pub(crate) at: Option<PathBuf>,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct RestoreWorkspaceArgs {
+    pub(crate) target: String,
+    #[arg(short = 'a', long = "at")]
+    pub(crate) at: Option<PathBuf>,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
+    #[arg(long, hide = true)]
+    pub(crate) path_only: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct JsonArgs {
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AdoptArgs {
+    pub(crate) path: PathBuf,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DoctorArgs {
+    #[arg(long)]
+    pub(crate) fix: bool,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum GitCommand {
+    #[command(about = "Show Git state for a workspace")]
+    Status(SourceStatusArgs),
+    #[command(about = "Apply the current workspace patch to another workspace")]
+    Handoff(GitHandoffArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SourceStatusArgs {
+    pub(crate) target: Option<String>,
+    #[arg(short = 'a', long = "at")]
+    pub(crate) at: Option<PathBuf>,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum HgCommand {
+    #[command(about = "Show Mercurial state for a workspace")]
+    Status(SourceStatusArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct GitHandoffArgs {
+    pub(crate) target: Option<String>,
+    #[arg(short = 'a', long = "at")]
+    pub(crate) at: Option<PathBuf>,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
+    #[arg(long, hide = true)]
+    pub(crate) path_only: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ConfigCommand {
+    #[command(about = "Create workspace configuration and lifecycle scripts")]
+    Init(ConfigInitArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ConfigInitArgs {
+    pub(crate) path: Option<PathBuf>,
+    #[arg(short = 'j', long)]
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -243,10 +297,8 @@ pub(crate) struct ShellArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct UpdateArgs {
-    /// Release version to install, without or with the leading v.
     #[arg(long = "target-version", value_name = "VERSION")]
     pub(crate) version: Option<String>,
-    /// Directory to update. Defaults to the directory containing the invoked hz.
     #[arg(long, value_name = "DIR")]
     pub(crate) install_dir: Option<PathBuf>,
 }
@@ -261,12 +313,12 @@ pub(crate) enum ShellArg {
 #[derive(Debug, Args)]
 pub(crate) struct CompleteArgs {
     pub(crate) kind: CompletionKind,
-    #[arg(short = 'r', long)]
-    pub(crate) repo: Option<PathBuf>,
+    #[arg(short = 'a', long = "at")]
+    pub(crate) at: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum CompletionKind {
-    WorktreeTargets,
-    RemovableWorktrees,
+    WorkspaceTargets,
+    TrashTargets,
 }
