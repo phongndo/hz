@@ -6,22 +6,27 @@ pub(crate) struct CopyFilter;
 
 impl CopyFilter {
     pub(crate) fn excludes(self, path: &Path) -> bool {
-        let parts = path
-            .components()
-            .filter_map(|component| match component {
-                Component::Normal(part) => Some(part),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-
-        if parts.iter().any(|part| source_control_metadata(part)) {
-            return false;
+        let mut previous = None;
+        let mut source_control = false;
+        let mut git_metadata = false;
+        let mut excluded = false;
+        for part in path.components().filter_map(|component| match component {
+            Component::Normal(part) => Some(part),
+            _ => None,
+        }) {
+            if source_control_metadata(part) {
+                source_control = true;
+                git_metadata |= part == ".git";
+            } else if git_metadata && part == "fsmonitor--daemon.ipc" {
+                // A live Git fsmonitor socket cannot be cloned entry by entry,
+                // and a copied socket would not have a listening daemon.
+                return true;
+            }
+            excluded |= excludes_component(part)
+                || previous.is_some_and(|previous| matches_yarn_artifact(previous, part));
+            previous = Some(part);
         }
-
-        parts.iter().any(|part| excludes_component(part))
-            || parts
-                .windows(2)
-                .any(|parts| matches_yarn_artifact(parts[0], parts[1]))
+        !source_control && excluded
     }
 }
 
@@ -79,5 +84,7 @@ mod tests {
         assert!(!filter.excludes(Path::new("packages/app/package-lock.json")));
         assert!(!filter.excludes(Path::new(".git/build/metadata")));
         assert!(!filter.excludes(Path::new("nested/.hg/cache/state")));
+        assert!(filter.excludes(Path::new(".git/fsmonitor--daemon.ipc")));
+        assert!(filter.excludes(Path::new(".git/worktrees/child/fsmonitor--daemon.ipc")));
     }
 }

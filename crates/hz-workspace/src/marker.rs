@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
@@ -101,6 +102,10 @@ pub fn read(workspace: &Path) -> Result<Option<String>> {
         Some(_) => return Err(Error::InvalidMarker(workspace.to_path_buf())),
         None => return Ok(None),
     }
+    read_from_checked_workspace(workspace)
+}
+
+fn read_from_checked_workspace(workspace: &Path) -> Result<Option<String>> {
     let marker_path = path(workspace);
     let Some(metadata) = symlink_metadata_if_exists(&marker_path)? else {
         return Ok(None);
@@ -155,6 +160,24 @@ pub(crate) fn ensure_real_workspace_path(workspace: &Path) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn ensure_real_workspace_path_with_cache(
+    workspace: &Path,
+    verified: &mut HashSet<PathBuf>,
+) -> Result<()> {
+    ensure_workspace_directory(workspace)?;
+    verified.insert(workspace.to_path_buf());
+    for ancestor in workspace.ancestors().skip(1) {
+        if ancestor.as_os_str().is_empty() || verified.contains(ancestor) {
+            break;
+        }
+        if metadata_is_link(&fs::symlink_metadata(ancestor)?) {
+            return Err(Error::InvalidMarker(workspace.to_path_buf()));
+        }
+        verified.insert(ancestor.to_path_buf());
+    }
+    Ok(())
+}
+
 fn ensure_safe_marker_if_present(workspace: &Path) -> Result<()> {
     let marker_path = path(workspace);
     let Some(metadata) = symlink_metadata_if_exists(&marker_path)? else {
@@ -182,7 +205,20 @@ fn metadata_is_link(metadata: &fs::Metadata) -> bool {
 
 pub fn verify(workspace: &Path, expected_id: &str) -> Result<()> {
     ensure_real_workspace_path(workspace)?;
-    if read(workspace)?.as_deref() == Some(expected_id) {
+    if read_from_checked_workspace(workspace)?.as_deref() == Some(expected_id) {
+        Ok(())
+    } else {
+        Err(Error::MarkerMismatch(workspace.to_path_buf()))
+    }
+}
+
+pub(crate) fn verify_with_ancestor_cache(
+    workspace: &Path,
+    expected_id: &str,
+    verified: &mut HashSet<PathBuf>,
+) -> Result<()> {
+    ensure_real_workspace_path_with_cache(workspace, verified)?;
+    if read_from_checked_workspace(workspace)?.as_deref() == Some(expected_id) {
         Ok(())
     } else {
         Err(Error::MarkerMismatch(workspace.to_path_buf()))
@@ -480,6 +516,34 @@ mod tests {
         assert_eq!(read(&linked_workspace).unwrap(), Some(id.clone()));
         assert!(matches!(
             verify(&linked_workspace, &id),
+            Err(Error::InvalidMarker(path)) if path == linked_workspace
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_verification_still_rejects_an_unchecked_symlinked_ancestor() {
+        let temp = TempDir::new().unwrap();
+        let temp = fs::canonicalize(temp.path()).unwrap();
+        let first = temp.join("first/workspace");
+        fs::create_dir_all(&first).unwrap();
+        let first_id = ulid::Ulid::new().to_string();
+        write(&first, &first_id).unwrap();
+
+        let real_parent = temp.join("real-parent");
+        let real_workspace = real_parent.join("workspace");
+        let linked_parent = temp.join("linked-parent");
+        fs::create_dir_all(&real_workspace).unwrap();
+        let linked_id = ulid::Ulid::new().to_string();
+        write(&real_workspace, &linked_id).unwrap();
+        std::os::unix::fs::symlink(&real_parent, &linked_parent).unwrap();
+        let linked_workspace = linked_parent.join("workspace");
+
+        let mut verified = HashSet::new();
+        verify_with_ancestor_cache(&first, &first_id, &mut verified).unwrap();
+        assert!(verified.contains(&temp));
+        assert!(matches!(
+            verify_with_ancestor_cache(&linked_workspace, &linked_id, &mut verified),
             Err(Error::InvalidMarker(path)) if path == linked_workspace
         ));
     }

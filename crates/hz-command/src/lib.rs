@@ -20,8 +20,8 @@ pub use source_control::{
 pub use workspace::{
     WorkspaceInitialization, adopt_workspace, create_workspace, current_workspace,
     doctor_workspaces, gc_workspaces, init_workspace, list_workspaces, pin_workspaces,
-    remove_workspace, resolve_workspace, restore_workspace, trashed_workspaces,
-    workspace_ancestors, workspace_manager,
+    remove_workspace, remove_workspace_with_navigation, resolve_workspace, restore_workspace,
+    trashed_workspaces, workspace_ancestors, workspace_manager,
 };
 
 pub use hz_workspace::{

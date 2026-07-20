@@ -136,6 +136,35 @@ fn failed_init_setup_does_not_expose_an_active_workspace() {
 }
 
 #[test]
+fn failed_create_setup_does_not_start_materialization() {
+    let temp = TempDir::new().unwrap();
+    let root = root(&temp);
+    let mut manager = manager(&temp);
+    let initialized = manager
+        .init(InitWorkspace {
+            at: root.clone(),
+            here: true,
+            strategy: InitStrategy::CopyOnWrite,
+        })
+        .unwrap();
+    let storage = initialized.workspace.storage_path.unwrap();
+
+    let result = manager.create_with_setup(
+        CreateWorkspace {
+            from: root,
+            handle: Some("child".into()),
+            into: None,
+            copy_mode: CopyMode::All,
+        },
+        |_| -> Result<()> { Err(std::io::Error::other("simulated config failure").into()) },
+    );
+
+    assert!(matches!(result, Err(Error::Io(_))));
+    assert_eq!(manager.registry.all_records().unwrap().len(), 1);
+    assert!(!storage.exists());
+}
+
+#[test]
 fn init_adopts_an_existing_unregistered_marker() {
     let temp = TempDir::new().unwrap();
     let root = root(&temp);
@@ -657,6 +686,41 @@ fn failed_create_cleanup_removes_an_unfiltered_clone_with_the_source_marker() {
 }
 
 #[test]
+fn generated_handles_are_unique_within_a_family() {
+    let temp = TempDir::new().unwrap();
+    let root = root(&temp);
+    let mut manager = manager(&temp);
+    manager
+        .init(InitWorkspace {
+            at: root.clone(),
+            here: true,
+            strategy: InitStrategy::CopyOnWrite,
+        })
+        .unwrap();
+
+    let first = manager
+        .create(CreateWorkspace {
+            from: root.clone(),
+            handle: None,
+            into: None,
+            copy_mode: CopyMode::All,
+        })
+        .unwrap();
+    let second = manager
+        .create(CreateWorkspace {
+            from: root,
+            handle: None,
+            into: None,
+            copy_mode: CopyMode::All,
+        })
+        .unwrap();
+
+    assert_eq!(first.workspace.handle.len(), 4);
+    assert_eq!(second.workspace.handle.len(), 4);
+    assert_ne!(first.workspace.handle, second.workspace.handle);
+}
+
+#[test]
 fn creates_a_logical_tree_in_flat_family_storage() {
     let temp = TempDir::new().unwrap();
     let root = root(&temp);
@@ -686,6 +750,14 @@ fn creates_a_logical_tree_in_flat_family_storage() {
         .unwrap();
 
     assert_eq!(
+        manager
+            .registry
+            .workspace_id(&second.workspace.id)
+            .unwrap()
+            .unwrap(),
+        second.workspace
+    );
+    assert_eq!(
         first.workspace.parent_id.as_deref(),
         Some(initialized.workspace.id.as_str())
     );
@@ -705,6 +777,10 @@ fn creates_a_logical_tree_in_flat_family_storage() {
             .map(|workspace| workspace.handle)
             .collect::<Vec<_>>(),
         vec!["first", "project"]
+    );
+    assert_eq!(
+        manager.parent(&second.workspace).unwrap().unwrap().id,
+        first.workspace.id
     );
 }
 

@@ -97,8 +97,9 @@ so only blocks changed afterward require additional storage.
 
 Use `--filtered` to omit heavyweight regenerable artifacts such as
 `node_modules`, `target`, virtual environments, framework caches, `dist`,
-`build`, and `coverage`. Filtering requires walking the tree and can be slower
-than a native whole-directory snapshot.
+`build`, and `coverage`, along with ephemeral Git fsmonitor sockets. Filtering
+requires walking the included tree and can be slower than a native
+whole-directory snapshot when few artifacts are excluded.
 
 ### Removal and recovery
 

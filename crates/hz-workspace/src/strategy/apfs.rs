@@ -4,8 +4,13 @@ use super::{
 };
 use crate::{CopyMode, Error, InitProgress, Result, filter::CopyFilter};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
+
+const MIN_PARALLEL_CLONE_FILES: usize = 32;
+const PARALLEL_CLONE_BATCH_SIZE: usize = 1024;
+// Higher APFS clone fan-out quickly increases filesystem contention.
+const MAX_PARALLEL_CLONE_WORKERS: usize = 4;
 
 pub(super) struct ApfsStrategy;
 
@@ -62,6 +67,7 @@ fn clone_filtered_directory_apfs(from: &Path, to: &Path, workspace_id: &str) -> 
 
     let filter = CopyFilter;
     let mut hard_links = HashMap::new();
+    let mut regular_files = Vec::new();
     let mut directories = Vec::new();
     create_private_directory(to)?;
     crate::marker::write(to, workspace_id)?;
@@ -95,13 +101,18 @@ fn clone_filtered_directory_apfs(from: &Path, to: &Path, workspace_id: &str) -> 
                 if let Some(existing) = hard_links.get(&key) {
                     fs::hard_link(existing, &destination)?;
                 } else {
-                    clone_path_apfs(source, &destination)?;
+                    clone_regular_file_apfs(source, &destination, metadata.mode())?;
                     hard_links.insert(key, destination.clone());
                 }
             } else {
-                clone_path_apfs(source, &destination)?;
+                // clonefile with CLONE_ACL already preserves regular-file
+                // metadata and xattrs except for set-ID mode bits.
+                regular_files.push((source.to_path_buf(), destination, metadata.mode()));
+                if regular_files.len() == PARALLEL_CLONE_BATCH_SIZE {
+                    clone_regular_files_apfs(&regular_files)?;
+                    regular_files.clear();
+                }
             }
-            copy_metadata_apfs(source, &destination, MetadataTarget::FileOrDirectory)?;
         } else if file_type.is_symlink() {
             std::os::unix::fs::symlink(fs::read_link(source)?, &destination)?;
             copy_metadata_apfs(source, &destination, MetadataTarget::Symlink)?;
@@ -109,10 +120,60 @@ fn clone_filtered_directory_apfs(from: &Path, to: &Path, workspace_id: &str) -> 
             return Err(Error::UnsupportedEntry(source.to_path_buf()));
         }
     }
+    clone_regular_files_apfs(&regular_files)?;
     for (source, destination) in directories.into_iter().rev() {
         copy_metadata_apfs(&source, &destination, MetadataTarget::FileOrDirectory)?;
     }
     copy_metadata_apfs(from, to, MetadataTarget::FileOrDirectory)?;
+    Ok(())
+}
+
+fn clone_regular_files_apfs(files: &[(PathBuf, PathBuf, u32)]) -> Result<()> {
+    let worker_count = if files.len() < MIN_PARALLEL_CLONE_FILES {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(MAX_PARALLEL_CLONE_WORKERS)
+            .min(files.len())
+    };
+    if worker_count <= 1 {
+        return files
+            .iter()
+            .try_for_each(|(from, to, mode)| clone_regular_file_apfs(from, to, *mode));
+    }
+
+    std::thread::scope(|scope| {
+        let workers = (0..worker_count)
+            .map(|offset| {
+                scope.spawn(move || {
+                    files
+                        .iter()
+                        .skip(offset)
+                        .step_by(worker_count)
+                        .try_for_each(|(from, to, mode)| clone_regular_file_apfs(from, to, *mode))
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            match worker.join() {
+                Ok(result) => result?,
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        Ok(())
+    })
+}
+
+fn clone_regular_file_apfs(from: &Path, to: &Path, source_mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    clone_path_apfs(from, to)?;
+    // clonefile always clears these bits on regular files. Avoid an extra
+    // chmod for the overwhelmingly common case where neither bit was set.
+    if source_mode & 0o6000 != 0 {
+        fs::set_permissions(to, fs::Permissions::from_mode(source_mode))?;
+    }
     Ok(())
 }
 
@@ -302,6 +363,58 @@ mod tests {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use tempfile::TempDir;
 
+    fn set_test_xattr(path: &Path, value: &[u8]) {
+        let path = c_path(path).unwrap();
+        let name = c"com.hz.filtered-test";
+        assert_eq!(
+            // SAFETY: test inputs are live C strings and `value` is copied by the kernel.
+            unsafe {
+                libc::setxattr(
+                    path.as_ptr(),
+                    name.as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                    libc::XATTR_NOFOLLOW,
+                )
+            },
+            0
+        );
+    }
+
+    fn test_xattr(path: &Path) -> Vec<u8> {
+        let path = c_path(path).unwrap();
+        let name = c"com.hz.filtered-test";
+        // SAFETY: test inputs are valid C strings and a null buffer requests the value size.
+        let size = unsafe {
+            libc::getxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                std::ptr::null_mut(),
+                0,
+                0,
+                libc::XATTR_NOFOLLOW,
+            )
+        };
+        assert!(size >= 0);
+        let mut value = vec![0; size as usize];
+        // SAFETY: `value` has the exact size returned by the preceding query.
+        assert_eq!(
+            unsafe {
+                libc::getxattr(
+                    path.as_ptr(),
+                    name.as_ptr(),
+                    value.as_mut_ptr().cast(),
+                    value.len(),
+                    0,
+                    libc::XATTR_NOFOLLOW,
+                )
+            },
+            size
+        );
+        value
+    }
+
     #[test]
     fn strategy_clones_and_removes_a_workspace() {
         let temp = TempDir::new().unwrap();
@@ -370,6 +483,74 @@ mod tests {
     }
 
     #[test]
+    fn filtered_clone_skips_git_fsmonitor_sockets() {
+        use std::os::unix::net::UnixListener;
+
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(source.join(".git")).unwrap();
+        fs::write(source.join("tracked"), "tracked").unwrap();
+        let socket = source.join(".git/fsmonitor--daemon.ipc");
+        drop(UnixListener::bind(&socket).unwrap());
+
+        clone_filtered_directory_apfs(&source, &destination, &ulid::Ulid::new().to_string())
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(destination.join("tracked")).unwrap(),
+            "tracked"
+        );
+        assert!(!destination.join(".git/fsmonitor--daemon.ipc").exists());
+    }
+
+    #[test]
+    fn filtered_clone_preserves_set_id_mode_bits() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        let file = source.join("set-id");
+        fs::write(&file, "executable").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o6751)).unwrap();
+
+        clone_filtered_directory_apfs(&source, &destination, &ulid::Ulid::new().to_string())
+            .unwrap();
+
+        assert_eq!(
+            fs::metadata(destination.join("set-id"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o6751
+        );
+    }
+
+    #[test]
+    fn regular_file_batches_clone_all_entries() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let files = (0..64)
+            .map(|index| {
+                let from = source.join(format!("file-{index}"));
+                let to = destination.join(format!("file-{index}"));
+                fs::write(&from, index.to_string()).unwrap();
+                (from, to, 0o644)
+            })
+            .collect::<Vec<_>>();
+
+        clone_regular_files_apfs(&files).unwrap();
+
+        for (from, to, _) in files {
+            assert_eq!(fs::read(from).unwrap(), fs::read(to).unwrap());
+        }
+    }
+
+    #[test]
     fn integration_environment_is_required_by_ci() {
         if std::env::var_os("RIFT_REQUIRE_APFS_TESTS").is_some() {
             let temp = TempDir::new().unwrap();
@@ -402,6 +583,7 @@ mod tests {
         let file = nested.join("file.txt");
         fs::write(&file, "hello").unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        set_test_xattr(&file, b"preserved");
         fs::hard_link(&file, nested.join("hard.txt")).unwrap();
         std::os::unix::fs::symlink("file.txt", nested.join("link.txt")).unwrap();
         fs::create_dir_all(source.join("node_modules/pkg")).unwrap();
@@ -440,6 +622,10 @@ mod tests {
                 .mode()
                 & 0o777,
             0o640
+        );
+        assert_eq!(
+            test_xattr(&destination.join("nested/file.txt")),
+            b"preserved"
         );
         assert_eq!(
             fs::metadata(destination.join("nested"))

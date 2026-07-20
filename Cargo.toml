@@ -34,3 +34,7 @@ hz-git = { path = "crates/hz-git" }
 hz-hg = { path = "crates/hz-hg" }
 hz-scm = { path = "crates/hz-scm" }
 hz-workspace = { path = "crates/hz-workspace" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

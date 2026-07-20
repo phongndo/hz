@@ -131,53 +131,44 @@ pub(crate) fn ancestors(args: AncestorsArgs, machine: bool) -> CliResult<()> {
 
 pub(crate) fn remove_workspace(args: RemoveWorkspaceArgs, machine: bool) -> CliResult<()> {
     let at = args.at.unwrap_or(env::current_dir()?);
-    let navigation = if args.path_only && !machine && !args.json {
-        let selected = hz_command::resolve_workspace(&at, args.target.as_deref(), false)?;
-        let ancestors = if args.children {
-            Vec::new()
-        } else {
-            hz_command::workspace_ancestors(&at, args.target.as_deref())?
-        };
-        Some((selected, ancestors))
+    let mode = if args.children {
+        hz_command::RemoveMode::Children
     } else {
-        None
+        hz_command::RemoveMode::Subtree
     };
+    if args.path_only && !machine && !args.json {
+        let (_, destination) = hz_command::remove_workspace_with_navigation(
+            &at,
+            args.target.as_deref(),
+            mode,
+            args.force,
+            !args.no_hooks,
+            false,
+        )?;
+        return write_stdout(format_args!("{}\n", destination.display()));
+    }
+
     let removed = hz_command::remove_workspace(
         &at,
         args.target.as_deref(),
-        if args.children {
-            hz_command::RemoveMode::Children
-        } else {
-            hz_command::RemoveMode::Subtree
-        },
+        mode,
         args.force,
         !args.no_hooks,
         machine,
     )?;
     if machine || args.json {
-        json(&removed)
-    } else if let Some((selected, ancestors)) = navigation {
-        let destination = if args.children || removed.root_unregistered {
-            selected.path
-        } else {
-            ancestors
-                .first()
-                .map(|workspace| workspace.path.clone())
-                .unwrap_or(selected.path)
-        };
-        write_stdout(format_args!("{}\n", destination.display()))
-    } else {
-        for workspace in &removed.removed {
-            write_stdout(format_args!("trashed {}\n", workspace.handle))?;
-        }
-        if removed.root_unregistered {
-            write_stdout(format_args!(
-                "unregistered {}\n",
-                removed.selected.path.display()
-            ))?;
-        }
-        Ok(())
+        return json(&removed);
     }
+    for workspace in &removed.removed {
+        write_stdout(format_args!("trashed {}\n", workspace.handle))?;
+    }
+    if removed.root_unregistered {
+        write_stdout(format_args!(
+            "unregistered {}\n",
+            removed.selected.path.display()
+        ))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn pin_workspaces(args: TargetsArgs, machine: bool, pinned: bool) -> CliResult<()> {

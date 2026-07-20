@@ -18,6 +18,7 @@ pub(crate) trait Strategy {
         "copy_on_write"
     }
 
+    /// Materializes `to` and installs its ownership marker before returning.
     fn copy_directory(
         &self,
         from: &Path,

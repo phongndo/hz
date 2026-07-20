@@ -165,6 +165,69 @@ fn machine_removal_does_not_validate_unused_ancestors() {
     fs::remove_dir_all(path).unwrap();
 }
 
+#[test]
+fn path_only_removal_prints_the_immediate_parent() {
+    let path = std::env::temp_dir().join(format!(
+        "hz-path-only-remove-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let root = path.join("project");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("file.txt"), "root").unwrap();
+    let database = path.join("workspaces.sqlite");
+    let initialized = Command::new(env!("CARGO_BIN_EXE_hz"))
+        .env("HZ_DATABASE", &database)
+        .args(["init", "--here", "--copy"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(initialized.status.success());
+
+    let child = Command::new(env!("CARGO_BIN_EXE_hz"))
+        .env("HZ_DATABASE", &database)
+        .args(["--machine", "new", "child", "--from"])
+        .arg(&root)
+        .arg("--no-hooks")
+        .output()
+        .unwrap();
+    assert!(child.status.success());
+    let child: serde_json::Value = serde_json::from_slice(&child.stdout).unwrap();
+    let child = child["workspace"]["path"].as_str().unwrap().to_owned();
+    let grandchild = Command::new(env!("CARGO_BIN_EXE_hz"))
+        .env("HZ_DATABASE", &database)
+        .args(["--machine", "new", "grandchild", "--from"])
+        .arg(&child)
+        .arg("--no-hooks")
+        .output()
+        .unwrap();
+    assert!(grandchild.status.success());
+    let grandchild: serde_json::Value = serde_json::from_slice(&grandchild.stdout).unwrap();
+    let grandchild = grandchild["workspace"]["path"].as_str().unwrap().to_owned();
+
+    let removed = Command::new(env!("CARGO_BIN_EXE_hz"))
+        .env("HZ_DATABASE", &database)
+        .args(["rm", "grandchild", "--at"])
+        .arg(&child)
+        .args(["--path-only", "--no-hooks"])
+        .output()
+        .unwrap();
+
+    assert!(
+        removed.status.success(),
+        "remove failed: {}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&removed.stdout).trim(),
+        std::path::Path::new(&child).display().to_string()
+    );
+    assert!(!std::path::Path::new(&grandchild).exists());
+    fs::remove_dir_all(path).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn removing_children_skips_the_preserved_workspace_preremove_hook() {

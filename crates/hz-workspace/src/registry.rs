@@ -4,48 +4,61 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::{CopyMode, Error, Materializer, Result, Workspace, WorkspaceState};
 
+const QUERY_BATCH_SIZE: usize = 500;
+
 pub(crate) struct Registry {
     database: Connection,
 }
 
 impl Registry {
     pub(crate) fn open(path: impl AsRef<Path>) -> Result<Self> {
+        const SCHEMA_VERSION: i64 = 2;
+
         let mut database = Connection::open(path)?;
         database.execute_batch(
             "PRAGMA busy_timeout = 5000;
              PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA temp_store = MEMORY;
-             PRAGMA foreign_keys = ON;
-             CREATE TABLE IF NOT EXISTS schema_migration (
-               version INTEGER PRIMARY KEY,
-               applied_at INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS workspace (
-               id TEXT PRIMARY KEY,
-               root_id TEXT NOT NULL,
-               parent_id TEXT REFERENCES workspace(id) ON DELETE RESTRICT,
-               handle TEXT NOT NULL,
-               path TEXT NOT NULL UNIQUE,
-               original_path TEXT,
-               removal_id TEXT,
-               storage_path TEXT,
-               staging_path TEXT,
-               state TEXT NOT NULL,
-               materializer TEXT NOT NULL,
-               strategy TEXT NOT NULL,
-               copy_mode TEXT NOT NULL,
-               pinned INTEGER NOT NULL DEFAULT 0,
-               created_at INTEGER NOT NULL,
-               updated_at INTEGER NOT NULL,
-               UNIQUE(root_id, handle)
-             );
-             CREATE INDEX IF NOT EXISTS workspace_parent_idx ON workspace(parent_id);
-             CREATE INDEX IF NOT EXISTS workspace_root_state_idx ON workspace(root_id, state);
-             INSERT OR IGNORE INTO schema_migration(version, applied_at)
-             VALUES (1, CAST(unixepoch('subsec') * 1000 AS INTEGER));",
+             PRAGMA foreign_keys = ON;",
         )?;
-        {
+        let schema_version: i64 =
+            database.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if schema_version > SCHEMA_VERSION {
+            return Err(Error::RegistryInvariant(format!(
+                "database schema version {schema_version} is newer than supported version {SCHEMA_VERSION}"
+            )));
+        }
+        if schema_version < SCHEMA_VERSION {
+            database.execute_batch(
+                "CREATE TABLE IF NOT EXISTS schema_migration (
+                   version INTEGER PRIMARY KEY,
+                   applied_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS workspace (
+                   id TEXT PRIMARY KEY,
+                   root_id TEXT NOT NULL,
+                   parent_id TEXT REFERENCES workspace(id) ON DELETE RESTRICT,
+                   handle TEXT NOT NULL,
+                   path TEXT NOT NULL UNIQUE,
+                   original_path TEXT,
+                   removal_id TEXT,
+                   storage_path TEXT,
+                   staging_path TEXT,
+                   state TEXT NOT NULL,
+                   materializer TEXT NOT NULL,
+                   strategy TEXT NOT NULL,
+                   copy_mode TEXT NOT NULL,
+                   pinned INTEGER NOT NULL DEFAULT 0,
+                   created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL,
+                   UNIQUE(root_id, handle)
+                 );
+                 CREATE INDEX IF NOT EXISTS workspace_parent_idx ON workspace(parent_id);
+                 CREATE INDEX IF NOT EXISTS workspace_root_state_idx ON workspace(root_id, state);
+                 INSERT OR IGNORE INTO schema_migration(version, applied_at)
+                 VALUES (1, CAST(unixepoch('subsec') * 1000 AS INTEGER));",
+            )?;
             let transaction = database.transaction()?;
             let has_removal_id = transaction.query_row(
                 "SELECT EXISTS(
@@ -62,6 +75,7 @@ impl Registry {
                  VALUES (2, CAST(unixepoch('subsec') * 1000 AS INTEGER))",
                 [],
             )?;
+            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
         }
         Ok(Self { database })
@@ -105,7 +119,7 @@ impl Registry {
         staging_path: &Path,
         strategy: &str,
         copy_mode: CopyMode,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let now = timestamp();
         self.database.execute(
             "INSERT INTO workspace
@@ -125,16 +139,17 @@ impl Registry {
                 now
             ],
         )?;
-        Ok(())
+        Ok(now as u64)
     }
 
-    pub(crate) fn activate(&self, id: &str) -> Result<()> {
+    pub(crate) fn activate(&self, id: &str) -> Result<u64> {
+        let now = timestamp();
         self.database.execute(
             "UPDATE workspace SET state = 'active', staging_path = NULL, updated_at = ?2
              WHERE id = ?1 AND state = 'creating'",
-            params![id, timestamp()],
+            params![id, now],
         )?;
-        Ok(())
+        Ok(now as u64)
     }
 
     pub(crate) fn delete_record(&self, id: &str) -> Result<()> {
@@ -157,6 +172,27 @@ impl Registry {
         Ok(workspace)
     }
 
+    pub(crate) fn workspace_ids(&self, ids: &[String]) -> Result<Vec<Workspace>> {
+        let mut workspaces = Vec::with_capacity(ids.len());
+        for ids in ids.chunks(QUERY_BATCH_SIZE) {
+            let placeholders = std::iter::repeat_n("?", ids.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT id, root_id, parent_id, handle, path, original_path, storage_path,
+                        state, materializer, strategy, copy_mode, pinned, created_at, updated_at
+                 FROM workspace WHERE id IN ({placeholders})"
+            );
+            let mut statement = self.database.prepare(&sql)?;
+            workspaces.extend(
+                statement
+                    .query_map(rusqlite::params_from_iter(ids), workspace_from_row)?
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
+            );
+        }
+        Ok(workspaces)
+    }
+
     pub(crate) fn workspace_path(&self, path: &Path) -> Result<Option<Workspace>> {
         let workspace = self
             .database
@@ -169,6 +205,30 @@ impl Registry {
             )
             .optional()?;
         Ok(workspace)
+    }
+
+    pub(crate) fn workspaces_at_paths(&self, paths: &[&Path]) -> Result<Vec<Workspace>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let paths = paths
+            .iter()
+            .map(|path| path_text(path))
+            .collect::<Result<Vec<_>>>()?;
+        let placeholders = std::iter::repeat_n("?", paths.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT id, root_id, parent_id, handle, path, original_path, storage_path,
+                    state, materializer, strategy, copy_mode, pinned, created_at, updated_at
+             FROM workspace
+             WHERE path IN ({placeholders}) AND state IN ('active', 'unregistered')"
+        );
+        let mut statement = self.database.prepare(&sql)?;
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(&paths), workspace_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     pub(crate) fn workspace_current_path_including_trash(
@@ -388,18 +448,21 @@ impl Registry {
         removal_id: &str,
     ) -> Result<()> {
         let transaction = self.database.transaction()?;
-        for (id, original, trash) in moved {
-            transaction.execute(
+        let updated_at = timestamp();
+        {
+            let mut statement = transaction.prepare(
                 "UPDATE workspace SET state = 'trashed', path = ?2, original_path = ?3,
                                       removal_id = ?4, updated_at = ?5 WHERE id = ?1",
-                params![
+            )?;
+            for (id, original, trash) in moved {
+                statement.execute(params![
                     id,
                     path_text(trash)?,
                     path_text(original)?,
                     removal_id,
-                    timestamp()
-                ],
-            )?;
+                    updated_at
+                ])?;
+            }
         }
         transaction.commit()?;
         Ok(())
@@ -453,12 +516,15 @@ impl Registry {
 
     pub(crate) fn mark_restored(&mut self, moved: &[(String, PathBuf)]) -> Result<()> {
         let transaction = self.database.transaction()?;
-        for (id, path) in moved {
-            transaction.execute(
+        let updated_at = timestamp();
+        {
+            let mut statement = transaction.prepare(
                 "UPDATE workspace SET state = 'active', path = ?2, original_path = NULL,
                                       removal_id = NULL, updated_at = ?3 WHERE id = ?1",
-                params![id, path_text(path)?, timestamp()],
             )?;
+            for (id, path) in moved {
+                statement.execute(params![id, path_text(path)?, updated_at])?;
+            }
         }
         transaction.commit()?;
         Ok(())
@@ -547,4 +613,40 @@ fn timestamp() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn schema_migration_records_the_sqlite_user_version() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("workspaces.sqlite");
+
+        let registry = Registry::open(&path).unwrap();
+        let version: i64 = registry
+            .database
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        drop(registry);
+
+        assert_eq!(version, 2);
+        Registry::open(path).unwrap();
+    }
+
+    #[test]
+    fn newer_database_schemas_are_rejected() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("workspaces.sqlite");
+        let database = Connection::open(&path).unwrap();
+        database.pragma_update(None, "user_version", 3).unwrap();
+        drop(database);
+
+        assert!(matches!(
+            Registry::open(path),
+            Err(Error::RegistryInvariant(message)) if message.contains("newer than supported")
+        ));
+    }
 }

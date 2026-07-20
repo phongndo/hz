@@ -49,19 +49,21 @@ pub fn create_workspace(
     capture_hook_output: bool,
 ) -> HzResult<CreatedWorkspace> {
     let mut manager = workspace_manager()?;
-    let source = manager.current(&input.from).map_err(HzError::from)?;
-    let config = if run_hooks {
-        HzConfig::load(&source.path)?
-    } else {
-        HzConfig::default()
-    };
-    let created = manager.create(input).map_err(HzError::from)?;
+    let (created, config) = manager
+        .create_with_setup(input, |source| {
+            if run_hooks {
+                HzConfig::load(&source.path).map_err(hz_workspace::Error::from)
+            } else {
+                Ok(HzConfig::default())
+            }
+        })
+        .map_err(HzError::from)?;
     if run_hooks {
         if let Some(command) = config.lifecycle.postcreate.as_deref() {
             run_lifecycle(
                 command,
                 "postcreate",
-                &source.path,
+                &created.source,
                 &created.workspace,
                 capture_hook_output,
             )?;
@@ -116,31 +118,97 @@ pub fn remove_workspace(
     run_hooks: bool,
     capture_hook_output: bool,
 ) -> HzResult<RemovedWorkspaces> {
+    remove_workspace_inner(
+        at,
+        target,
+        mode,
+        force_root,
+        run_hooks,
+        capture_hook_output,
+        false,
+    )
+    .map(|(removed, _)| removed)
+}
+
+pub fn remove_workspace_with_navigation(
+    at: impl AsRef<Path>,
+    target: Option<&str>,
+    mode: RemoveMode,
+    force_root: bool,
+    run_hooks: bool,
+    capture_hook_output: bool,
+) -> HzResult<(RemovedWorkspaces, PathBuf)> {
+    let (removed, navigation) = remove_workspace_inner(
+        at,
+        target,
+        mode,
+        force_root,
+        run_hooks,
+        capture_hook_output,
+        true,
+    )?;
+    let navigation = navigation
+        .ok_or_else(|| HzError::Usage("workspace removal navigation path is missing".to_owned()))?;
+    Ok((removed, navigation))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn remove_workspace_inner(
+    at: impl AsRef<Path>,
+    target: Option<&str>,
+    mode: RemoveMode,
+    force_root: bool,
+    run_hooks: bool,
+    capture_hook_output: bool,
+    navigate: bool,
+) -> HzResult<(RemovedWorkspaces, Option<PathBuf>)> {
     let mut manager = workspace_manager()?;
-    let selected = manager
-        .resolve_target(at.as_ref(), target, false)
-        .map_err(HzError::from)?;
-    if selected.parent_id.is_none() && mode == RemoveMode::Subtree && !force_root {
-        return Err(HzError::Usage(format!(
-            "root workspace removal requires --force: {}",
-            selected.path.display()
-        )));
-    }
-    if run_hooks && mode == RemoveMode::Subtree {
-        let config = HzConfig::load(&selected.path)?;
-        if let Some(command) = config.lifecycle.preremove.as_deref() {
-            run_lifecycle(
-                command,
-                "preremove",
-                &selected.path,
-                &selected,
-                capture_hook_output,
-            )?;
+    if navigate || (run_hooks && mode == RemoveMode::Subtree) {
+        let selected = manager
+            .resolve_target(at.as_ref(), target, false)
+            .map_err(HzError::from)?;
+        if selected.parent_id.is_none() && mode == RemoveMode::Subtree && !force_root {
+            return Err(HzError::Usage(format!(
+                "root workspace removal requires --force: {}",
+                selected.path.display()
+            )));
         }
+        let navigation = if navigate {
+            if mode == RemoveMode::Children || selected.parent_id.is_none() {
+                Some(selected.path.clone())
+            } else {
+                Some(
+                    manager
+                        .parent(&selected)
+                        .map_err(HzError::from)?
+                        .ok_or_else(|| HzError::Usage("workspace parent is missing".to_owned()))?
+                        .path,
+                )
+            }
+        } else {
+            None
+        };
+        if run_hooks && mode == RemoveMode::Subtree {
+            let config = HzConfig::load(&selected.path)?;
+            if let Some(command) = config.lifecycle.preremove.as_deref() {
+                run_lifecycle(
+                    command,
+                    "preremove",
+                    &selected.path,
+                    &selected,
+                    capture_hook_output,
+                )?;
+            }
+        }
+        let removed = manager
+            .remove_resolved(&selected, mode, force_root)
+            .map_err(HzError::from)?;
+        return Ok((removed, navigation));
     }
-    manager
+    let removed = manager
         .remove(at, target, mode, force_root)
-        .map_err(HzError::from)
+        .map_err(HzError::from)?;
+    Ok((removed, None))
 }
 
 pub fn restore_workspace(at: impl AsRef<Path>, target: &str) -> HzResult<Vec<Workspace>> {

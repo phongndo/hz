@@ -322,28 +322,45 @@ impl Manager {
     }
 
     pub fn create(&mut self, input: CreateWorkspace) -> Result<CreatedWorkspace> {
+        let (created, ()) = self.create_with_setup(input, |_| Ok(()))?;
+        Ok(created)
+    }
+
+    pub fn create_with_setup<T>(
+        &mut self,
+        input: CreateWorkspace,
+        setup: impl FnOnce(&Workspace) -> Result<T>,
+    ) -> Result<(CreatedWorkspace, T)> {
         let _lock = self.mutation_lock()?;
         let requested = existing_directory(&input.from)?;
         let source = self.workspace_from(&requested)?;
-        let root = self
-            .registry
-            .workspace_id(&source.root_id)?
-            .ok_or_else(|| Error::UnknownWorkspace(source.root_id.clone()))?;
+        let setup = setup(&source)?;
+        let root = if source.id == source.root_id {
+            source.clone()
+        } else {
+            self.registry
+                .workspace_id(&source.root_id)?
+                .ok_or_else(|| Error::UnknownWorkspace(source.root_id.clone()))?
+        };
         strategy::ensure_no_mounted_descendants(&source.path)?;
 
         let handle = match input.handle {
-            Some(handle) => validate_handle(handle)?,
+            Some(handle) => {
+                let handle = validate_handle(handle)?;
+                if !self
+                    .registry
+                    .find_target(&root.id, &handle, true)?
+                    .is_empty()
+                {
+                    return Err(Error::Path(format!(
+                        "workspace handle already exists in this family: {handle}"
+                    )));
+                }
+                handle
+            }
+            // generate_handle has already checked family-wide uniqueness.
             None => self.generate_handle(&root.id)?,
         };
-        if !self
-            .registry
-            .find_target(&root.id, &handle, true)?
-            .is_empty()
-        {
-            return Err(Error::Path(format!(
-                "workspace handle already exists in this family: {handle}"
-            )));
-        }
 
         let destination_parent = match input.into {
             Some(path) => absolute_path(&path)?,
@@ -351,9 +368,11 @@ impl Manager {
                 Error::RegistryInvariant(format!("root {} has no storage path", root.id))
             })?,
         };
-        let existing_parent = nearest_existing_ancestor(&destination_parent)?;
-        if self.workspace_from_optional(&existing_parent)?.is_some() {
-            return Err(Error::InsideManagedWorkspace(destination_parent));
+        if !destination_parent.try_exists()? {
+            let existing_parent = nearest_existing_ancestor(&destination_parent)?;
+            if self.workspace_from_optional(&existing_parent)?.is_some() {
+                return Err(Error::InsideManagedWorkspace(destination_parent));
+            }
         }
         fs::create_dir_all(&destination_parent)?;
         let destination_parent = fs::canonicalize(destination_parent)?;
@@ -370,7 +389,7 @@ impl Manager {
             return Err(Error::AlreadyExists(destination));
         }
 
-        self.registry.insert_creating(
+        let created_at = self.registry.insert_creating(
             &id,
             &root.id,
             &source.id,
@@ -389,37 +408,62 @@ impl Manager {
                 &id,
             )?;
             marker::protect_from_source_control(&staging)?;
+            // Successful strategies guarantee this marker. Recheck the
+            // internal contract in development without adding a release-path
+            // read before every activation.
+            #[cfg(debug_assertions)]
             marker::verify(&staging, &id)?;
             fs::rename(&staging, &destination)?;
-            self.registry.activate(&id)?;
-            Ok(())
+            self.registry.activate(&id)
         })();
 
-        if let Err(error) = result {
-            // Native unfiltered clones initially inherit the source marker. If
-            // permission restriction or marker replacement fails, that marker
-            // still proves ownership as long as the registered source remains
-            // independently present and valid.
-            let inherited_marker_id =
-                (input.copy_mode == CopyMode::All).then_some(source.id.as_str());
-            let staging_removed =
-                self.cleanup_failed_create_path(&root.strategy, &staging, &id, inherited_marker_id);
-            let destination_removed =
-                self.cleanup_failed_create_path(&root.strategy, &destination, &id, None);
-            if staging_removed && destination_removed {
-                let _ = self.registry.delete_record(&id);
+        let activated_at = match result {
+            Ok(activated_at) => activated_at,
+            Err(error) => {
+                // Native unfiltered clones initially inherit the source marker. If
+                // permission restriction or marker replacement fails, that marker
+                // still proves ownership as long as the registered source remains
+                // independently present and valid.
+                let inherited_marker_id =
+                    (input.copy_mode == CopyMode::All).then_some(source.id.as_str());
+                let staging_removed = self.cleanup_failed_create_path(
+                    &root.strategy,
+                    &staging,
+                    &id,
+                    inherited_marker_id,
+                );
+                let destination_removed =
+                    self.cleanup_failed_create_path(&root.strategy, &destination, &id, None);
+                if staging_removed && destination_removed {
+                    let _ = self.registry.delete_record(&id);
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
 
-        let workspace = self
-            .registry
-            .workspace_id(&id)?
-            .ok_or_else(|| Error::UnknownWorkspace(id.clone()))?;
-        Ok(CreatedWorkspace {
-            workspace,
-            source: source.path,
-        })
+        let workspace = Workspace {
+            id,
+            root_id: root.id,
+            parent_id: Some(source.id.clone()),
+            handle,
+            path: destination,
+            original_path: None,
+            storage_path: None,
+            state: WorkspaceState::Active,
+            materializer: Materializer::Snapshot,
+            strategy: root.strategy,
+            copy_mode: input.copy_mode,
+            pinned: false,
+            created_at_unix_ms: created_at,
+            updated_at_unix_ms: activated_at,
+        };
+        Ok((
+            CreatedWorkspace {
+                workspace,
+                source: source.path,
+            },
+            setup,
+        ))
     }
 
     pub fn current(&self, at: impl AsRef<Path>) -> Result<Workspace> {
@@ -599,6 +643,22 @@ impl Manager {
             .collect()
     }
 
+    pub fn parent(&self, workspace: &Workspace) -> Result<Option<Workspace>> {
+        let Some(parent_id) = workspace.parent_id.as_deref() else {
+            return Ok(None);
+        };
+        let parent = self.registry.workspace_id(parent_id)?.ok_or_else(|| {
+            Error::RegistryInvariant(format!("missing parent {parent_id} for {}", workspace.id))
+        })?;
+        if parent.state != WorkspaceState::Active {
+            return Err(Error::RegistryInvariant(format!(
+                "parent {parent_id} for {} is not active",
+                workspace.id
+            )));
+        }
+        self.verify_resolved_workspace(parent).map(Some)
+    }
+
     pub fn set_pinned(
         &self,
         at: impl AsRef<Path>,
@@ -638,6 +698,22 @@ impl Manager {
         self.remove_with_marker_removal(at, target, mode, force_root, marker::remove)
     }
 
+    pub fn remove_resolved(
+        &mut self,
+        selected: &Workspace,
+        mode: RemoveMode,
+        force_root: bool,
+    ) -> Result<RemovedWorkspaces> {
+        let _lock = self.mutation_lock()?;
+        let selected = self
+            .registry
+            .workspace_id(&selected.id)?
+            .filter(|workspace| workspace.state == WorkspaceState::Active)
+            .ok_or_else(|| Error::UnknownWorkspace(selected.id.clone()))?;
+        let selected = self.verify_resolved_workspace(selected)?;
+        self.remove_selected_with_marker_removal(selected, mode, force_root, marker::remove)
+    }
+
     fn remove_with_marker_removal(
         &mut self,
         at: impl AsRef<Path>,
@@ -648,6 +724,16 @@ impl Manager {
     ) -> Result<RemovedWorkspaces> {
         let _lock = self.mutation_lock()?;
         let selected = self.resolve_target(at, target, false)?;
+        self.remove_selected_with_marker_removal(selected, mode, force_root, remove_marker)
+    }
+
+    fn remove_selected_with_marker_removal(
+        &mut self,
+        selected: Workspace,
+        mode: RemoveMode,
+        force_root: bool,
+        remove_marker: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<RemovedWorkspaces> {
         let is_root = selected.parent_id.is_none();
         if is_root && mode == RemoveMode::Subtree && !force_root {
             return Err(Error::RootForceRequired(selected.path));
@@ -655,11 +741,18 @@ impl Manager {
 
         let include_root = mode == RemoveMode::Subtree && !is_root;
         let rows = self.registry.subtree(&selected.id, include_root)?;
+        let mut verified_ancestors = HashSet::new();
         for row in &rows {
-            if !row.path.exists() {
-                return Err(Error::MissingWorkspace(row.path.clone()));
+            if row.id == selected.id {
+                continue;
             }
-            marker::verify(&row.path, &row.id)?;
+            match marker::verify_with_ancestor_cache(&row.path, &row.id, &mut verified_ancestors) {
+                Ok(()) => {}
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(Error::MissingWorkspace(row.path.clone()));
+                }
+                Err(error) => return Err(error),
+            }
         }
 
         let mut targets = Vec::with_capacity(rows.len());
@@ -674,13 +767,17 @@ impl Manager {
         #[cfg(windows)]
         self.ensure_current_directory_outside_removal(&rows)?;
 
-        // Preflight every trash parent before moving anything. In particular,
-        // never let rename follow a pre-existing .trash symlink or junction.
+        // Preflight every distinct trash parent before moving anything. In
+        // particular, never let rename follow a pre-existing .trash symlink or
+        // junction.
+        let mut trash_parents = HashSet::new();
         for (_, _, trash) in &targets {
             let parent = trash.parent().ok_or_else(|| {
                 Error::Path(format!("trash path has no parent: {}", trash.display()))
             })?;
-            ensure_real_trash_directory(parent)?;
+            if trash_parents.insert(parent) {
+                ensure_real_trash_directory(parent)?;
+            }
         }
 
         let mut moved = Vec::new();
@@ -709,18 +806,35 @@ impl Manager {
             }
         }
 
-        let selected = self
-            .registry
-            .workspace_id(&selected.id)?
-            .ok_or_else(|| Error::UnknownWorkspace(selected.id.clone()))?;
-        let removed = rows
-            .into_iter()
-            .map(|row| {
+        let removed = if let [row] = rows.as_slice() {
+            vec![
                 self.registry
                     .workspace_id(&row.id)?
-                    .ok_or(Error::UnknownWorkspace(row.id))
-            })
-            .collect::<Result<Vec<_>>>()?;
+                    .ok_or_else(|| Error::UnknownWorkspace(row.id.clone()))?,
+            ]
+        } else {
+            let removed_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+            let mut removed_by_id = self
+                .registry
+                .workspace_ids(&removed_ids)?
+                .into_iter()
+                .map(|workspace| (workspace.id.clone(), workspace))
+                .collect::<HashMap<_, _>>();
+            rows.into_iter()
+                .map(|row| {
+                    removed_by_id
+                        .remove(&row.id)
+                        .ok_or(Error::UnknownWorkspace(row.id))
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        let selected = match removed.iter().find(|workspace| workspace.id == selected.id) {
+            Some(selected) => selected.clone(),
+            None => self
+                .registry
+                .workspace_id(&selected.id)?
+                .ok_or_else(|| Error::UnknownWorkspace(selected.id.clone()))?,
+        };
 
         Ok(RemovedWorkspaces {
             selected,
@@ -1507,22 +1621,35 @@ impl Manager {
     }
 
     fn workspace_from_optional(&self, path: &Path) -> Result<Option<Workspace>> {
-        for directory in path.ancestors() {
+        let directories = path.ancestors().collect::<Vec<_>>();
+        let mut registered_paths = None;
+        for directory in &directories {
             if let Some(id) = marker::read(directory)? {
                 let record = self
                     .registry
                     .workspace_id(&id)?
-                    .ok_or_else(|| Error::UnknownMarker(directory.to_path_buf()))?;
-                if record.path != directory || record.state != WorkspaceState::Active {
-                    return Err(Error::MarkerMismatch(directory.to_path_buf()));
+                    .ok_or_else(|| Error::UnknownMarker((*directory).to_path_buf()))?;
+                if record.path != *directory || record.state != WorkspaceState::Active {
+                    return Err(Error::MarkerMismatch((*directory).to_path_buf()));
                 }
                 marker::ensure_real_workspace_path(directory)?;
                 return Ok(Some(record));
             }
-            if let Some(record) = self.registry.workspace_path(directory)? {
-                if record.state == WorkspaceState::Active {
-                    return Err(Error::MissingMarker(directory.to_path_buf()));
-                }
+            if registered_paths.is_none() {
+                registered_paths = Some(
+                    self.registry
+                        .workspaces_at_paths(&directories)?
+                        .into_iter()
+                        .map(|workspace| (workspace.path.clone(), workspace))
+                        .collect::<HashMap<_, _>>(),
+                );
+            }
+            if registered_paths
+                .as_ref()
+                .and_then(|paths| paths.get(*directory))
+                .is_some_and(|record| record.state == WorkspaceState::Active)
+            {
+                return Err(Error::MissingMarker((*directory).to_path_buf()));
             }
         }
         Ok(None)
