@@ -33,7 +33,7 @@ pub enum Error {
     #[error("{0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]
-    Database(#[from] rusqlite::Error),
+    Database(#[from] sqlx::Error),
     #[error("{0}")]
     Walk(#[from] walkdir::Error),
     #[error("{0}")]

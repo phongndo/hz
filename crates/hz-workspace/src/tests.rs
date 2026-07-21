@@ -1643,7 +1643,6 @@ fn restore_rejects_a_foreign_marker_on_a_reused_unregistered_root() {
 fn failed_restore_preserves_a_matching_preexisting_root_marker() {
     let temp = TempDir::new().unwrap();
     let root = root(&temp);
-    let database = temp.path().join("workspaces.sqlite");
     let mut manager = manager(&temp);
     let initialized = manager
         .init(InitWorkspace {
@@ -1657,8 +1656,8 @@ fn failed_restore_preserves_a_matching_preexisting_root_marker() {
         .remove(&root, None, RemoveMode::Subtree, true)
         .unwrap();
     marker::write(&root, &initialized.id).unwrap();
-    rusqlite::Connection::open(database)
-        .unwrap()
+    manager
+        .registry
         .execute_batch(
             "CREATE TRIGGER fail_test_restore
              BEFORE UPDATE OF state ON workspace
