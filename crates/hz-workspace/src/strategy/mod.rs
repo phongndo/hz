@@ -1,7 +1,16 @@
 // Native COW strategy implementations are adapted from anomalyco/rift's
 // MIT-licensed filesystem layer and integrated with Hz's workspace model.
 use crate::{CopyMode, Error, InitProgress, Result, filter::CopyFilter};
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
+
+const MIN_PARALLEL_COPY_FILES: usize = 32;
+const PARALLEL_COPY_BATCH_SIZE: usize = 1024;
+// Higher fan-out tends to trade filesystem throughput for contention.
+const MAX_PARALLEL_COPY_WORKERS: usize = 4;
 
 #[cfg(target_os = "macos")]
 mod apfs;
@@ -143,7 +152,9 @@ fn copy_directory_portable(
     crate::marker::write(to, workspace_id)?;
     let filter = CopyFilter;
     let mut directories = Vec::new();
-    let mut hard_links = HashMap::new();
+    let mut hard_links: HashMap<FileIdentity, PathBuf> = HashMap::new();
+    let mut regular_files = Vec::new();
+    let mut pending_hard_links = Vec::new();
     for entry in walkdir::WalkDir::new(from)
         .min_depth(1)
         .follow_links(false)
@@ -179,19 +190,69 @@ fn copy_directory_portable(
         let metadata = fs::symlink_metadata(entry.path())?;
         if let Some(identity) = hard_link_identity(entry.path(), &metadata)? {
             if let Some(existing) = hard_links.get(&identity) {
-                fs::hard_link(existing, &destination)?;
+                pending_hard_links.push((existing.clone(), destination));
             } else {
-                fs::copy(entry.path(), &destination)?;
-                hard_links.insert(identity, destination);
+                hard_links.insert(identity, destination.clone());
+                regular_files.push((entry.path().to_path_buf(), destination));
             }
         } else {
-            fs::copy(entry.path(), destination)?;
+            regular_files.push((entry.path().to_path_buf(), destination));
+        }
+        if regular_files.len() + pending_hard_links.len() >= PARALLEL_COPY_BATCH_SIZE {
+            copy_regular_file_batch(&regular_files, &pending_hard_links)?;
+            regular_files.clear();
+            pending_hard_links.clear();
         }
     }
+    copy_regular_file_batch(&regular_files, &pending_hard_links)?;
     for (source, destination) in directories.into_iter().rev() {
         copy_directory_permissions(&source, &destination)?;
     }
     copy_directory_permissions(from, to)
+}
+
+fn copy_regular_file_batch(
+    files: &[(PathBuf, PathBuf)],
+    hard_links: &[(PathBuf, PathBuf)],
+) -> Result<()> {
+    let worker_count = if files.len() < MIN_PARALLEL_COPY_FILES {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(MAX_PARALLEL_COPY_WORKERS)
+            .min(files.len())
+    };
+    if worker_count <= 1 {
+        files
+            .iter()
+            .try_for_each(|(from, to)| fs::copy(from, to).map(|_| ()))?;
+    } else {
+        std::thread::scope(|scope| {
+            let workers = (0..worker_count)
+                .map(|offset| {
+                    scope.spawn(move || {
+                        files
+                            .iter()
+                            .skip(offset)
+                            .step_by(worker_count)
+                            .try_for_each(|(from, to)| fs::copy(from, to).map(|_| ()))
+                    })
+                })
+                .collect::<Vec<_>>();
+            for worker in workers {
+                match worker.join() {
+                    Ok(result) => result?,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }
+            Ok::<(), std::io::Error>(())
+        })?;
+    }
+    hard_links
+        .iter()
+        .try_for_each(|(from, to)| fs::hard_link(from, to))?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -422,6 +483,11 @@ mod tests {
         fs::create_dir(&source).unwrap();
         fs::write(source.join("first.txt"), "shared").unwrap();
         fs::hard_link(source.join("first.txt"), source.join("second.txt")).unwrap();
+        // Ensure this exercises the parallel-copy path as well as hard-link
+        // creation after each batch's regular files are complete.
+        for index in 0..MIN_PARALLEL_COPY_FILES {
+            fs::write(source.join(format!("file-{index:02}.txt")), "content").unwrap();
+        }
 
         copy_directory_portable(
             &source,
