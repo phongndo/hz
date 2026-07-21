@@ -68,15 +68,35 @@ cargo run --release -p hz-bench -- cmd \
   --mutating
 ```
 
-## Comparing Rift
+## Comparing Hz, Rift, and Git
 
-Rift defaults to filtered copying, while Hz defaults to an exact copy. Compare
-equivalent modes rather than default command lines:
+Build release binaries, then run the comparison harness with a Rift binary:
 
-- `hz new --filtered --no-hooks` versus `rift create --no-hooks`
-- `hz new --no-hooks` versus `rift create --copy-all --no-hooks`
+```sh
+cargo build --release -p hz-cli --locked
+cargo run --release -p hz-bench -- compare \
+  --hz target/release/hz \
+  --rift /path/to/release/rift \
+  --repo-files 10000 \
+  --iterations 10
+```
 
-Use release binaries, identical fixtures on the same filesystem, isolated
-registries and homes, alternating tool order, and separate creation and removal
-timers. Git results are not semantically identical: Rift detaches the created
-checkout, while Hz preserves source-control state as ordinary filesystem data.
+The harness creates three equivalent isolated repositories and registries on
+the same filesystem, rotates tool order each round, and separately measures:
+
+- `hz new --no-hooks` and `hz rm --no-hooks`
+- `rift create --copy-all --no-hooks` and `rift remove`
+- local `git clone` and recursive deletion
+
+It reports latency distributions and median Hz speedups. Add `--filtered` to
+compare `hz new --filtered --no-hooks` with Rift's default filtered creation.
+Use `--artifact-files N` to put tracked files under `target/`; Git still checks
+out those files, so its result is intentionally not semantically equivalent in
+filtered mode. Use `--json` for machine-readable results.
+
+The setup uses release binaries, identical committed inputs, isolated homes and
+databases, rotating order, and separate creation/removal timers. The operations
+still have meaningful semantic differences: Hz preserves source-control and
+dirty filesystem state, Rift detaches Git `HEAD`, and Git clone only reproduces
+committed Git state. Hz and Rift removal are recoverable constant-time moves to
+trash, while the Git baseline is an irreversible recursive delete.
