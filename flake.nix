@@ -57,6 +57,7 @@
               git
               gnutar
               just
+              nixd
               sccache
             ];
             RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
