@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 1 )); then
+  printf 'usage: %s <dev|debug|release|sanitizers>\n' "$0" >&2
+  exit 2
+fi
+
+ctest --preset "$1" --no-tests=error --parallel "${CTEST_PARALLEL_LEVEL:-4}"

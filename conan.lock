@@ -1,0 +1,12 @@
+{
+    "version": "0.5",
+    "requires": [
+        "gtest/1.17.0#5224b3b3ff3b4ce1133cbdd27d53ee7d%1755784855.585",
+        "benchmark/1.9.5#b885dc73ad67b40a55d45684d1c88ad1%1774363287.434"
+    ],
+    "build_requires": [
+        "cmake/3.31.10#313d16a1aa16bbdb2ca0792467214b76%1763665505.054"
+    ],
+    "python_requires": [],
+    "config_requires": []
+}

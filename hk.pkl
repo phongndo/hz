@@ -1,51 +1,137 @@
-amends "package://github.com/jdx/hk/releases/download/v1.49.0/hk@1.49.0#/Config.pkl"
-import "package://github.com/jdx/hk/releases/download/v1.49.0/hk@1.49.0#/Builtins.pkl"
+amends "package://github.com/jdx/hk/releases/download/v1.50.0/hk@1.50.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v1.50.0/hk@1.50.0#/Builtins.pkl"
 
-local linters = new Mapping<String, Step> {
-    ["cargo-fmt"] = (Builtins.cargo_fmt) {
-        // Uses cargo fmt with --manifest-path pointing to workspace Cargo.toml.
-        // Fixes formatting automatically on pre-commit.
-    }
-    ["cargo-clippy"] {
-        glob = "**/*.rs"
-        workspace_indicator = "Cargo.toml"
-        check = "cargo clippy --workspace --all-targets --all-features --locked --manifest-path {{workspace_indicator}} -- --deny warnings"
-        check_first = false
-        env {
-            ["CARGO_TERM_PROGRESS_WHEN"] = "never"
-        }
-    }
-    ["check-merge-conflict"] = Builtins.check_merge_conflict
-    ["check-added-large-files"] = Builtins.check_added_large_files
+exclude = List(
+  "build",
+  ".cache",
+  ".conan2",
+)
+
+local cppFiles = List(
+  "apps/**/*.cpp",
+  "include/**/*.hpp",
+  "include/**/*.hpp.in",
+  "src/**/*.hpp",
+  "src/**/*.cpp",
+  "tests/**/*.cpp",
+  "benchmarks/**/*.cpp",
+)
+
+local cppSources = List(
+  "apps/**/*.cpp",
+  "src/**/*.cpp",
+  "tests/**/*.cpp",
+  "benchmarks/**/*.cpp",
+)
+
+local clangdFiles = List(
+  "apps/**/*.cpp",
+  "src/**/*.hpp",
+  "src/**/*.cpp",
+)
+
+local buildImpact = List(
+  "apps/**/*.cpp",
+  "include/**/*.hpp",
+  "include/**/*.hpp.in",
+  "src/**/*.hpp",
+  "src/**/*.cpp",
+  "tests/**/*.cpp",
+  "benchmarks/**/*.cpp",
+  "CMakeLists.txt",
+  "CMakePresets.json",
+  "cmake/**",
+  "conan/**",
+  "conan.lock",
+  "conanfile.py",
+  "flake.nix",
+  "flake.lock",
+)
+
+local hygiene = new Mapping<String, Step | Group> {
+  ["merge-conflict"] = Builtins.check_merge_conflict
+  ["private-key"] = Builtins.detect_private_key
+  ["large-file"] = Builtins.check_added_large_files
+  ["case-conflict"] = Builtins.check_case_conflict
+  ["executable-shebang"] = Builtins.check_executables_have_shebangs
+  ["symlinks"] = Builtins.check_symlinks
+  ["bom"] = Builtins.byte_order_marker
+  ["line-endings"] = Builtins.mixed_line_ending
+  ["newlines"] = Builtins.newlines
+  ["trailing-whitespace"] = Builtins.trailing_whitespace
 }
 
-local slow = new Mapping<String, Step> {
-    ["rust-analyzer-diagnostics"] {
-        check = "rust-analyzer diagnostics ."
-    }
-    ["cargo-test"] {
-        check = "cargo test --workspace --all-targets --all-features --locked"
-        env {
-            ["CARGO_TERM_PROGRESS_WHEN"] = "never"
-        }
-    }
+local fast = new Mapping<String, Step | Group> {
+  ...hygiene
+
+  ["clang-format"] = (Builtins.clang_format) {
+    glob = cppFiles
+  }
+
+  ["nix-format"] {
+    glob = "flake.nix"
+    check = "nixpkgs-fmt --check {{files}}"
+    fix = "nixpkgs-fmt {{files}}"
+  }
+
+  ["actionlint"] = Builtins.actionlint
+
+  ["shellcheck"] {
+    glob = "scripts/ci/*"
+    check = "shellcheck {{files}}"
+  }
+
+  ["just-format"] {
+    glob = "Justfile"
+    check = "just --fmt --check --unstable --justfile Justfile"
+    fix = "just --fmt --unstable --justfile Justfile"
+  }
+
+  ["hk-validate"] {
+    glob = "hk.pkl"
+    check = "hk validate"
+  }
+}
+
+local full = new Mapping<String, Step | Group> {
+  ["build-test"] {
+    glob = buildImpact
+    check = "scripts/ci/configure debug -DHZ_BUILD_TESTS=ON -DHZ_BUILD_BENCHMARKS=ON && cmake --build --preset debug && scripts/ci/test debug"
+    exclusive = true
+  }
+
+  ["clang-tidy"] {
+    glob = cppSources
+    check = "clang-tidy --quiet -p build/debug {{files}}"
+    batch = true
+    depends = "build-test"
+  }
+
+  ["clangd"] {
+    glob = clangdFiles
+    check = "cmake/check-clangd.sh {{files}}"
+    batch = true
+    depends = "build-test"
+  }
+}
+
+local all = new Mapping<String, Step | Group> {
+  ...fast
+  ...full
 }
 
 hooks {
-    ["pre-commit"] {
-        fix = true
-        stash = "git"
-        steps = linters
-    }
-    ["fix"] {
-        fix = true
-        steps = linters
-    }
-    ["check"] {
-        steps = linters
-    }
-    ["slow"] {
-        profiles = List("slow", "ci")
-        steps = slow
-    }
+  ["pre-commit"] {
+    fix = true
+    stash = "git"
+    steps = fast
+  }
+
+  ["pre-push"] { steps = all }
+  ["check"] { steps = all }
+
+  ["fix"] {
+    fix = true
+    steps = fast
+  }
 }

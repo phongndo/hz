@@ -1,69 +1,133 @@
-setup:
-    cargo fetch --locked
-    cargo build -p hz-cli --locked
+set positional-arguments
 
-check:
-    rust-analyzer diagnostics .
-    cargo fmt --all --check
-    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+profile := "debug"
+build_type := if profile == "release" { "Release" } else if profile == "dev" { "Dev" } else { "Debug" }
+conan_build_type := if profile == "dev" { "Release" } else { build_type }
+cpp_roots := "apps include src tests benchmarks"
 
-ci-check: ci-rust ci-integration ci-performance ci-workflows
+_default:
+    @just --list
 
-ci-rust:
-    scripts/ci/rust
+# Show the pinned development tool versions.
+versions:
+    clang++ --version
+    clangd --version
+    clang-tidy --version
+    cmake --version
+    ninja --version
+    ccache --version
+    conan --version
+    hk --version
 
-ci-integration:
-    scripts/ci/integration
+# Install Conan dependencies for the selected profile.
+deps:
+    rm -f CMakeUserPresets.json
+    conan install . \
+        --output-folder=build/{{ profile }}/conan \
+        --lockfile=conan.lock \
+        --profile:all=conan/profiles/llvm \
+        --settings=build_type={{ conan_build_type }} \
+        --conf=tools.cmake.cmaketoolchain:user_presets= \
+        --build=missing
 
-ci-performance:
-    scripts/ci/performance smoke
+# Generate Ninja files and compile_commands.json.
+configure: deps
+    cmake --preset {{ profile }} \
+        -DCMAKE_BUILD_TYPE={{ build_type }} \
+        -DCMAKE_TOOLCHAIN_FILE="$PWD/build/{{ profile }}/conan/conan_toolchain.cmake" \
+        -DHZ_BUILD_TESTS=ON -DHZ_BUILD_BENCHMARKS=ON
 
+# Build the application, tests, and benchmarks.
+build: configure
+    cmake --build --preset {{ profile }}
+
+# Incrementally build and run this checkout's hz binary.
+run *args:
+    @exec ./scripts/dev-run "$@"
+
+# Build and run all tests.
+test: build
+    scripts/ci/test {{ profile }}
+
+# Build and run the release benchmarks.
+bench:
+    scripts/ci/configure release -DHZ_BUILD_TESTS=OFF -DHZ_BUILD_BENCHMARKS=ON
+    cmake --build --preset release --target hz_benchmarks
+    ./build/release/hz_benchmarks
+
+# Format C++ and Nix files in place.
+fmt:
+    bash -c "find {{ cpp_roots }} -type f \
+        \( -name '*.cpp' -o -name '*.hpp' -o -name '*.hpp.in' \) -print0 | \
+        xargs -0 clang-format -i"
+    nixpkgs-fmt flake.nix
+
+# Check formatting without changing files.
+fmt-check:
+    scripts/ci/format
+
+# Run responsive clang-tidy checks in parallel.
+lint: configure
+    bash -c "find apps src tests benchmarks -type f -name '*.cpp' -print0 | \
+        xargs -0 -n 1 -P \"\${CLANG_TIDY_JOBS:-4}\" \
+        clang-tidy --quiet -p build/{{ profile }}"
+
+# Check every production source and header through clangd.
+lsp-check: configure
+    bash -c "find apps src -type f \
+        \( -name '*.hpp' -o -name '*.cpp' \) -print0 | sort -z | \
+        xargs -0 -n 1 -P \"\${CLANGD_JOBS:-4}\" cmake/check-clangd.sh"
+
+# Start clangd for editor integrations.
+lsp:
+    clangd --enable-config
+
+# Run formatting, build, tests, clang-tidy, and clangd diagnostics.
+check: build fmt-check lint lsp-check test
+
+# Reproduce the merge-blocking build and test lane.
+ci-build-test:
+    scripts/ci/build-test
+
+# Reproduce the merge-blocking clang-tidy lane.
+ci-lint:
+    scripts/ci/lint
+
+# Reproduce the merge-blocking clangd lane.
+ci-lsp:
+    scripts/ci/lsp
+
+# Reproduce the sanitizer lane.
+ci-sanitizers:
+    scripts/ci/sanitizers
+
+# Check CI shell scripts and GitHub Actions workflows.
 ci-workflows:
-    actionlint -color
+    scripts/ci/workflows
 
-# Run hk checks (equivalent to pre-commit hook steps)
-hk-check:
-    mise x hk -- hk check
+# Reproduce every merge-blocking CI lane locally.
+ci-check:
+    scripts/ci/format
+    scripts/ci/build-test
+    scripts/ci/lint
+    scripts/ci/lsp
+    scripts/ci/sanitizers
+    scripts/ci/workflows
 
-# Run full hk checks including slow steps (requires --profile slow or --profile ci)
-hk-check-full:
-    mise x hk -- hk check --profile slow
-
-test:
-    cargo test --workspace --all-targets --all-features --locked
-
-build:
-    cargo build -p hz-cli --locked
-
+# Configure the debug tree and install repository hooks.
 hooks:
-    mise x hk -- hk validate
-    @echo 'Global hk hooks are active (hk-pre-commit, hk-pre-push)'
+    scripts/ci/configure debug -DHZ_BUILD_TESTS=ON -DHZ_BUILD_BENCHMARKS=ON
+    hk validate
+    hk install
 
-hz *args:
-    cargo build -p hz-cli --locked
-    ./target/debug/hz {{args}}
+# Run every configured hook check.
+hooks-check:
+    hk check --all --check
 
-smoke: smoke-cli smoke-zsh smoke-bench smoke-installer-update
+# Apply safe pre-commit fixes.
+hooks-fix:
+    hk fix --all
 
-smoke-cli:
-    cargo build -p hz-cli --locked
-    ./target/debug/hz --help >/dev/null
-    ./target/debug/hz shell zsh >/dev/null
-    ./target/debug/hz shell bash >/dev/null
-    ./target/debug/hz shell fish >/dev/null
-
-smoke-zsh:
-    zsh scripts/smoke-zsh
-
-smoke-bench:
-    cargo build -p hz-cli --locked
-    cargo run -p hz-bench --locked -- cmd --hz target/debug/hz --workspaces 2 --warmup 0 --iterations 1 --mutating --portable --json >/dev/null
-
-smoke-installer-update version="latest":
-    scripts/smoke-installer-update {{version}}
-
-smoke-curl-install version="latest":
-    scripts/smoke-curl-install {{version}}
-
-smoke-update version="latest":
-    scripts/smoke-update {{version}}
+# Remove generated build output.
+clean:
+    rm -rf build CMakeUserPresets.json

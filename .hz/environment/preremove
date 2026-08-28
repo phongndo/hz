@@ -1,4 +1,0 @@
-#!/usr/bin/env sh
-set -eu
-
-# Clean up a workspace before it moves to trash.

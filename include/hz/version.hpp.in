@@ -1,0 +1,12 @@
+#ifndef HZ_VERSION_HPP
+#define HZ_VERSION_HPP
+
+#include <string_view>
+
+namespace hz {
+
+inline constexpr std::string_view version{"@PROJECT_VERSION@"};
+
+} // namespace hz
+
+#endif // HZ_VERSION_HPP

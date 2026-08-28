@@ -1,0 +1,42 @@
+CompileFlags:
+  CompilationDatabase: build/debug
+  Compiler: clang++
+
+Diagnostics:
+  ClangTidy:
+    FastCheckFilter: Strict
+    Add:
+      - bugprone-*
+      - cert-*
+      - cppcoreguidelines-*
+      - modernize-*
+      - performance-*
+      - portability-*
+      - readability-*
+    Remove:
+      - bugprone-easily-swappable-parameters
+      - cppcoreguidelines-avoid-magic-numbers
+      - cppcoreguidelines-avoid-non-const-global-variables
+      - cppcoreguidelines-owning-memory
+      - modernize-use-trailing-return-type
+      - readability-identifier-length
+      - readability-magic-numbers
+  UnusedIncludes: Strict
+  Includes:
+    IgnoreHeader:
+      - (asm|asm-generic|bits|machine|sys)/.*
+      - .*/_types/.*
+  MissingIncludes: Strict
+
+Hover:
+  ShowAKA: true
+
+InlayHints:
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true
+  Designators: true
+
+Index:
+  Background: Build
+  StandardLibrary: Yes

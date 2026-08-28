@@ -1,3 +1,0 @@
-[lifecycle]
-# postcreate = [".hz/environment/postcreate"]
-# preremove = [".hz/environment/preremove"]

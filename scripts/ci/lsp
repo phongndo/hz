@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+scripts/ci/configure debug -DHZ_BUILD_TESTS=ON -DHZ_BUILD_BENCHMARKS=OFF
+
+find apps src -type f \( -name '*.hpp' -o -name '*.cpp' \) -print0 |
+  sort -z |
+  xargs -0 -n 1 -P "${CLANGD_JOBS:-4}" cmake/check-clangd.sh

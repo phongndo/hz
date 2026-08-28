@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly root="$(git rev-parse --show-toplevel)"
+cd "${root}"
+
+if [[ ! -f build/dev/build.ninja ]]; then
+  scripts/ci/configure dev -DHZ_BUILD_TESTS=OFF -DHZ_BUILD_BENCHMARKS=OFF
+fi
+
+cmake --build --preset dev --target hz >&2
+exec ./build/dev/hz "$@"

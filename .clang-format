@@ -1,0 +1,10 @@
+---
+BasedOnStyle: LLVM
+ColumnLimit: 100
+DerivePointerAlignment: false
+InsertBraces: true
+InsertNewlineAtEOF: true
+PointerAlignment: Left
+QualifierAlignment: Left
+SortIncludes: CaseSensitive
+...

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# < 1 )); then
+  printf 'usage: %s <dev|debug|release|sanitizers> [cmake options ...]\n' "$0" >&2
+  exit 2
+fi
+
+readonly profile="$1"
+shift
+
+case "${profile}" in
+  dev)
+    readonly build_type="Dev"
+    readonly conan_build_type="Release"
+    ;;
+  debug | sanitizers)
+    readonly build_type="Debug"
+    readonly conan_build_type="Debug"
+    ;;
+  release)
+    readonly build_type="Release"
+    readonly conan_build_type="Release"
+    ;;
+  *)
+    printf 'unsupported CMake profile: %s\n' "${profile}" >&2
+    exit 2
+    ;;
+esac
+
+rm -f CMakeUserPresets.json
+conan install . \
+  --lockfile=conan.lock \
+  --output-folder="build/${profile}/conan" \
+  --profile:all=conan/profiles/llvm \
+  --settings="build_type=${conan_build_type}" \
+  --conf="tools.cmake.cmaketoolchain:user_presets=" \
+  --build=missing
+
+cmake --preset "${profile}" \
+  -DCMAKE_BUILD_TYPE="${build_type}" \
+  -DCMAKE_TOOLCHAIN_FILE="${PWD}/build/${profile}/conan/conan_toolchain.cmake" \
+  "$@"

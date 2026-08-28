@@ -1,8 +1,20 @@
-/target/
-/dist/
-/homebrew-tap/
+# CMake, Ninja, Conan, and compilation caches
+/build/
+.cache/
+.conan2/
+compile_commands.json
+CMakeUserPresets.json
+
+# Nix
 /result
 /result-*
-*.profraw
-__pycache__/
-*.pyc
+
+# Local tooling overrides
+hk.local.pkl
+
+# Editors and operating systems
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/

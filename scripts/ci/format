@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly cpp_roots=(apps include src tests benchmarks)
+
+find "${cpp_roots[@]}" -type f \
+  \( -name '*.cpp' -o -name '*.hpp' -o -name '*.hpp.in' \) -print0 |
+  xargs -0 -n 1 -P "${FORMAT_JOBS:-4}" clang-format --dry-run --Werror
+nixpkgs-fmt --check flake.nix
+just --fmt --check --unstable --justfile Justfile
