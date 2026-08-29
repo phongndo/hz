@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-scripts/ci/configure sanitizers -DHZ_BUILD_TESTS=ON -DHZ_BUILD_BENCHMARKS=OFF
+scripts/ci/configure sanitizers -DLIGHT_BUILD_TESTS=ON -DLIGHT_BUILD_BENCHMARKS=OFF
 cmake --build --preset sanitizers
 
 leak_detection=1
@@ -11,4 +11,4 @@ fi
 export ASAN_OPTIONS="detect_leaks=${leak_detection}:strict_string_checks=1"
 export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
 scripts/ci/test sanitizers
-./build/sanitizers/hz --help >/dev/null
+./build/sanitizers/light --help >/dev/null

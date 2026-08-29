@@ -27,8 +27,6 @@ jobs:
             system: aarch64-linux
           - os: macos-14
             system: aarch64-darwin
-          - os: macos-15-intel
-            system: x86_64-darwin
     env:
       CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
       CCACHE_MAXSIZE: 500M

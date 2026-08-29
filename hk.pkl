@@ -96,7 +96,7 @@ local fast = new Mapping<String, Step | Group> {
 local full = new Mapping<String, Step | Group> {
   ["build-test"] {
     glob = buildImpact
-    check = "scripts/ci/configure debug -DHZ_BUILD_TESTS=ON -DHZ_BUILD_BENCHMARKS=ON && cmake --build --preset debug && scripts/ci/test debug"
+    check = "scripts/ci/configure debug -DLIGHT_BUILD_TESTS=ON -DLIGHT_BUILD_BENCHMARKS=ON && cmake --build --preset debug && scripts/ci/test debug"
     exclusive = true
   }
 

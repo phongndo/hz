@@ -1,7 +1,7 @@
 from conan import ConanFile
 
 
-class HzConan(ConanFile):
+class LightConan(ConanFile):
     package_type = "application"
     settings = "os", "arch", "compiler", "build_type"
 

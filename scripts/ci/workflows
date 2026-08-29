@@ -3,3 +3,4 @@ set -euo pipefail
 
 actionlint -color
 find scripts/ci -type f -print0 | xargs -0 shellcheck
+python3 tools/test_ci_dev_run.py

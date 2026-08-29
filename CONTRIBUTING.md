@@ -1,6 +1,6 @@
 # Contributing
 
-Hz is in an early design and implementation phase. Keep changes focused, include tests for behavior,
+Light is in an early design and implementation phase. Keep changes focused, include tests for behavior,
 and run the relevant repository checks before opening a pull request.
 
 ```sh

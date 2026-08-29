@@ -3,8 +3,8 @@ set -euo pipefail
 
 hk validate
 nix flake check --no-build
-scripts/ci/configure debug -DHZ_BUILD_TESTS=ON -DHZ_BUILD_BENCHMARKS=ON
+scripts/ci/configure debug -DLIGHT_BUILD_TESTS=ON -DLIGHT_BUILD_BENCHMARKS=ON
 cmake --build --preset debug
 scripts/ci/test debug
-./build/debug/hz --help >/dev/null
-./build/debug/hz --version | grep -q '^hz '
+./build/debug/light --help >/dev/null
+./build/debug/light --version | grep -q '^light '

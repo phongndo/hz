@@ -1,4 +1,4 @@
-# Hz
+# Light
 
 Read only the code, tests, and documentation relevant to the change.
 

@@ -12,6 +12,10 @@ CMakeUserPresets.json
 # Local tooling overrides
 hk.local.pkl
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Editors and operating systems
 .DS_Store
 *.swp

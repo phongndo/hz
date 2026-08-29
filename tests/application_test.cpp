@@ -1,6 +1,6 @@
 #include "app/application.hpp"
 
-#include "hz/version.hpp"
+#include "light/version.hpp"
 
 #include <gtest/gtest.h>
 
@@ -9,7 +9,7 @@
 #include <string>
 #include <string_view>
 
-namespace hz::app {
+namespace light::app {
 namespace {
 
 TEST(ApplicationTest, ShowsHelpWithoutArguments) {
@@ -19,7 +19,7 @@ TEST(ApplicationTest, ShowsHelpWithoutArguments) {
   const auto result = run({}, output, error);
 
   EXPECT_EQ(result, 0);
-  EXPECT_NE(output.str().find("Usage: hz"), std::string::npos);
+  EXPECT_NE(output.str().find("Usage: light"), std::string::npos);
   EXPECT_TRUE(error.str().empty());
 }
 
@@ -31,7 +31,7 @@ TEST(ApplicationTest, ShowsVersion) {
   const auto result = run(arguments, output, error);
 
   EXPECT_EQ(result, 0);
-  EXPECT_EQ(output.str(), "hz " + std::string{hz::version} + "\n");
+  EXPECT_EQ(output.str(), "light " + std::string{light::version} + "\n");
   EXPECT_TRUE(error.str().empty());
 }
 
@@ -48,4 +48,4 @@ TEST(ApplicationTest, RejectsUnsupportedArguments) {
 }
 
 } // namespace
-} // namespace hz::app
+} // namespace light::app

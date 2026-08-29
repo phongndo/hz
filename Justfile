@@ -35,13 +35,13 @@ configure: deps
     cmake --preset {{ profile }} \
         -DCMAKE_BUILD_TYPE={{ build_type }} \
         -DCMAKE_TOOLCHAIN_FILE="$PWD/build/{{ profile }}/conan/conan_toolchain.cmake" \
-        -DHZ_BUILD_TESTS=ON -DHZ_BUILD_BENCHMARKS=ON
+        -DLIGHT_BUILD_TESTS=ON -DLIGHT_BUILD_BENCHMARKS=ON
 
 # Build the application, tests, and benchmarks.
 build: configure
     cmake --build --preset {{ profile }}
 
-# Incrementally build and run this checkout's hz binary.
+# Incrementally build and run the isolated current-checkout development application.
 run *args:
     @exec ./scripts/dev-run "$@"
 
@@ -51,9 +51,9 @@ test: build
 
 # Build and run the release benchmarks.
 bench:
-    scripts/ci/configure release -DHZ_BUILD_TESTS=OFF -DHZ_BUILD_BENCHMARKS=ON
-    cmake --build --preset release --target hz_benchmarks
-    ./build/release/hz_benchmarks
+    scripts/ci/configure release -DLIGHT_BUILD_TESTS=OFF -DLIGHT_BUILD_BENCHMARKS=ON
+    cmake --build --preset release --target light_benchmarks
+    ./build/release/light_benchmarks
 
 # Format C++ and Nix files in place.
 fmt:
@@ -116,7 +116,7 @@ ci-check:
 
 # Configure the debug tree and install repository hooks.
 hooks:
-    scripts/ci/configure debug -DHZ_BUILD_TESTS=ON -DHZ_BUILD_BENCHMARKS=ON
+    scripts/ci/configure debug -DLIGHT_BUILD_TESTS=ON -DLIGHT_BUILD_BENCHMARKS=ON
     hk validate
     hk install
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-scripts/ci/configure debug -DHZ_BUILD_TESTS=ON -DHZ_BUILD_BENCHMARKS=OFF
+scripts/ci/configure debug -DLIGHT_BUILD_TESTS=ON -DLIGHT_BUILD_BENCHMARKS=OFF
 cmake --build --preset debug
 scripts/ci/test debug
-./build/debug/hz --version | grep -q '^hz '
+./build/debug/light --version | grep -q '^light '

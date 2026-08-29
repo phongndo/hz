@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-scripts/ci/configure debug -DHZ_BUILD_TESTS=ON -DHZ_BUILD_BENCHMARKS=ON
+scripts/ci/configure debug -DLIGHT_BUILD_TESTS=ON -DLIGHT_BUILD_BENCHMARKS=ON
 
 find apps src tests benchmarks -type f -name '*.cpp' -print0 |
   xargs -0 -n 1 -P "${CLANG_TIDY_JOBS:-4}" \

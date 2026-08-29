@@ -1,6 +1,6 @@
 #include "app/application.hpp"
 
-#include "hz/version.hpp"
+#include "light/version.hpp"
 
 #include <cstddef>
 #include <iostream>
@@ -9,16 +9,16 @@
 #include <string_view>
 #include <vector>
 
-namespace hz::app {
+namespace light::app {
 namespace {
 
-constexpr std::string_view help_text = R"(hz creates fast, independent development workspaces.
+constexpr std::string_view help_text = R"(light creates fast, independent development workspaces.
 
-Usage: hz [OPTIONS]
+Usage: light [OPTIONS]
 
 Options:
   -h, --help       Show this help
-  -V, --version    Show the hz version
+  -V, --version    Show the light version
 )";
 
 constexpr int usage_error = 2;
@@ -34,15 +34,15 @@ auto run(const std::span<const std::string_view> arguments, std::ostream& output
   }
 
   if (arguments.size() == 1U && (arguments.front() == "--version" || arguments.front() == "-V")) {
-    output << "hz " << hz::version << '\n';
+    output << "light " << light::version << '\n';
     return 0;
   }
 
-  error << "hz: unsupported argument:";
+  error << "light: unsupported argument:";
   for (const auto argument : arguments) {
     error << ' ' << argument;
   }
-  error << "\nRun 'hz --help' for usage.\n";
+  error << "\nRun 'light --help' for usage.\n";
   return usage_error;
 }
 
@@ -60,4 +60,4 @@ auto run(const int argument_count, char** arguments) -> int {
   return run(argument_views, std::cout, std::cerr);
 }
 
-} // namespace hz::app
+} // namespace light::app

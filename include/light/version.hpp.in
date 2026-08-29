@@ -1,0 +1,12 @@
+#ifndef LIGHT_VERSION_HPP
+#define LIGHT_VERSION_HPP
+
+#include <string_view>
+
+namespace light {
+
+inline constexpr std::string_view version{"@PROJECT_VERSION@"};
+
+} // namespace light
+
+#endif // LIGHT_VERSION_HPP

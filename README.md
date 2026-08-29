@@ -1,6 +1,6 @@
-# hz
+# light
 
-`hz` will create fast, independent development workspaces through a portable
+`light` will create fast, independent development workspaces through a portable
 copy-on-write filesystem.
 
 The project is being rebuilt in C++ and is not ready for use.

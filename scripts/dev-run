@@ -1,12 +1,169 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Build and execute the current checkout's isolated development Light."""
 
-readonly root="$(git rev-parse --show-toplevel)"
-cd "${root}"
+from __future__ import annotations
 
-if [[ ! -f build/dev/build.ninja ]]; then
-  scripts/ci/configure dev -DHZ_BUILD_TESTS=OFF -DHZ_BUILD_BENCHMARKS=OFF
-fi
+import fcntl
+import hashlib
+import os
+import stat
+import subprocess
+import sys
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 
-cmake --build --preset dev --target hz >&2
-exec ./build/dev/hz "$@"
+ROOT = Path(__file__).resolve().parents[1]
+PROFILE = "dev"
+CONFIGURE_CONTRACT = "light-dev-configure-v1"
+CONFIGURE_INPUTS = (
+    "CMakeLists.txt",
+    "CMakePresets.json",
+    "conan.lock",
+    "conanfile.py",
+    "conan/profiles/llvm",
+    "flake.lock",
+    "scripts/ci/configure",
+)
+CONFIGURE_ENVIRONMENT = (
+    "CC",
+    "CMAKE_GENERATOR",
+    "CONAN_HOME",
+    "CXX",
+)
+
+
+def worktree_id(root: Path) -> str:
+    canonical = os.fsencode(str(root.resolve()))
+    return hashlib.sha256(canonical).hexdigest()[:16]
+
+
+def runtime_directory(root: Path, user_id: int | None = None) -> Path:
+    uid = os.getuid() if user_id is None else user_id
+    return Path("/tmp") / f"light-dev-{uid}-{worktree_id(root)}"
+
+
+def ensure_private_directory(path: Path) -> None:
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    details = path.lstat()
+    if not stat.S_ISDIR(details.st_mode) or stat.S_ISLNK(details.st_mode):
+        raise RuntimeError(f"development runtime path is not a directory: {path}")
+    if details.st_uid != os.getuid():
+        raise RuntimeError(f"development runtime path is owned by another user: {path}")
+    if stat.S_IMODE(details.st_mode) != 0o700:
+        path.chmod(0o700)
+
+
+def configuration_fingerprint(root: Path, environment: Mapping[str, str]) -> str:
+    digest = hashlib.sha256()
+    digest.update(CONFIGURE_CONTRACT.encode())
+    for relative in CONFIGURE_INPUTS:
+        path = root / relative
+        digest.update(relative.encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    for name in CONFIGURE_ENVIRONMENT:
+        digest.update(name.encode())
+        digest.update(b"=")
+        digest.update(environment.get(name, "").encode())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def cache_is_development(cache: Path, root: Path) -> bool:
+    try:
+        configured = cache.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    required = (
+        "CMAKE_BUILD_TYPE:STRING=Dev",
+        "LIGHT_BUILD_TESTS:BOOL=OFF",
+        "LIGHT_BUILD_BENCHMARKS:BOOL=OFF",
+        f"CMAKE_HOME_DIRECTORY:INTERNAL={root.resolve()}",
+    )
+    return all(value in configured for value in required)
+
+
+def configuration_is_current(build: Path, root: Path, fingerprint: str) -> bool:
+    try:
+        recorded = (build / ".light-configure-signature").read_text(encoding="ascii")
+    except OSError:
+        return False
+    return (
+        (build / "build.ninja").is_file()
+        and (build / "conan" / "conan_toolchain.cmake").is_file()
+        and cache_is_development(build / "CMakeCache.txt", root)
+        and recorded.strip() == fingerprint
+    )
+
+
+def write_signature(build: Path, fingerprint: str) -> None:
+    temporary = build / f".light-configure-signature.{os.getpid()}"
+    temporary.write_text(f"{fingerprint}\n", encoding="ascii")
+    temporary.replace(build / ".light-configure-signature")
+
+
+def run_checked(
+    arguments: Sequence[str], root: Path, environment: Mapping[str, str]
+) -> None:
+    subprocess.run(arguments, cwd=root, env=environment, check=True)
+
+
+def prepare(
+    root: Path, arguments: Sequence[str], environment: Mapping[str, str]
+) -> tuple[Path, list[str], dict[str, str]]:
+    build = root / "build" / PROFILE
+    runtime = runtime_directory(root)
+    ensure_private_directory(runtime)
+
+    lock_flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        lock_flags |= os.O_NOFOLLOW
+    lock_descriptor = os.open(runtime / "runner.lock", lock_flags, 0o600)
+    try:
+        fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+        fingerprint = configuration_fingerprint(root, environment)
+        if not configuration_is_current(build, root, fingerprint):
+            run_checked(
+                [
+                    str(root / "scripts" / "ci" / "configure"),
+                    PROFILE,
+                    "-DLIGHT_BUILD_TESTS=OFF",
+                    "-DLIGHT_BUILD_BENCHMARKS=OFF",
+                ],
+                root,
+                environment,
+            )
+            write_signature(build, fingerprint)
+
+        run_checked(
+            ["cmake", "--build", str(build), "--target", "light"],
+            root,
+            environment,
+        )
+        binary = build / "light"
+        if not binary.is_file():
+            raise RuntimeError(f"development build did not produce {binary}")
+    finally:
+        os.close(lock_descriptor)
+
+    execution_arguments = [str(binary), *arguments]
+    return binary, execution_arguments, dict(environment)
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    forwarded = list(sys.argv[1:] if arguments is None else arguments)
+    try:
+        binary, execution_arguments, environment = prepare(ROOT, forwarded, os.environ)
+        os.execve(binary, execution_arguments, environment)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(f"light development runner: {error}", file=sys.stderr)
+        return 1
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

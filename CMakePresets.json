@@ -63,7 +63,7 @@
       "name": "dev",
       "configurePreset": "dev",
       "targets": [
-        "hz"
+        "light"
       ]
     },
     {

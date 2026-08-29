@@ -22,7 +22,7 @@ void cli_version(benchmark::State& state) {
   std::ostream stream{&buffer};
 
   for ([[maybe_unused]] const auto iteration : state) {
-    auto result = hz::app::run(arguments, stream, stream);
+    auto result = light::app::run(arguments, stream, stream);
     benchmark::DoNotOptimize(result);
   }
 }

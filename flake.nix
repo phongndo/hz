@@ -1,5 +1,5 @@
 {
-  description = "hz C++23 development environment";
+  description = "light C++23 development environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -12,7 +12,6 @@
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
-        "x86_64-darwin"
         "x86_64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -23,9 +22,9 @@
         let
           pkgs = import nixpkgs { inherit system; };
           llvm = pkgs.llvmPackages_22;
-          mkHz = buildType:
+          mkLight = buildType:
             llvm.stdenv.mkDerivation {
-              pname = "hz";
+              pname = "light";
               version = "0.1.0";
               src = self;
 
@@ -37,38 +36,38 @@
               cmakeFlags = [
                 "-DCMAKE_BUILD_TYPE=${buildType}"
                 "-DCMAKE_CXX_SCAN_FOR_MODULES=OFF"
-                "-DHZ_BUILD_TESTS=OFF"
-                "-DHZ_BUILD_BENCHMARKS=OFF"
+                "-DLIGHT_BUILD_TESTS=OFF"
+                "-DLIGHT_BUILD_BENCHMARKS=OFF"
               ];
 
               doInstallCheck = true;
               installCheckPhase = ''
-                "$out/bin/hz" --version | grep -q '^hz '
+                "$out/bin/light" --version | grep -q '^light '
               '';
 
               meta = {
                 description = "Fast, independent development workspaces";
-                homepage = "https://github.com/phongndo/hz";
+                homepage = "https://github.com/phongndo/light";
                 license = pkgs.lib.licenses.mit;
-                mainProgram = "hz";
+                mainProgram = "light";
                 platforms = systems;
               };
             };
         in
         rec {
-          hz = mkHz "Release";
-          default = hz;
+          light = mkLight "Release";
+          default = light;
         }
       );
 
       apps = forAllSystems (
         system:
         rec {
-          hz = {
+          light = {
             type = "app";
-            program = "${self.packages.${system}.hz}/bin/hz";
+            program = "${self.packages.${system}.light}/bin/light";
           };
-          default = hz;
+          default = light;
         }
       );
 
@@ -79,13 +78,49 @@
           llvm = pkgs.llvmPackages_22;
           isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
           darwinTools = llvm.clang-tools;
-          devHz = pkgs.writeShellScriptBin "hz" ''
+          devLight = pkgs.writeShellScriptBin "light" ''
             root="$(${pkgs.git}/bin/git rev-parse --show-toplevel)" || {
-              echo "hz: not inside an hz checkout" >&2
+              echo "light: not inside a Light checkout" >&2
               exit 1
             }
-            exec "$root/scripts/dev-run" "$@"
+            runner="$root/scripts/dev-run"
+            if [[ ! -x "$runner" ]]; then
+              echo "light: $root does not contain scripts/dev-run" >&2
+              exit 1
+            fi
+            exec "$runner" "$@"
           '';
+          ciHk =
+            if isDarwin then
+              hk.packages.${system}.default
+            else
+              let
+                release =
+                  if pkgs.stdenv.hostPlatform.isAarch64 then
+                    {
+                      target = "aarch64-unknown-linux-gnu";
+                      hash = "sha256-dZ94LCTbIJVLRx3mSwqvGxAVftCqG2Tsqbj23E98/As=";
+                    }
+                  else
+                    {
+                      target = "x86_64-unknown-linux-gnu";
+                      hash = "sha256-qGoZtRJ3QBQQ/PrXb2ULUXKILZGm5iSmO54g+Bpkdrw=";
+                    };
+              in
+              pkgs.stdenvNoCC.mkDerivation {
+                pname = "hk";
+                version = "1.50.0-bin";
+                src = pkgs.fetchurl {
+                  url = "https://github.com/jdx/hk/releases/download/v1.50.0/hk-${release.target}.tar.gz";
+                  inherit (release) hash;
+                };
+                dontUnpack = true;
+                installPhase = ''
+                  mkdir -p "$out/bin"
+                  tar -xzf "$src" -C "$out/bin"
+                  chmod +x "$out/bin/hk"
+                '';
+              };
           linuxClangd = pkgs.writeShellScriptBin "clangd" ''
             exec "${llvm.clang-tools}/bin/clangd" \
               --query-driver="${llvm.clang}/bin/clang++,${llvm.clang}/bin/clang" \
@@ -141,7 +176,7 @@
             linuxClangTidy
           ];
           projectPackages = compilerPackages ++ [
-            devHz
+            devLight
             pkgs.ccache
             pkgs.cmake
             pkgs.conan
@@ -151,6 +186,7 @@
             pkgs.nixd
             pkgs.nixpkgs-fmt
             pkgs.pkg-config
+            pkgs.python3
           ];
           qualityPackages = [
             pkgs.actionlint
@@ -188,10 +224,16 @@
             }
           );
 
+          # CI uses hk's hash-pinned release binary instead of rebuilding its Rust dependency
+          # graph on every ephemeral Linux runner.
           ci = pkgs.mkShell (
             shellEnvironment
             // {
-              packages = projectPackages ++ qualityPackages;
+              packages = projectPackages ++ [
+                pkgs.actionlint
+                pkgs.shellcheck
+                ciHk
+              ];
             }
           );
         }
