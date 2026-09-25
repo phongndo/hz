@@ -1,8 +1,4 @@
-/target/
-/dist/
-/homebrew-tap/
+/build/
 /result
 /result-*
-*.profraw
-__pycache__/
-*.pyc
+/.cache/

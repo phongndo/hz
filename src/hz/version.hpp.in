@@ -1,0 +1,7 @@
+#pragma once
+
+namespace hz {
+
+inline constexpr const char* version = "@PROJECT_VERSION@";
+
+} // namespace hz

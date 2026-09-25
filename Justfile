@@ -1,69 +1,40 @@
+sources := `git ls-files '*.cpp' '*.hpp' | tr '\n' ' '`
+
+# Configure the debug build (run once, or after editing CMake files)
 setup:
-    cargo fetch --locked
-    cargo build -p hz-cli --locked
+    cmake --preset debug
 
-check:
-    rust-analyzer diagnostics .
-    cargo fmt --all --check
-    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+build:
+    cmake --build --preset debug
 
-ci-check: ci-rust ci-integration ci-performance ci-workflows
+test: build
+    ctest --preset debug
 
-ci-rust:
-    scripts/ci/rust
+release:
+    cmake --preset release
+    cmake --build --preset release
 
-ci-integration:
-    scripts/ci/integration
+check: fmt-check tidy
 
-ci-performance:
-    scripts/ci/performance smoke
+fmt:
+    clang-format -i {{sources}}
 
-ci-workflows:
-    actionlint -color
+fmt-check:
+    clang-format --dry-run --Werror {{sources}}
+
+tidy:
+    clang-tidy -p build/debug {{sources}}
+
+# Build and run the debug binary
+hz *args: build
+    ./build/debug/hz {{args}}
+
+clean:
+    rm -rf build
 
 # Run hk checks (equivalent to pre-commit hook steps)
 hk-check:
     mise x hk -- hk check
 
-# Run full hk checks including slow steps (requires --profile slow or --profile ci)
-hk-check-full:
-    mise x hk -- hk check --profile slow
-
-test:
-    cargo test --workspace --all-targets --all-features --locked
-
-build:
-    cargo build -p hz-cli --locked
-
 hooks:
     mise x hk -- hk validate
-    @echo 'Global hk hooks are active (hk-pre-commit, hk-pre-push)'
-
-hz *args:
-    cargo build -p hz-cli --locked
-    ./target/debug/hz {{args}}
-
-smoke: smoke-cli smoke-zsh smoke-bench smoke-installer-update
-
-smoke-cli:
-    cargo build -p hz-cli --locked
-    ./target/debug/hz --help >/dev/null
-    ./target/debug/hz shell zsh >/dev/null
-    ./target/debug/hz shell bash >/dev/null
-    ./target/debug/hz shell fish >/dev/null
-
-smoke-zsh:
-    zsh scripts/smoke-zsh
-
-smoke-bench:
-    cargo build -p hz-cli --locked
-    cargo run -p hz-bench --locked -- cmd --hz target/debug/hz --workspaces 2 --warmup 0 --iterations 1 --mutating --portable --json >/dev/null
-
-smoke-installer-update version="latest":
-    scripts/smoke-installer-update {{version}}
-
-smoke-curl-install version="latest":
-    scripts/smoke-curl-install {{version}}
-
-smoke-update version="latest":
-    scripts/smoke-update {{version}}

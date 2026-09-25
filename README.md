@@ -90,16 +90,15 @@ the root family's storage.
 
 ### Copy modes
 
-Creation uses native copy-on-write by default. APFS clones and btrfs subvolume
-snapshots take the fastest whole-tree path; an ordinary btrfs root is instead
-reflink-imported into its first child. These paths share existing data blocks,
-so only blocks changed afterward require additional storage.
+Creation walks the source tree and clones every file with the platform's
+copy-on-write primitive (`FICLONE`, `clonefile`, or ReFS block cloning), so a
+new workspace shares all existing data blocks and only blocks changed
+afterward take additional storage. The behaviour is the same on every
+filesystem; only the speed differs. See [docs/design.md](docs/design.md).
 
 Use `--filtered` to omit heavyweight regenerable artifacts such as
 `node_modules`, `target`, virtual environments, framework caches, `dist`,
-`build`, and `coverage`, along with ephemeral Git fsmonitor sockets. Filtering
-requires walking the included tree and can be slower than a native
-whole-directory snapshot when few artifacts are excluded.
+`build`, and `coverage`, along with ephemeral Git fsmonitor sockets.
 
 ### Removal and recovery
 
@@ -142,20 +141,16 @@ workspace identity or storage.
 
 ## Filesystem support
 
-| Platform | Strategy |
-| --- | --- |
-| macOS/APFS | `clonefile`, with per-entry cloning for filtered copies |
-| Linux/btrfs | writable snapshots or filtered reflink imports |
-| Linux/XFS and compatible filesystems | per-file `FICLONE` reflinks |
-| Windows | explicit portable copying with `hz init --copy` |
+| Platform | Clone primitive | Filesystems |
+| --- | --- | --- |
+| Linux | `FICLONE` | btrfs, XFS, OpenZFS 2.3+, bcachefs |
+| macOS | `clonefile` | APFS |
+| Windows | `FSCTL_DUPLICATE_EXTENTS_TO_FILE` | ReFS, Dev Drive |
 
-`hz init` verifies that the selected root can support native copy-on-write. On
-btrfs, an ordinary live root remains in place because it cannot be snapshotted
-atomically without risking concurrent writes; child workspaces are
-reflink-imported into subvolumes. Roots that are already subvolumes use writable
-snapshots for unfiltered children. There is no silent byte-copy fallback;
-`hz init --copy` explicitly opts a workspace family into portable byte copying
-when COW is not available.
+`hz init` verifies that cloning works in the selected root before registering
+it. There is no silent byte-copy fallback; `hz init --copy` explicitly opts a
+workspace family into portable byte copying on filesystems without
+copy-on-write, such as ext4, tmpfs, NFS, or NTFS.
 
 ## Lifecycle configuration
 
@@ -207,23 +202,19 @@ hz --machine git status parser-fix
 
 ## Development
 
+hz is C++23, built with CMake and Ninja inside the Nix development shell:
+
 ```sh
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo fmt --all -- --check
-./scripts/smoke-zsh
+nix develop
+just setup      # configure build/debug
+just test       # build and run unit and CLI tests
+just check      # clang-format and clang-tidy
+just hz --help  # run the debug binary
 ```
 
-The primary implementation boundaries are:
-
-```text
-crates/hz-workspace  workspace identity, ancestry, SQLite, COW lifecycle
-crates/hz-scm        explicit source-control status boundary and shared types
-crates/hz-git        explicit Git status and handoff operations
-crates/hz-hg         explicit Mercurial status operations
-crates/hz-command    configuration, hooks, and command orchestration
-crates/hz-cli        CLI, output, completion, and shell navigation
-```
+`nix build` produces the release binary and runs the tests; `nix flake check`
+is what CI runs. See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout and
+[docs/design.md](docs/design.md) for the workspace model.
 
 ## License
 

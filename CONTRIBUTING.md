@@ -1,137 +1,79 @@
 # Contributing to hz
 
-Thanks for helping make `hz` a production-grade terminal workflow for parallel
-AI agents. Keep changes small, explicit, and grounded in the current crate
-boundaries.
+Keep changes small, explicit, and consistent with [docs/design.md](docs/design.md),
+which is the specification for the workspace model.
 
 ## Principles
 
 - Headless first: every workflow should be scriptable before it needs an
   interactive UI.
 - Workspace first: identity, ancestry, storage, and lifecycle must not depend on
-  a particular source control.
+  a particular source control or filesystem.
 - Safe by default: destructive operations move complete logical subtrees to
   recoverable trash before garbage collection.
-- Source-control agnostic: Git, Mercurial, Jujutsu, and future integrations must
-  sit behind capabilities rather than leak into core workspace behavior.
 - Boring code wins: prefer explicit state transitions, repairable metadata, and
   stable machine output.
 
 ## Setup
 
-Install the repo Rust toolchain:
-
-```sh
-rustup show
-```
-
-Or enter the Nix development shell:
+Everything runs inside the Nix development shell, which provides the compiler,
+CMake, Ninja, the libraries, and clang tooling:
 
 ```sh
 nix develop
+just setup
 ```
 
-Inside interactive `nix develop`, the shell enters zsh with a repo-local
-`ZDOTDIR` under `target/dev-zdotdir`, so user shell aliases, functions, and PATH
-rewrites do not override the dev environment. `hz` resolves through the
-repo-local `target/dev-bin/hz` shim before any user-installed binary on `PATH`.
-The shim builds `hz-cli` only when `target/debug/hz` is missing, then runs the
-local development binary. It does not fall back to `~/.local/bin/hz` or another
-installed `hz`, and it does not rebuild on every completion or command. After
-editing Rust code, run `cargo build -p hz-cli --locked` when you want the shim to
-pick up changes. Set `HZ_DEV_AUTO_BUILD=1` only if you explicitly want the shim
-to rebuild when source files are newer than its dev stamp.
+`just setup` configures `build/debug` with a compile database that `.clangd`
+points at. The shell puts `build/debug` first on `PATH`, so `hz` inside the
+shell is the development binary.
 
-The dev zsh rc file also loads `hz shell zsh`, so auto-cd and completion
-behavior use the local binary by default.
+## Layout
 
-Verify the active binary:
-
-```sh
-type -a hz
-whence -p hz
-hz --version
+```text
+CMakeLists.txt        version number, targets, dependencies
+CMakePresets.json     debug and release presets under build/<preset>
+flake.nix             package, checks, and development shell
+src/hz/               hz_core: workspace model, registry, materialization
+src/cli/              the hz executable: argument parsing and output
+shell/                zsh, bash, and fish integration scripts
+tests/unit/           Catch2 unit tests for hz_core
+tests/CMakeLists.txt  unit test registration and black-box CLI tests
+docs/                 design, CLI, and configuration references
 ```
+
+Dependencies come from nixpkgs and are found with CMake config packages:
+CLI11, toml++, nlohmann_json, SQLite, and Catch2. Add a dependency in both
+`flake.nix` and `CMakeLists.txt`.
 
 ## Local checks
 
-Use the cheapest useful check first while developing:
-
 ```sh
-just setup
-just hooks
-just check
-just hk-check
-just ci-check
-just ci-rust
-just ci-integration
-just ci-performance
-just ci-workflows
-just test
-just build
-just smoke
-just hz --help
-hz --help
+just build       # compile
+just test        # build, then ctest
+just fmt         # clang-format in place
+just check       # clang-format --dry-run and clang-tidy
+just release     # optimized build under build/release
+nix flake check  # what CI runs: release build plus tests
 ```
 
-`just hooks` validates the hk config. Git hooks are managed globally by
-[hk](https://hk.jdx.dev) (`hk-pre-commit` runs `cargo fmt --check` and
-`cargo clippy` before each commit). The repo's hook steps are defined in
-[hk.pkl](./hk.pkl).
+Git hooks are managed by [hk](https://hk.jdx.dev); the steps are in
+[hk.pkl](./hk.pkl) and run clang-format before each commit. `just hooks`
+validates the configuration.
 
-The full local quality gate is:
+## Conventions
 
-```sh
-rust-analyzer diagnostics .
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-targets --all-features --locked
-cargo build --workspace --all-targets --all-features --locked
-cargo run -p hz-bench --locked -- cmd --hz target/debug/hz --workspaces 2 --warmup 0 --iterations 1
-```
-
-The same checks are available through Nix:
-
-```sh
-nix develop -c rust-analyzer diagnostics .
-nix develop -c cargo fmt --all --check
-nix develop -c cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-nix develop -c cargo test --workspace --all-targets --all-features --locked
-nix develop -c cargo build --workspace --all-targets --all-features --locked
-```
-
-`just hz ...` is useful for commands that print output, but it cannot change the
-current shell directory. Use plain `hz new` or `hz cd` inside interactive
-`nix develop` to exercise auto-cd behavior from the development binary without
-editing your shell rc file.
-
-Use `hz install zsh` only when you want to update your real shell rc file for an
-installed `hz` binary. `just smoke-zsh` verifies the zsh integration in an
-isolated shell, including handles containing shell glob characters. `just smoke`
-also runs the installer/update smoke
-against a temporary local release fixture. `just smoke-curl-install` exercises
-the published curl install path when you want live release coverage.
-
-Bash cannot run unquoted handles containing parentheses because it parses `(`
-as syntax before `hz` can receive the argument. Quote those handles in Bash or
-use the Zsh integration.
+- C++23, no compiler extensions. Warnings are enabled through the
+  `hz_warnings` target and should stay clean.
+- Errors that end a command are exceptions caught once in `main`; library code
+  does not print.
+- Platform-specific code is limited to the per-file clone primitive and the
+  metadata replay; everything above it is shared.
+- Behaviour changes update `docs/design.md` in the same change.
 
 ## Pull requests
 
-- Fill out the PR template, including motivation, risk, and verification.
-- Keep each PR focused on one behavior, command path, or documentation goal.
-- Update README/docs when changing user-facing commands, config, install flows,
-  or shell behavior.
-- Add or update focused tests for command parsing, shell integration, Git
-  safety checks, and lifecycle behavior when those paths change.
-
-`.github/workflows/pr-template.yml` requires pull requests to keep the template
-sections and mark at least one verification command.
-
-## CI
-
-[docs/ci.md](docs/ci.md) documents the required lanes, scheduled platform
-coverage, and release qualification model. Pull requests and pushes to `main`
-run change-aware correctness, MSRV, integration, performance, and workflow-lint
-lanes. The stable `CI gate` job is the branch-protection check; it fails if any
-selected lane fails or is cancelled.
+- Keep each pull request focused on one behaviour change.
+- Include tests for new behaviour: unit tests for `hz_core`, black-box CLI
+  tests for command output and filesystem effects.
+- CI runs `nix flake check` on Linux and macOS.
