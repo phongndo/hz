@@ -116,7 +116,10 @@ void replay_metadata(const std::filesystem::path& from, const std::filesystem::p
         throw errno_error("set permissions", to);
     }
     copy_xattrs(from, to);
-    if (kind != EntryKind::symlink && ::chmod(to.c_str(), info.st_mode & permission_bits) != 0) {
+    // Writable entries already have their final mode. Only read-only entries
+    // need the temporary owner-write bit removed after replaying attributes.
+    if (kind != EntryKind::symlink && (info.st_mode & S_IWUSR) == 0 &&
+        ::chmod(to.c_str(), info.st_mode & permission_bits) != 0) {
         throw errno_error("set permissions", to);
     }
 

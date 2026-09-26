@@ -61,6 +61,10 @@ Git hooks are managed by [hk](https://hk.jdx.dev); the steps are in
 [hk.pkl](./hk.pkl) and run clang-format before each commit. `just hooks`
 validates the configuration.
 
+For repeatable CLI performance comparisons against Rift, see
+[the benchmark runner](benchmarks/README.md). Build optimized binaries and run
+measurements separately from builds and test suites.
+
 ## Conventions
 
 - C++23, no compiler extensions. Warnings are enabled through the
