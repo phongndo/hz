@@ -44,6 +44,13 @@
           ];
           buildInputs = dependencies pkgs;
 
+          # The test suite drives real git repositories.
+          nativeCheckInputs = [
+            pkgs.git
+            pkgs.bash
+            pkgs.zsh
+            pkgs.fish
+          ];
           cmakeFlags = [ "-DHZ_BUILD_TESTS=ON" ];
           doCheck = true;
           checkPhase = ''
@@ -69,6 +76,7 @@
           inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ];
           packages = [
             pkgs.clang-tools # clangd, clang-format, clang-tidy
+            pkgs.python3 # run-clang-tidy
             pkgs.git
             pkgs.just
             pkgs.nixd

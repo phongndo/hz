@@ -20,6 +20,42 @@ struct InitResult {
     bool created = false; // false when the directory was already a root
 };
 
+struct CreateOptions {
+    std::string source;                        // target to copy; empty for current
+    std::optional<std::string> handle;         // generated when empty
+    std::optional<std::filesystem::path> into; // storage directory override
+    std::optional<bool> filtered;              // default: the source's [create] filtered
+    bool hooks = true;                         // run postcreate hooks
+};
+
+struct RemoveOptions {
+    std::string target;         // empty for current
+    bool children_only = false; // keep the target, trash its descendants
+    bool force = false;         // required to unregister a root
+    bool hooks = true;          // run preremove hooks
+};
+
+struct RemoveResult {
+    std::vector<Workspace> trashed;        // as they are now, in trash
+    std::optional<Workspace> unregistered; // the root, if one was unregistered
+    // Where a shell whose working directory was inside a removed workspace
+    // should go: the nearest surviving ancestor.
+    std::optional<std::filesystem::path> navigate_to;
+};
+
+struct GcResult {
+    std::vector<Workspace> deleted;
+};
+
+// One problem found by `doctor`, and whether --fix repaired it.
+struct Finding {
+    std::string kind;
+    std::string message;
+    std::optional<std::string> workspace_id;
+    std::optional<std::filesystem::path> path;
+    bool fixed = false;
+};
+
 struct ListOptions {
     bool all_families = false; // otherwise the current family, or all outside one
     bool include_trashed = false;
@@ -48,12 +84,37 @@ class Workspaces {
     Workspace resolve(std::string_view target);
 
     std::vector<Workspace> list(const ListOptions& options);
+
+    // Copies a workspace into a new child and registers it.
+    Workspace create(const CreateOptions& options);
+
+    // Moves a workspace and its descendants into trash, or unregisters a root.
+    RemoveResult remove(const RemoveOptions& options);
+
+    // Moves a trashed workspace, and everything removed with it, back.
+    std::vector<Workspace> restore(std::string_view target);
+
+    // Physically deletes everything in trash.
+    GcResult gc();
+
+    Workspace set_pinned(std::string_view target, bool pinned);
+
+    // Records that a workspace directory was moved to `directory`.
+    Workspace adopt(const std::filesystem::path& directory);
+
+    // Checks the registry against the filesystem; repairs what is provable.
+    std::vector<Finding> doctor(bool fix);
+
+    // The directory new children of `root` are stored in.
+    static std::filesystem::path storage_directory(const Workspace& root);
     // From the root down to `workspace`'s parent.
     std::vector<Workspace> ancestors(const Workspace& workspace);
 
   private:
     Workspace workspace_at(const std::filesystem::path& directory);
     Workspace require_registered(const std::string& id);
+    Workspace resolve_trashed(std::string_view target);
+    void trash(std::vector<Workspace>& batch);
 
     Registry registry_;
     std::filesystem::path context_;

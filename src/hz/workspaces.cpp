@@ -1,6 +1,8 @@
 #include "hz/workspaces.hpp"
 
 #include "hz/error.hpp"
+#include "hz/fsutil.hpp"
+#include "hz/git.hpp"
 #include "hz/handle.hpp"
 #include "hz/marker.hpp"
 #include "hz/ulid.hpp"
@@ -22,16 +24,6 @@ fs::path home_directory() {
         return home;
     }
     throw Error(ErrorKind::invalid_path, "HOME is not set; set HZ_DATA_DIR");
-}
-
-void make_private_directories(const fs::path& directory) {
-    std::error_code error;
-    fs::create_directories(directory, error);
-    if (error) {
-        throw Error(ErrorKind::io,
-                    std::format("create {}: {}", directory.string(), error.message()), error);
-    }
-    ::chmod(directory.c_str(), 0700);
 }
 
 bool looks_like_path(std::string_view target) {
@@ -103,6 +95,7 @@ InitResult Workspaces::init(const fs::path& directory, CopyMode mode) {
     if (existing_id) {
         if (auto existing = registry_.find(*existing_id)) {
             if (existing->path == path && existing->state == State::active) {
+                git::prepare_root(path);
                 return {.workspace = *existing, .created = false};
             }
             throw Error(ErrorKind::inconsistent,
@@ -149,6 +142,7 @@ InitResult Workspaces::init(const fs::path& directory, CopyMode mode) {
     registry_.transaction([&] { registry_.insert(root); });
     try {
         write_marker(path, root.id);
+        git::prepare_root(path);
     } catch (...) {
         registry_.transaction([&] { registry_.erase(root.id); });
         throw;

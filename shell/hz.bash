@@ -34,8 +34,8 @@ hz() {
       if [[ "$inserted" -eq 0 ]]; then hz_args+=(--path-only); fi
       path="$(command hz "${hz_args[@]}")" || return
     fi
-    [[ -n "$path" ]] && builtin cd -- "$path"
-    return
+    if [[ -n "$path" ]]; then builtin cd -- "$path"; return; fi
+    return 0
   fi
   command hz "$@"
 }
@@ -72,7 +72,7 @@ _hz_target_completions() {
 
 _hz_complete() {
   local current="${COMP_WORDS[COMP_CWORD]}"
-  local top="init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell update"
+  local top="init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell"
   local command="" subcommand="" command_index=0 index word
   COMPREPLY=()
 

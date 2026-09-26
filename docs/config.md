@@ -1,61 +1,56 @@
 # hz configuration
 
-Workspace-local configuration lives at `.hz/hz.toml` and is copied into child
-workspaces. `hz init` creates it while registering a root; `hz config init`
-creates only the configuration files.
+Workspace-local configuration lives at `.hz/hz.toml` and is copied into children.
+`hz init` only registers the root. Run `hz config init [TARGET]` explicitly to
+create a commented configuration in a registered workspace. Existing files are
+left intact; hook scripts are supplied by the project.
 
-```text
-.hz/
-  hz.toml
-  environment/
-    postcreate
-    preremove
+## Copy filtering
+
+```toml
+[create]
+filtered = true
 ```
+
+Copies are full by default. `filtered = true` changes the default for children
+created from this workspace; `hz new --full` and `hz new --filtered` override it.
+The exact filter and filesystem guarantees live in [design.md](design.md).
 
 ## Lifecycle
 
 ```toml
 [lifecycle]
-postcreate = [".hz/environment/postcreate"]
-preremove = [".hz/environment/preremove"]
+postcreate = [["./scripts/setup"], ["npm", "install", "--prefer-offline"]]
+preremove = [["./scripts/teardown"]]
 ```
 
-The generated entries are commented out so the default create/remove path does
-not spawn hook processes. Uncomment only the hooks the project needs. Commands
-are argv arrays, not shell strings; relative executable paths are resolved from
-the workspace in which the hook runs.
+Each entry is an argv array, executed without a shell. A string entry is also
+accepted as one executable with no arguments, not as a shell command. Relative
+executable paths containing `/` resolve from the workspace where the hook runs;
+plain executable names use `PATH`.
 
-`postcreate` runs after filesystem cloning, marker creation, and registry
-activation. Failure leaves the new workspace active so it can be
-inspected or removed normally.
+The generated entries are commented out. With no configured hooks, creation
+and removal spawn no processes. `--no-hooks` skips configured hooks.
 
-`preremove` runs before a selected workspace subtree moves into trash. Either
-hook can be skipped with the command's `--no-hooks` flag.
+`postcreate` runs in the new workspace after it is active. Failure reports the
+workspace path and leaves it available for inspection or removal.
 
-Lifecycle processes receive:
+`preremove` runs in each selected descendant, deepest first, before any workspace
+moves into trash. A failure cancels removal, though side effects of hooks that
+already ran remain. Unregistering a root leaves its directory in place and does
+not run a removal hook in the root itself.
+
+Hook output goes to stderr, preserving JSON and path-only output on stdout.
+Hooks receive EOF on stdin and these environment variables:
 
 ```text
 HZ_ROOT          root workspace path
-HZ_SOURCE        immediate source path
-HZ_WORKSPACE     selected or created workspace path
+HZ_SOURCE        immediate source/parent path
+HZ_WORKSPACE     workspace where the hook runs
 HZ_WORKSPACE_ID  stable workspace ULID
 HZ_PARENT_ID     immediate parent ID, or empty for a root
+HZ_HANDLE        workspace handle
 HZ_LIFECYCLE     postcreate or preremove
-HZ_REPO          compatibility alias for HZ_ROOT
-HZ_WORKTREE      compatibility alias for HZ_WORKSPACE
-HZ_TARGET        compatibility alias for the workspace handle
 ```
 
-Legacy `setup` and `cleanup` entries are ignored when reading pre-0.8
-configuration because those hooks were opt-in. Rename only the entries that
-should run by default to `postcreate` and `preremove`.
-
-## Copy filtering
-
-The default mode takes a complete COW snapshot. `hz new --filtered` omits
-built-in regenerable artifacts such as `node_modules`, `target`, virtual
-environments, framework caches, `dist`, `build`, and `coverage`.
-
-Source-control metadata is copied as ordinary filesystem state. Workspace
-creation does not invoke source-control subprocesses; it only ensures local Git
-or Mercurial ignore rules protect the `.hz-workspace` identity marker.
+Legacy registry and configuration migration is not provided by the C++ rewrite.

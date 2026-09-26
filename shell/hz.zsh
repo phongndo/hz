@@ -36,8 +36,8 @@ _hz() {
       if [[ "$inserted" -eq 0 ]]; then hz_args+=(--path-only); fi
       hz_target_path="$(command hz "${hz_args[@]}")" || return
     fi
-    [[ -n "$hz_target_path" ]] && builtin cd -- "$hz_target_path"
-    return
+    if [[ -n "$hz_target_path" ]]; then builtin cd -- "$hz_target_path"; return; fi
+    return 0
   fi
   command hz "$@"
 }
@@ -85,7 +85,7 @@ _hz_complete() {
   local state command="" subcommand="" index
   _arguments -C \
     '--machine[emit stable machine-readable output]' \
-    '1:command:(init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell update)' \
+    '1:command:(init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell)' \
     '*::arg:->args'
 
   # Global options may precede the command, so positional word indexes are not

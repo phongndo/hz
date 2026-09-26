@@ -52,7 +52,7 @@ CLI11, toml++, nlohmann_json, SQLite, and Catch2. Add a dependency in both
 just build       # compile
 just test        # build, then ctest
 just fmt         # clang-format in place
-just check       # clang-format --dry-run and clang-tidy
+just check       # clang-format --dry-run and clang-tidy (warnings fail)
 just release     # optimized build under build/release
 nix flake check  # what CI runs: release build plus tests
 ```
@@ -65,10 +65,10 @@ validates the configuration.
 
 - C++23, no compiler extensions. Warnings are enabled through the
   `hz_warnings` target and should stay clean.
-- Errors that end a command are exceptions caught once in `main`; library code
-  does not print.
-- Platform-specific code is limited to the per-file clone primitive and the
-  metadata replay; everything above it is shared.
+- Errors are exceptions caught at the CLI command boundary for structured
+  output; `main` handles unexpected failures. Library code does not print.
+- The tree walker and workspace semantics are shared. Keep platform differences
+  in clone, metadata, filesystem, and process helpers.
 - Behaviour changes update `docs/design.md` in the same change.
 
 ## Pull requests
@@ -76,4 +76,5 @@ validates the configuration.
 - Keep each pull request focused on one behaviour change.
 - Include tests for new behaviour: unit tests for `hz_core`, black-box CLI
   tests for command output and filesystem effects.
-- CI runs `nix flake check` on Linux and macOS.
+- CI runs `nix flake check` on Linux and macOS, plus filesystem tests on Linux
+  btrfs, XFS, ZFS, and ext4. Shell tests exercise bash, zsh, and fish.

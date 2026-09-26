@@ -27,7 +27,8 @@ struct Workspace {
     std::optional<std::string> parent_id; // empty for a root
     std::string handle;
     std::filesystem::path path;                      // location while active
-    std::optional<std::filesystem::path> trash_path; // location while trashed
+    std::optional<std::filesystem::path> trash_path; // location while trashed or being restored
+    std::optional<std::string> removal_id;           // shared by workspaces trashed together
     State state = State::creating;
     CopyMode mode = CopyMode::cow;
     bool filtered = false;
@@ -37,7 +38,7 @@ struct Workspace {
     std::optional<std::int64_t> pid; // creating process while creating
 
     [[nodiscard]] bool is_root() const { return !parent_id; }
-    // Where the directory is right now.
+    // Where the directory is when no operation is in flight.
     [[nodiscard]] const std::filesystem::path& location() const {
         return state == State::trashed && trash_path ? *trash_path : path;
     }
@@ -66,6 +67,10 @@ class Registry {
                                                        std::string_view handle);
     [[nodiscard]] std::vector<Workspace> find_handle_anywhere(std::string_view handle);
     [[nodiscard]] std::vector<Workspace> find_id_prefix(std::string_view prefix);
+    [[nodiscard]] std::vector<Workspace> find_trashed_handle(std::string_view root_id,
+                                                             std::string_view handle);
+    [[nodiscard]] std::vector<Workspace> removal(std::string_view removal_id);
+    [[nodiscard]] std::vector<Workspace> trashed();
 
     [[nodiscard]] std::vector<Workspace> all();
     [[nodiscard]] std::vector<Workspace> family(std::string_view root_id);

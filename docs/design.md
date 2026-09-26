@@ -48,8 +48,8 @@ directory adjacent to the root:
 
 ```text
 ~/code/app/                                   root
-~/code/.hz-workspaces/app-<root-id>/<id>/     children, any depth
-~/code/.hz-workspaces/app-<root-id>/.trash/<id>/
+~/code/.hz-workspaces/<root-handle>-<last-six-root-id-characters>/<id>/     children, any depth
+~/code/.hz-workspaces/<root-handle>-<last-six-root-id-characters>/.trash/<id>/
 ```
 
 Adjacent storage keeps source and destination on the same filesystem, which
@@ -68,10 +68,18 @@ row in the registry must agree; a mismatch is reported by `hz doctor` and never
 silently repaired, because a path alone cannot prove that the directory now at
 that path is the workspace that was registered there.
 
-Lifecycle states are `creating`, `active`, `trashed`, and `unregistered`.
-Every mutating command first records its intent in the registry, then acts on
-the filesystem, then commits. `hz doctor --fix` reconciles rows left in an
-intermediate state by an interrupted command.
+Lifecycle states are `creating`, `active`, and `trashed`. Unregistering a root
+removes its row. Create, remove, and restore record intent before filesystem
+changes; the row also retains the trash path during an interrupted restore.
+`hz doctor --fix` reconciles these intermediate states. GC first renames trash
+to `<id>.deleting` and preserves its marker until the final unlink so interrupted
+deletion can resume without guessing ownership. If removal was interrupted
+before its rename, GC requires repair first instead of forgetting the directory.
+
+The C++ rewrite does not migrate older registries. An incompatible schema is
+rejected without changing its contents. Use the matching older binary to manage
+existing workspaces, or select a fresh `HZ_DATA_DIR` and explicitly initialize
+roots there.
 
 ## Materialization
 
@@ -94,9 +102,10 @@ The per-file clone primitive is the only platform-specific part:
 | --- | --- | --- |
 | Linux | `ioctl(FICLONE)` | `copy_file_range`, then read/write |
 | macOS | `clonefile(2)` with `CLONE_NOFOLLOW` and `CLONE_ACL` | `copyfile(3)` without `COPYFILE_CLONE` |
-| Windows | `FSCTL_DUPLICATE_EXTENTS_TO_FILE` | `CopyFileEx` |
+| Windows (design only) | `FSCTL_DUPLICATE_EXTENTS_TO_FILE` | `CopyFileEx` |
 
-The clone primitive works on btrfs, XFS (reflink-enabled, the default since
+Linux and macOS are implemented; Windows is not implemented or verified.
+The corresponding clone primitives work on btrfs, XFS (reflink-enabled, the default since
 xfsprogs 5.1), OpenZFS 2.3+ (2.2.x needs `zfs_bclone_enabled=1`), bcachefs,
 APFS, and ReFS including Dev Drive. It does not work on ext4, tmpfs, NFS, NTFS,
 or FAT; those need `--copy`.
@@ -108,9 +117,8 @@ cloning nor breaks sharing. Per-file compression settings are xattrs
 (`btrfs.compression`, `bcachefs.compression`) and are carried by the xattr
 replay, not by the clone itself.
 
-Cost is O(entries) in the source tree on every platform. Measured on Linux 6.18
-with btrfs and zstd: 50,000 files clone in about 0.5 s; four concurrent creates
-finish in under 1 s. Byte copying is bounded by data size instead.
+Cost is O(entries) in the source tree on every platform. The walker is
+single-threaded. Byte copying also scales with data size.
 
 ### Why not snapshots
 
@@ -145,7 +153,8 @@ regenerable artifacts matched by path component at any depth: `node_modules`,
 `.yarn/{cache,unplugged,install-state.gz,build-state.yml}`. Nothing under a
 source-control directory is filtered except a live `fsmonitor--daemon.ipc`
 socket, which cannot be copied and would have no daemon behind it. A project
-may set `filtered` as its default in `hz.toml`.
+may set `filtered` as its default in `.hz/hz.toml`. `--full` overrides that default.
+The Git fsmonitor socket is omitted even in full mode.
 
 The filter matches names, not `.gitignore` rules, so a source directory that
 happens to be called `build` or `dist` is also skipped in filtered mode.
@@ -157,9 +166,11 @@ happens to be called `build` or `dist` is also skipped in filtered mode.
 the rows `trashed`. It does not walk or unlink files. Pinned workspaces refuse
 removal. `--children` keeps the selected workspace and trashes its descendants.
 Removing a root requires `--force`; the root directory stays in place and only
-its marker and registration are removed.
+its marker and registry row are removed. Its trashed descendants remain
+available to GC, but cannot be restored without their registered parent.
 
-`hz restore` renames a trashed subtree back and reactivates it. `hz gc`
+`hz restore` renames a trashed subtree back and reactivates it, provided its
+parent is active and its original handles and paths are free. `hz gc`
 recursively unlinks everything in trash; this is the only O(files) removal
 step and it is deferred by design.
 
@@ -174,12 +185,16 @@ Git-specific behaviour on create:
 - **HEAD is detached** in the child by writing the resolved commit SHA to
   `.git/HEAD`. The child is on no branch, so work inside it cannot move or push
   the parent's branch by accident; an agent that wants a branch creates one.
-  An unborn HEAD is left as it is.
+  An unborn HEAD is left as it is. `refs/hz/base` records the creation commit;
+  an unborn-base marker records when there was no commit yet. Reftable sources
+  are refused because editing their HEAD would require invoking Git.
 - **Sources mid-operation are refused.** A walk-and-clone copy is not
   point-in-time, so hz refuses to create from a source whose `.git` contains
   `index.lock`, `HEAD.lock`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
   `BISECT_LOG`, `rebase-merge`, or `rebase-apply`. Retry once the operation
-  finishes.
+  finishes. Top-level Git locks and locks under `refs` are also refused, as is
+  a pending cherry-pick/revert sequence. These checks cannot prevent a concurrent
+  Git process starting after the check; keep the source quiescent during copying.
 - **Linked worktrees are refused as sources.** A linked worktree's `.git` is a
   file pointing into another repository's `worktrees/` entry; copying it would
   make two directories claim the same entry.
@@ -190,17 +205,22 @@ Mercurial receives the equivalent marker protection via `.hg/hgrc`.
 
 Everything else is explicit: `hz git status`, `hz git handoff`, and `hz hg
 status` run source-control commands only when asked. `hz git handoff` applies a
-workspace's changes to another clean Git workspace, defaulting to its parent.
+workspace's net changes since its stored creation base to another clean Git
+workspace, defaulting to its parent. This includes commits, staged and unstaged
+edits, and untracked files. The destination receives uncommitted changes; no
+branch is moved. An unborn creation base means the empty tree even after the
+child has made its first commit.
 
 ## Hooks
 
-`hz.toml` may define `postcreate` and `preremove` commands as argv arrays.
+`hz config init` explicitly creates `.hz/hz.toml`; `hz init` does not generate
+configuration or scripts. `.hz/hz.toml` may define `postcreate` and `preremove` commands as argv arrays.
 They are disabled by default so that the default create and remove path spawns
 no processes. `postcreate` runs in the new workspace after it is active; its
 failure is reported but leaves the workspace active. `preremove` runs before
 the rename into trash. `--no-hooks` skips both. Hooks receive `HZ_ROOT`,
-`HZ_SOURCE`, `HZ_WORKSPACE`, `HZ_WORKSPACE_ID`, `HZ_PARENT_ID`, and
-`HZ_LIFECYCLE`.
+`HZ_SOURCE`, `HZ_WORKSPACE`, `HZ_WORKSPACE_ID`, `HZ_PARENT_ID`,
+`HZ_HANDLE`, and `HZ_LIFECYCLE`.
 
 ## Machine interface
 

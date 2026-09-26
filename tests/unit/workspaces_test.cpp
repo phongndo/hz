@@ -128,6 +128,20 @@ TEST_CASE("the registry persists across connections") {
     REQUIRE(reopened.all().size() == 1);
 }
 
+TEST_CASE("incompatible registry versions are rejected without changing their data") {
+    TempDir temp;
+    {
+        hz::sqlite::Database old(temp / "hz.sqlite");
+        old.exec("PRAGMA user_version = 1; CREATE TABLE saved (value TEXT); "
+                 "INSERT INTO saved VALUES ('keep')");
+    }
+    REQUIRE(error_kind([&] { hz::Registry old(temp / "hz.sqlite"); }) == hz::ErrorKind::registry);
+    hz::sqlite::Database old(temp / "hz.sqlite");
+    auto row = old.prepare("SELECT value FROM saved");
+    REQUIRE(row.step());
+    REQUIRE(row.text(0) == "keep");
+}
+
 TEST_CASE("init registers a root and resolves targets") {
     TempDir temp;
     const fs::path project = temp / "project";

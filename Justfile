@@ -24,7 +24,7 @@ fmt-check:
     clang-format --dry-run --Werror {{sources}}
 
 tidy:
-    clang-tidy -p build/debug {{sources}}
+    run-clang-tidy -p build/debug -j 4 -warnings-as-errors='*'
 
 # Build and run the debug binary
 hz *args: build

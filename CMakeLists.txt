@@ -34,11 +34,16 @@ configure_file(src/hz/version.hpp.in include/hz/version.hpp @ONLY)
 add_library(
   hz_core STATIC
   src/hz/clone.cpp
+  src/hz/config.cpp
   src/hz/error.cpp
   src/hz/filter.cpp
+  src/hz/fsutil.cpp
+  src/hz/git.cpp
   src/hz/handle.cpp
+  src/hz/lifecycle.cpp
   src/hz/marker.cpp
   src/hz/metadata.cpp
+  src/hz/process.cpp
   src/hz/registry.cpp
   src/hz/sqlite.cpp
   src/hz/tree.cpp
@@ -50,7 +55,27 @@ target_link_libraries(
   PUBLIC tomlplusplus::tomlplusplus nlohmann_json::nlohmann_json SQLite::SQLite3
   PRIVATE hz_warnings)
 
-add_executable(hz src/cli/main.cpp src/cli/output.cpp)
+# Embed the shell integration scripts. Regenerated when a script changes;
+# configure_file only touches the header when its content differs.
+set(hz_shell_header "#pragma once\n\n#include <string_view>\n\nnamespace hz::cli {\n\n")
+foreach(shell zsh bash fish)
+  file(READ shell/hz.${shell} hz_script)
+  string(APPEND hz_shell_header
+         "inline constexpr std::string_view ${shell}_script = R\"hzshell(${hz_script})hzshell\";\n\n")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS shell/hz.${shell})
+endforeach()
+string(APPEND hz_shell_header "} // namespace hz::cli\n")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/shell_scripts.hpp.tmp "${hz_shell_header}")
+configure_file(${CMAKE_CURRENT_BINARY_DIR}/shell_scripts.hpp.tmp
+               ${CMAKE_CURRENT_BINARY_DIR}/include/cli/shell_scripts.hpp COPYONLY)
+
+add_executable(
+  hz
+  src/cli/commands.cpp
+  src/cli/integration_commands.cpp
+  src/cli/main.cpp
+  src/cli/output.cpp
+  src/cli/workspace_commands.cpp)
 target_include_directories(hz PRIVATE src)
 target_link_libraries(hz PRIVATE hz_core CLI11::CLI11 hz_warnings)
 

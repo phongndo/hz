@@ -42,7 +42,11 @@ function hz
                 set -a hz_args --path-only
             end
             set -l path (command hz $hz_args); or return
-            builtin cd "$path"
+            if test -n "$path"
+                builtin cd "$path"
+                return
+            end
+            return 0
         end
         return
     end
@@ -95,7 +99,7 @@ function __hz_trash_targets
 end
 
 # Return command words after removing global options, whose positions are not
-# fixed because clap accepts them before or after subcommands.
+# fixed because hz accepts them before or after subcommands.
 function __hz_command_tokens
     set -l tokens (commandline -opc)
     set -l index 2
@@ -140,7 +144,7 @@ end
 
 complete -c hz -e
 complete -c hz -f
-complete -c hz -n 'not __fish_seen_subcommand_from init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell update' -a 'init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell update'
+complete -c hz -n 'not __fish_seen_subcommand_from init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell' -a 'init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell'
 complete -c hz -n '__hz_top_level_is path cd ancestors remove rm pin unpin' -a '(__hz_targets)'
 complete -c hz -n '__hz_top_level_is restore' -a '(__hz_trash_targets)'
 complete -c hz -n '__hz_git_needs_subcommand' -a 'status handoff'

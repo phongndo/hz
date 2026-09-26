@@ -11,7 +11,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int schema_version = 1;
+constexpr int schema_version = 2;
 
 // Paths are absolute and canonical. Uniqueness of handles is per family and
 // ignores trashed rows so a handle can be reused once its owner is removed.
@@ -26,6 +26,7 @@ CREATE TABLE workspace (
     handle      TEXT NOT NULL,
     path        TEXT NOT NULL UNIQUE,
     trash_path  TEXT UNIQUE,
+    removal_id  TEXT,
     state       TEXT NOT NULL CHECK (state IN ('creating', 'active', 'trashed')),
     mode        TEXT NOT NULL CHECK (mode IN ('cow', 'copy')),
     filtered    INTEGER NOT NULL DEFAULT 0,
@@ -36,10 +37,12 @@ CREATE TABLE workspace (
 ) STRICT;
 CREATE UNIQUE INDEX workspace_handle ON workspace (root_id, handle) WHERE state != 'trashed';
 CREATE INDEX workspace_parent ON workspace (parent_id);
+CREATE INDEX workspace_removal ON workspace (removal_id);
 )sql";
 
-constexpr std::string_view columns = "id, root_id, parent_id, handle, path, trash_path, state, "
-                                     "mode, filtered, pinned, created_at, updated_at, pid";
+constexpr std::string_view columns =
+    "id, root_id, parent_id, handle, path, trash_path, state, "
+    "mode, filtered, pinned, created_at, updated_at, pid, removal_id";
 
 State parse_state(const std::string& text) {
     if (text == "active") {
@@ -70,6 +73,7 @@ Workspace read_row(const sqlite::Statement& row) {
     if (!row.is_null(12)) {
         workspace.pid = row.integer(12);
     }
+    workspace.removal_id = row.optional_text(13);
     return workspace;
 }
 
@@ -98,6 +102,7 @@ void bind_fields(sqlite::Statement& statement, const Workspace& workspace) {
     } else {
         statement.bind(13, std::nullopt);
     }
+    statement.bind(14, workspace.removal_id);
 }
 
 } // namespace
@@ -132,10 +137,11 @@ Registry::Registry(const fs::path& database) : db_(database) {
         if (current == 0) {
             db_.exec(schema);
             db_.exec(std::format("PRAGMA user_version = {}", schema_version));
-        } else if (current > schema_version) {
+        } else if (current != schema_version) {
             throw Error(ErrorKind::registry,
-                        std::format("registry {} has schema version {}, newer than this hz "
-                                    "understands ({}); upgrade hz",
+                        std::format("registry {} has schema version {}, but this hz requires {}; "
+                                    "use the matching hz version, or set HZ_DATA_DIR to a fresh "
+                                    "directory and re-register roots with `hz init`",
                                     database.string(), current, schema_version));
         }
     });
@@ -143,7 +149,7 @@ Registry::Registry(const fs::path& database) : db_(database) {
 
 void Registry::insert(const Workspace& workspace) {
     auto statement = db_.prepare(std::format("INSERT INTO workspace ({}) VALUES (?1, ?2, ?3, ?4, "
-                                             "?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                                             "?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                                              columns));
     bind_fields(statement, workspace);
     try {
@@ -162,10 +168,10 @@ void Registry::insert(const Workspace& workspace) {
 }
 
 void Registry::update(const Workspace& workspace) {
-    auto statement =
-        db_.prepare("UPDATE workspace SET root_id = ?2, parent_id = ?3, handle = ?4, path = ?5, "
-                    "trash_path = ?6, state = ?7, mode = ?8, filtered = ?9, pinned = ?10, "
-                    "created_at = ?11, updated_at = ?12, pid = ?13 WHERE id = ?1");
+    auto statement = db_.prepare(
+        "UPDATE workspace SET root_id = ?2, parent_id = ?3, handle = ?4, path = ?5, "
+        "trash_path = ?6, state = ?7, mode = ?8, filtered = ?9, pinned = ?10, "
+        "created_at = ?11, updated_at = ?12, pid = ?13, removal_id = ?14 WHERE id = ?1");
     bind_fields(statement, workspace);
     statement.run();
     if (db_.changes() != 1) {
@@ -224,6 +230,28 @@ std::vector<Workspace> Registry::find_handle_anywhere(std::string_view handle) {
 std::vector<Workspace> Registry::find_id_prefix(std::string_view prefix) {
     // IDs are Crockford base32 and contain no LIKE wildcards.
     return query("id LIKE ?1 || '%'", prefix);
+}
+
+std::vector<Workspace> Registry::find_trashed_handle(std::string_view root_id,
+                                                     std::string_view handle) {
+    auto statement = db_.prepare(std::format("SELECT {} FROM workspace WHERE root_id = ?1 AND "
+                                             "handle = ?2 AND state = 'trashed' ORDER BY "
+                                             "updated_at DESC",
+                                             columns));
+    statement.bind(1, root_id).bind(2, handle);
+    std::vector<Workspace> rows;
+    while (statement.step()) {
+        rows.push_back(read_row(statement));
+    }
+    return rows;
+}
+
+std::vector<Workspace> Registry::removal(std::string_view removal_id) {
+    return query("removal_id = ?1", removal_id);
+}
+
+std::vector<Workspace> Registry::trashed() {
+    return query("state = ?1", "trashed");
 }
 
 std::vector<Workspace> Registry::all() {

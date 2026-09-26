@@ -1,104 +1,112 @@
 # hz CLI
 
-Workspace lifecycle is source-control-neutral and uses top-level commands.
-Source-control-specific operations use namespaces such as `hz git`.
+Workspace lifecycle uses top-level commands. Source-control operations use
+namespaces such as `hz git`. Global `--at DIR` changes the workspace context;
+`--json` (`-j`) selects JSON and `--machine` also bypasses shell navigation.
 
-## Workspace lifecycle
+Targets accept handles, IDs, unambiguous ID prefixes, or paths. With no target,
+commands that allow omission use the workspace containing the current directory.
+`root` and `local` select that workspace family's root.
 
-### `hz init [PATH] [--here] [--copy]`
-
-Registers a root, writes `.hz-workspace`, validates native copy-on-write support,
-and creates `.hz/` lifecycle configuration. Without `--here`, Hz selects an
-existing managed ancestor; otherwise it initializes the requested directory.
-`--copy` explicitly selects portable byte-copy materialization for filesystems
-without native COW support.
-
-### `hz new [NAME]`
-
-Creates a child snapshot of the nearest managed workspace.
+## Registration and creation
 
 ```sh
-hz new parser-fix
-hz new --from ~/code/app
-hz new parser-fix --into /same-filesystem/workspaces
-hz new parser-fix --filtered
-hz new parser-fix --no-hooks
+hz init [PATH] [--copy]
+hz new [NAME] [--from TARGET] [--into DIR] [--filtered|--full] [--no-hooks]
 ```
 
-Default creation takes a complete COW snapshot for the lowest creation latency
-and shares existing data blocks. `--filtered` omits known regenerable dependency,
-build, and cache artifacts at the cost of walking the source tree.
+`init` registers exactly the selected directory, writes its marker, and probes
+copy-on-write support. It rejects nested roots. Repeating it on a registered
+workspace is idempotent; it does not change the family's copy mode. `--copy`
+explicitly selects byte copying for a new root. Configuration creation is a
+separate `hz config init` command.
 
-### Navigation
+`new` copies the current workspace, or `--from TARGET`, into an independent
+child. The handle is generated when omitted. Both full and filtered creation
+walk the source tree; full is the default. `--into DIR` must be outside the
+source and on the same filesystem. See [design.md](design.md) for the model and
+[config.md](config.md) for filtering defaults and hooks.
+
+## Navigation and listing
 
 ```sh
 hz pwd
-hz path parser-fix
-hz cd parser-fix
-hz path root
-hz ancestors
-hz ls
-hz ls --tree
-hz ls --children
-hz ls --roots
+hz path|cd [TARGET]
+hz ancestors [TARGET]
+hz list|ls [--tree] [--all] [--trash]
 ```
 
-`cd` is a shell-integrated alias of `path`. `root` and `local` select the current
-family root.
+`path` prints the selected directory; shell integration makes `cd` navigate to
+it. `ancestors` lists the chain from root to immediate parent. `ls` shows the
+current family, or every family when outside a workspace. `--all` always shows
+every family; `--trash` includes removed workspaces.
 
-### Retention
+## Retention and recovery
 
 ```sh
-hz pin parser-fix
-hz unpin parser-fix
-hz rm parser-fix
-hz rm parser-fix --children
-hz rm --force                 # unregister current root
-hz restore parser-fix
+hz pin TARGET...
+hz unpin TARGET...
+hz remove|rm [TARGET] [--children] [--force] [--no-hooks]
+hz restore TARGET
 hz gc
-hz adopt /new/path/to/workspace
-hz doctor --fix
+hz adopt PATH
+hz doctor [--fix]
 ```
 
-Removal uses same-filesystem renames into trash and does not walk workspace
-files. `hz gc` performs the slower physical unlinking later. On Windows, the
-calling shell must change outside a workspace before removing that workspace so
-its directory handle is not locked. `--children`
-preserves the selected workspace. Root unregistration requires `--force` and
-preserves the root directory.
+Removal renames the selected logical subtree into trash, deepest first.
+`--children` preserves the selected workspace. Pins block removal even with
+`--force`. Removing a root requires `--force` and removes its marker and registry
+row while preserving the root directory; its descendants move to trash.
 
-## Git
+`restore` reverses a removal, including descendants removed in that operation.
+A child's parent must still be registered and active, and its old handle and
+path must be free. For a reused trash handle, the current family's most recently
+removed match wins; use a full ID to choose another instance. Descendants of an
+unregistered root cannot be restored through this command.
+
+`gc` permanently deletes all registered trash across families. It is the only
+recursive removal step. `adopt` records a manual move of an active workspace
+whose marker still identifies it. `doctor --fix` repairs interrupted operations
+where filesystem evidence proves the action safe. Unresolved findings return a
+nonzero status. Missing active markers are reported, not recreated; an explicit
+`hz init PATH` can restore a root marker after the directory is verified.
+
+## Source control
 
 ```sh
 hz git status [TARGET]
-hz git handoff [TARGET]
-```
-
-Status is evaluated only when explicitly requested. Handoff applies the current
-workspace patch to a clean destination and defaults to the immediate parent.
-Workspace creation does not invoke Git; it only ensures the repository-local
-exclude rules protect the `.hz-workspace` identity marker.
-
-## Mercurial
-
-```sh
+hz git handoff [TARGET] [--from SOURCE] [--3way]
 hz hg status [TARGET]
 ```
 
-Status is evaluated only when explicitly requested. Workspace creation does not
-invoke Mercurial; it adds a repository-local ignore for the `.hz-workspace`
-identity marker and otherwise treats `.hg` as ordinary filesystem state.
+These commands explicitly invoke Git or Mercurial. Status reports the selected
+workspace. Handoff applies the source's net changes since creation, including
+commits, staged/unstaged edits, and untracked files, to a clean destination. The
+default destination is its immediate parent. It leaves changes uncommitted and
+does not move the destination's branch. `--3way` allows Git's three-way fallback,
+which can stage the applied changes. A failed preflight leaves the destination
+unchanged; review the destination after a successful handoff.
 
-## Configuration and utilities
+## Configuration and shell integration
 
 ```sh
-hz config init [PATH]
+hz config init [TARGET]
 hz install zsh|bash|fish
 hz shell zsh|bash|fish
-hz update
 ```
+
+`install` adds the integration to the shell startup file once. `shell` prints
+it for explicit evaluation. With integration, `init`, `new`, `cd`, `restore`,
+and `git handoff` navigate to the returned directory. `rm` navigates to a
+surviving ancestor only when the shell was inside a removed workspace.
+
+`--json`, `--machine`, `--path-only`, and help calls never navigate. `init`,
+`new`, `rm`, `restore`, and `git handoff` accept `--path-only`; an empty removal
+path means the shell should stay where it is.
 
 ## Machine output
 
-Data-producing commands accept `--json`. Global `--machine` forces JSON and
-prevents shell wrappers from changing directory.
+Data commands emit JSON when requested, with structured workspace records and
+structured operation errors. Hooks write to stderr. Argument parsing errors
+and help use CLI11's ordinary output. Shell-script and completion commands emit
+text intended for shells.
