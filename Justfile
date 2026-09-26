@@ -5,6 +5,7 @@ setup:
     cmake --preset debug
 
 build:
+    [ -f build/debug/build.ninja ] || cmake --preset debug
     cmake --build --preset debug
 
 test: build

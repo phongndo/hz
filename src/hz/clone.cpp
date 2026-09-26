@@ -47,8 +47,6 @@ Error cow_unavailable_error(const std::filesystem::path& from, int errnum) {
             std::format("cannot clone {}: {}", from.string(), code.message()), code};
 }
 
-#ifdef __linux__
-
 void write_fully(int fd, const char* data, size_t size, const std::filesystem::path& to) {
     while (size > 0) {
         ssize_t written = ::write(fd, data, size);
@@ -62,6 +60,8 @@ void write_fully(int fd, const char* data, size_t size, const std::filesystem::p
         size -= static_cast<size_t>(written);
     }
 }
+
+#ifdef __linux__
 
 void copy_data(int source, int dest, const std::filesystem::path& from,
                const std::filesystem::path& to) {
