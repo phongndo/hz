@@ -47,6 +47,10 @@ jobs:
             echo 'BENCH_BASE=/mnt/hz-benchmark' >> "$GITHUB_ENV"
           else
             mkdir "$RUNNER_TEMP/hz-benchmark"
+            # Linux contains tracked names differing only by case. Prepare and
+            # measure on the same case-sensitive APFS volume.
+            hdiutil create -size 12g -type SPARSE -fs APFSX -volname hz-benchmark "$RUNNER_TEMP/hz-benchmark.sparseimage"
+            hdiutil attach -nobrowse -mountpoint "$RUNNER_TEMP/hz-benchmark" "$RUNNER_TEMP/hz-benchmark.sparseimage"
             echo "BENCH_BASE=$RUNNER_TEMP/hz-benchmark" >> "$GITHUB_ENV"
           fi
       - name: Build optimized binaries
@@ -59,7 +63,7 @@ jobs:
           nix develop .#benchmark -c cargo build --manifest-path "$RUNNER_TEMP/rift/Cargo.toml" --release --locked -p rift-cli
       - name: Prepare fixture
         if: inputs.workload != 'synthetic'
-        run: nix develop .#benchmark -c python3 benchmarks/prepare.py "$BENCH_WORKLOAD" "$RUNNER_TEMP/fixture"
+        run: nix develop .#benchmark -c python3 benchmarks/prepare.py "$BENCH_WORKLOAD" "$BENCH_BASE/fixture"
       - name: Check benchmark observers
         run: nix develop .#benchmark -c python3 benchmarks/test_compare.py
       - name: Measure and verify copies
@@ -67,7 +71,7 @@ jobs:
         run: |
           workload_args=(--workloads development)
           if [[ "$BENCH_WORKLOAD" != synthetic ]]; then
-            workload_args=(--source "$RUNNER_TEMP/fixture" --modes full)
+            workload_args=(--source "$BENCH_BASE/fixture" --modes full)
           fi
           nix develop .#benchmark -c python3 benchmarks/compare.py \
             --hz "$PWD/build/release/hz" --rift "$RUNNER_TEMP/rift/target/release/rift" \
@@ -96,4 +100,4 @@ jobs:
             ${{ env.BENCH_BASE }}/results/results.json
             ${{ env.BENCH_BASE }}/concurrency.log
             ${{ env.BENCH_BASE }}/concurrency/results.json
-            ${{ runner.temp }}/*-fixture.json
+            ${{ env.BENCH_BASE }}/*-fixture.json

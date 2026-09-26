@@ -117,7 +117,8 @@ observations without a separate warmup.
 ## Filesystem matrix
 
 The manual [benchmark workflow](../.github/workflows/benchmark.yml) runs pinned
-TypeScript, Linux, or synthetic fixtures on btrfs, XFS, and macOS/APFS, followed
+TypeScript, Linux, or synthetic fixtures on btrfs, XFS, and case-sensitive
+macOS/APFS, followed
 by concurrency/restore checks. For example:
 
 ```sh
