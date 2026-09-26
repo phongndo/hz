@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Isolated, warm-cache CLI comparison. Requires Linux, Python 3 and Git."""
+"""Isolated, warm-cache CLI comparison on Linux and macOS."""
 import argparse
 from contextlib import closing
 import hashlib
@@ -7,14 +7,25 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import random
 import shutil
 import signal
 import sqlite3
 import statistics
+import stat
 import subprocess
+import sys
 import tempfile
 import time
+
+RSS_DIVISOR = 1
+ARTIFACTS = {
+    "node_modules", ".pnpm-store", "target", ".venv", "venv", ".tox", ".nox",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".next",
+    ".nuxt", ".svelte-kit", ".turbo", ".vite", ".parcel-cache", ".cache",
+    "dist", "build", "coverage",
+}
 
 
 def run(argv, cwd, env=None, timeout=120):
@@ -47,11 +58,12 @@ def run(argv, cwd, env=None, timeout=120):
         err.seek(0)
         memory.seek(0)
         memory_text = memory.read().decode().strip().splitlines()
-        rss = int(memory_text[-1]) if memory_text and memory_text[-1].isdigit() else None
+        raw_rss = int(memory_text[-1]) if memory_text and memory_text[-1].isdigit() else None
+        rss = raw_rss / RSS_DIVISOR if raw_rss is not None else None
         return dict(argv=list(map(str, argv)), code=proc.returncode,
                     wall_ms=elapsed, user_ms=usage.ru_utime * 1000,
                     system_ms=usage.ru_stime * 1000,
-                    cpu_ms=(usage.ru_utime + usage.ru_stime) * 1000, rss_kib=rss,
+                    cpu_ms=(usage.ru_utime + usage.ru_stime) * 1000, rss_kib=rss, rss_raw=raw_rss,
                     stdout=out.read().decode(errors="replace"),
                     stderr=err.read().decode(errors="replace"), timeout=expired)
 
@@ -71,7 +83,10 @@ def git_env():
 
 
 def git(root, *args):
-    return require(run(["git", "-C", root, *args], root, git_env()))["stdout"].strip()
+    # `diff` can refresh the index even with GIT_OPTIONAL_LOCKS=0. Observers
+    # must not change its cached stat data between concurrent-child checks.
+    return require(run(["git", "-c", "diff.autoRefreshIndex=false", "-C", root, *args],
+                       root, git_env()))["stdout"].strip()
 
 
 def write(path, data):
@@ -116,19 +131,91 @@ def fixture(root, kind):
 def payload(root, filtered=False, hashes=True):
     result = {}
     for directory, dirs, files in os.walk(root):
-        dirs[:] = sorted(d for d in dirs if d != ".git" and
-                         not (filtered and d in {"node_modules", "build"}))
-        for name in sorted(files):
-            if name in {".hz-workspace", ".rift"}:
-                continue
+        for name in sorted(dirs + files):
             file = Path(directory) / name
-            relative = file.relative_to(root).as_posix()
-            value = dict(size=file.stat().st_size)
-            if hashes:
-                with file.open("rb") as stream:
-                    value["sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
-            result[relative] = value
+            relative = file.relative_to(root)
+            if (name in {".hz-workspace", ".rift", ".hz-workspaces"} or
+                    (directory == str(root) and name == ".git") or
+                    (filtered and excluded(relative))):
+                if name in dirs:
+                    dirs.remove(name)
+                continue
+            info = file.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                value = dict(kind="symlink", target=os.readlink(file))
+            elif stat.S_ISDIR(info.st_mode):
+                value = dict(kind="directory", mode=stat.S_IMODE(info.st_mode))
+            elif stat.S_ISREG(info.st_mode):
+                value = dict(kind="file", mode=stat.S_IMODE(info.st_mode), size=info.st_size)
+                if hashes:
+                    with file.open("rb") as stream:
+                        value["sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
+            else:
+                raise ValueError(f"benchmark source contains a special file: {file}")
+            result[relative.as_posix()] = value
+        dirs.sort()
     return result
+
+
+def excluded(relative):
+    parts = Path(relative).parts
+    if any(part in {".git", ".hg", ".jj"} for part in parts):
+        return False
+    return any(part in ARTIFACTS for part in parts) or any(
+        parent == ".yarn" and child in {"cache", "unplugged", "install-state.gz", "build-state.yml"}
+        for parent, child in zip(parts, parts[1:]))
+
+
+def copy_fixture(source, destination):
+    """Copy a supplied checkout without changing it or losing hardlink groups."""
+    links = {}
+
+    def copy_file(src, dst):
+        info = os.stat(src, follow_symlinks=False)
+        key = (info.st_dev, info.st_ino)
+        if info.st_nlink > 1 and key in links:
+            os.link(links[key], dst)
+        else:
+            shutil.copy2(src, dst)
+            if info.st_nlink > 1:
+                links[key] = dst
+        return dst
+
+    shutil.copytree(source, destination, symlinks=True, copy_function=copy_file)
+    return payload(destination)
+
+
+def calibrate_memory():
+    # GNU time and the kernel may expose different RSS units on Darwin.
+    # Compare with the platform's native rusage, rather than assuming a unit.
+    global RSS_DIVISOR
+    probe = require(run([sys.executable, "-c",
+                         "import resource; a=bytearray(16*1024*1024); "
+                         "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)"], Path.cwd()))
+    native = int(probe["stdout"])
+    expected_kib = native / (1024 if platform.system() == "Darwin" else 1)
+    ratio = probe["rss_raw"] / expected_kib
+    if 0.8 < ratio < 1.2:
+        RSS_DIVISOR = 1
+    elif 819 < ratio < 1229:
+        RSS_DIVISOR = 1024
+    else:
+        raise RuntimeError(f"cannot establish GNU time RSS units: {probe}")
+    return dict(native_rss=native, gnu_time_rss=probe["rss_raw"], divisor=RSS_DIVISOR)
+
+
+def host_details(directory):
+    if platform.system() == "Darwin":
+        # diskutil expects a device or mount point, not an arbitrary directory.
+        mount = subprocess.check_output(["df", "-P", str(directory)], text=True).splitlines()[-1].split(None, 5)[5]
+        filesystem = plistlib.loads(subprocess.check_output(
+            ["/usr/sbin/diskutil", "info", "-plist", mount]))
+        return dict(cpu_model=require(run(["sysctl", "-n", "machdep.cpu.brand_string"], directory))["stdout"].strip(),
+                    filesystem={key: filesystem.get(key) for key in (
+                        "FilesystemType", "FilesystemName", "MountPoint", "DeviceIdentifier", "TotalSize")})
+    return dict(cpu_model=next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines()
+                               if line.startswith("model name")), "unknown"),
+                filesystem=json.loads(require(run(["findmnt", "-T", directory, "-J", "-o", "TARGET,SOURCE,FSTYPE,OPTIONS"], directory))["stdout"]))
 
 
 class Tool:
@@ -173,22 +260,23 @@ class Tool:
 
 
 def validate(tool, child, expected, filtered, hashes):
-    wanted = {k: v if hashes else {"size": v["size"]} for k, v in expected.items()
-              if not (filtered and k.split("/")[0] in {"node_modules", "build"})}
+    wanted = {k: v if hashes else {key: value for key, value in v.items() if key != "sha256"}
+              for k, v in expected.items() if not (filtered and excluded(k))}
     actual = payload(child, hashes=hashes)
     if actual != wanted:
-        raise AssertionError(f"{tool.name}: payload differs: missing={set(wanted)-set(actual)}, "
-                             f"extra={set(actual)-set(wanted)}")
+        changed = [key for key in wanted.keys() & actual.keys() if wanted[key] != actual[key]]
+        raise AssertionError(f"{tool.name}: payload differs: missing={list(set(wanted)-set(actual))[:10]}, "
+                             f"extra={list(set(actual)-set(wanted))[:10]}, changed={changed[:10]}")
     # HEAD, its reflog, marker exclusions and hz's base ref deliberately change.
-    mutable = {"HEAD", "logs/HEAD", "info/exclude", "refs/hz/base", "hz-unborn-base"}
+    mutable = {"HEAD", "logs/HEAD", "info/exclude", "refs/hz", "refs/hz/base", "hz-unborn-base"}
     scm_source = {k: v for k, v in payload(tool.source / ".git").items() if k not in mutable}
     scm_child = {k: v for k, v in payload(child / ".git").items() if k not in mutable}
     assert scm_source == scm_child, f"{tool.name}: copied SCM metadata differs"
     assert git(child, "rev-parse", "HEAD") == git(tool.source, "rev-parse", "HEAD")
     assert run(["git", "-C", child, "symbolic-ref", "-q", "HEAD"], child,
                tool.env)["code"] == 1
-    assert git(child, "diff", "--binary") == git(tool.source, "diff", "--binary")
-    assert git(child, "diff", "--cached", "--binary") == git(tool.source, "diff", "--cached", "--binary")
+    assert git(child, "diff", "--binary", "--no-ext-diff", "--no-textconv") == git(tool.source, "diff", "--binary", "--no-ext-diff", "--no-textconv")
+    assert git(child, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv") == git(tool.source, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv")
 
 
 def summarize(rows):
@@ -226,47 +314,67 @@ def main():
     parser.add_argument("--rift", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--samples", type=int, default=7)
-    parser.add_argument("--workloads", nargs="+", default=["small", "development", "large-files"])
+    parser.add_argument("--workloads", nargs="+", choices=["small", "development", "large-files"])
+    parser.add_argument("--source", type=Path, help="Read-only input checkout; copied into disposable roots")
+    parser.add_argument("--modes", nargs="+", choices=["full", "filtered"], default=["full", "filtered"])
     parser.add_argument("--hz-revision", default="unspecified")
     parser.add_argument("--rift-revision", default="unspecified")
     args = parser.parse_args()
+    args.output = args.output.resolve()
     if args.samples < 3:
         parser.error("use at least three measured samples")
-    if platform.system() != "Linux":
-        parser.error("this benchmark currently measures Linux only")
+    if not __debug__:
+        parser.error("validation requires Python assertions; do not use -O")
+    if platform.system() not in {"Linux", "Darwin"}:
+        parser.error("this benchmark supports Linux and macOS")
     timer = os.environ.get("HZ_BENCH_TIME") or shutil.which("time")
     if not timer or "GNU" not in require(run([timer, "--version"], Path.cwd()))["stdout"]:
         parser.error("GNU time must be on PATH (or set HZ_BENCH_TIME)")
-    unknown = set(args.workloads) - {"small", "development", "large-files"}
-    if unknown:
-        parser.error(f"unknown workloads: {sorted(unknown)}")
+    if args.source:
+        args.source = args.source.resolve(strict=True)
+        if args.workloads:
+            parser.error("--source and --workloads are alternatives")
+        if not (args.source / ".git").is_dir() or (args.source / ".git").is_symlink():
+            parser.error("--source requires a standalone Git checkout")
+        if any((args.source / marker).exists() for marker in (".rift", ".hz-workspace")):
+            parser.error("use an unregistered checkout as the benchmark source")
+        if args.output.resolve().is_relative_to(args.source):
+            parser.error("output must be outside the source checkout")
+        if "filtered" in args.modes and any(excluded(path) for path in git(args.source, "ls-files", "-z").split("\0")):
+            parser.error("source contains tracked paths matched by filtering; benchmark it with --modes full")
+        args.workloads = ["repository"]
+    elif not args.workloads:
+        args.workloads = ["small", "development", "large-files"]
     args.output.mkdir(parents=True, exist_ok=False)
     report = dict(date=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                   platform=platform.platform(), cpu_count=os.cpu_count(),
                   load_start=os.getloadavg(), samples=args.samples, cache="warm; no cache dropping",
                   warmups=1, order_seed=42, workloads={},
+                  verified=False,
                   revisions={"hz": args.hz_revision, "rift": args.rift_revision},
                   memory_method="GNU time child peak RSS; wall and CPU include launcher",
-                  cpu_model=next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines()
-                                  if line.startswith("model name")), "unknown"),
-                  filesystem=require(run(["findmnt", "-T", args.output, "-J", "-o", "TARGET,SOURCE,FSTYPE,OPTIONS"], args.output))["stdout"],
+                  memory_calibration=calibrate_memory(),
+                  **host_details(args.output),
                   initialization="single setup observation per tool/workload; not a sampled benchmark",
-                  validation="payload sizes each sample, payload hashes warmup/last; SCM hashes with documented mutable paths excluded; Git state and removal/GC registry+disk assertions each sample",
+                  validation="payload names, kinds, modes, symlink targets and sizes each sample; payload hashes warmup/last; SCM hashes with documented mutable paths excluded; Git state and removal/GC registry+disk assertions each sample",
                   binaries={name: dict(path=str(Path(binary).resolve()),
                                      sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest())
                             for name, binary in (("hz", args.hz), ("rift", args.rift))})
+    if args.source:
+        report["source"] = dict(path=str(args.source), commit=git(args.source, "rev-parse", "HEAD"))
     rng = random.Random(42)
     for kind in args.workloads:
         tools = {name: Tool(name, binary, args.output / kind / name)
                  for name, binary in (("hz", args.hz), ("rift", args.rift))}
         entries = {}
+        report["workloads"][kind] = entries
         expected = {}
         for name, tool in tools.items():
-            expected[name] = fixture(tool.source, kind)
+            expected[name] = copy_fixture(args.source, tool.source) if args.source else fixture(tool.source, kind)
             entries[name] = dict(init=require(tool.init()), modes={})
         assert expected["hz"] == expected["rift"]
-        for filtered in (False, True):
-            mode = "filtered" if filtered else "full"
+        for mode in args.modes:
+            filtered = mode == "filtered"
             for name in tools:
                 entries[name]["modes"][mode] = dict(create=[], remove=[], gc=[])
             for sample in range(-1, args.samples):
@@ -276,6 +384,10 @@ def main():
                     tool = tools[name]
                     created = require(tool.create(f"sample-{mode}-{sample + 1}", filtered))
                     child = Path(created["stdout"].strip())
+                    if sample >= 0:
+                        entries[name]["modes"][mode]["create"].append(created)
+                    report["checking"] = dict(workload=kind, mode=mode, sample=sample, tool=name, child=str(child))
+                    (args.output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
                     validate(tool, child, expected[name], filtered, hashes=sample in (-1, args.samples-1))
                     removed = require(tool.remove(child))
                     check_removed(tool, child)
@@ -283,18 +395,21 @@ def main():
                     check_removed(tool, child, collected=True)
                     if sample >= 0:
                         rows = entries[name]["modes"][mode]
-                        for operation, row in (("create", created), ("remove", removed), ("gc", collected)):
+                        for operation, row in (("remove", removed), ("gc", collected)):
                             rows[operation].append(row)
             for name in tools:
                 rows = entries[name]["modes"][mode]
                 rows["summary"] = {op: summarize(rows[op]) for op in ("create", "remove", "gc")}
                 print(kind, mode, name, json.dumps(rows["summary"]), flush=True)
-        entries["fixture"] = dict(payload_files=len(expected["hz"]),
-                                  payload_bytes=sum(row["size"] for row in expected["hz"].values()))
+        entries["fixture"] = dict(payload_files=sum(row["kind"] == "file" for row in expected["hz"].values()),
+                                  payload_entries=len(expected["hz"]),
+                                  payload_bytes=sum(row.get("size", 0) for row in expected["hz"].values()))
         report["workloads"][kind] = entries
         (args.output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
         # Fixtures remain available for inspection. Cleanup is explicit after review.
     report["load_end"] = os.getloadavg()
+    report.pop("checking", None)
+    report["verified"] = True
     (args.output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
 
 

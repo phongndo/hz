@@ -1,0 +1,99 @@
+name: benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      workload:
+        description: Pinned workload to prepare
+        type: choice
+        options: [typescript, linux, synthetic]
+        default: typescript
+      samples:
+        description: Measured samples per tool (at least 3)
+        type: number
+        default: 5
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            filesystem: btrfs
+          - os: ubuntu-latest
+            filesystem: xfs
+          - os: macos-latest
+            filesystem: apfs
+    runs-on: ${{ matrix.os }}
+    env:
+      RIFT_REVISION: 5afb72b492a4aa0c81c2fbfe39a709aebf3773c7
+      BENCH_WORKLOAD: ${{ inputs.workload }}
+      BENCH_SAMPLES: ${{ inputs.samples }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Select benchmark storage
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo scripts/ci/mount-filesystem '${{ matrix.filesystem }}' /mnt/hz-benchmark "$USER" 12G
+            echo 'BENCH_BASE=/mnt/hz-benchmark' >> "$GITHUB_ENV"
+          else
+            mkdir "$RUNNER_TEMP/hz-benchmark"
+            echo "BENCH_BASE=$RUNNER_TEMP/hz-benchmark" >> "$GITHUB_ENV"
+          fi
+      - name: Build optimized binaries
+        shell: bash
+        run: |
+          nix develop .#benchmark -c just release
+          git init "$RUNNER_TEMP/rift"
+          git -C "$RUNNER_TEMP/rift" fetch --depth 1 https://github.com/anomalyco/rift.git "$RIFT_REVISION"
+          git -C "$RUNNER_TEMP/rift" checkout --detach FETCH_HEAD
+          nix develop .#benchmark -c cargo build --manifest-path "$RUNNER_TEMP/rift/Cargo.toml" --release --locked -p rift-cli
+      - name: Prepare fixture
+        if: inputs.workload != 'synthetic'
+        run: nix develop .#benchmark -c python3 benchmarks/prepare.py "$BENCH_WORKLOAD" "$RUNNER_TEMP/fixture"
+      - name: Check benchmark observers
+        run: nix develop .#benchmark -c python3 benchmarks/test_compare.py
+      - name: Measure and verify copies
+        shell: bash
+        run: |
+          workload_args=(--workloads development)
+          if [[ "$BENCH_WORKLOAD" != synthetic ]]; then
+            workload_args=(--source "$RUNNER_TEMP/fixture" --modes full)
+          fi
+          nix develop .#benchmark -c python3 benchmarks/compare.py \
+            --hz "$PWD/build/release/hz" --rift "$RUNNER_TEMP/rift/target/release/rift" \
+            --hz-revision "$GITHUB_SHA" --rift-revision "$RIFT_REVISION" \
+            --samples "$BENCH_SAMPLES" --output "$BENCH_BASE/results" \
+            "${workload_args[@]}" > "$BENCH_BASE/benchmark.log" 2>&1
+      - name: Show benchmark output
+        if: always()
+        run: test ! -f "$BENCH_BASE/benchmark.log" || cat "$BENCH_BASE/benchmark.log"
+      - name: Concurrent create and restore checks
+        shell: bash
+        run: |
+          nix develop .#benchmark -c python3 benchmarks/concurrency.py \
+            --hz "$PWD/build/release/hz" --rift "$RUNNER_TEMP/rift/target/release/rift" \
+            --output "$BENCH_BASE/concurrency" --rounds 3 \
+            > "$BENCH_BASE/concurrency.log" 2>&1
+      - name: Show concurrency output
+        if: always()
+        run: test ! -f "$BENCH_BASE/concurrency.log" || cat "$BENCH_BASE/concurrency.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ inputs.workload }}-${{ matrix.filesystem }}-${{ github.run_id }}
+          path: |
+            ${{ env.BENCH_BASE }}/benchmark.log
+            ${{ env.BENCH_BASE }}/results/results.json
+            ${{ env.BENCH_BASE }}/concurrency.log
+            ${{ env.BENCH_BASE }}/concurrency/results.json
+            ${{ runner.temp }}/*-fixture.json

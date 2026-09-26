@@ -72,6 +72,17 @@
       });
 
       devShells = forAllSystems (pkgs: {
+        benchmark = pkgs.mkShell.override { stdenv = pkgs.clangStdenv; } {
+          inputsFrom = [ self.devShells.${pkgs.stdenv.hostPlatform.system}.default ];
+          packages = [
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.pkg-config
+            pkgs.time
+            pkgs.nodejs_22
+          ];
+        };
+
         default = pkgs.mkShell.override { stdenv = pkgs.clangStdenv; } {
           inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ];
           packages = [

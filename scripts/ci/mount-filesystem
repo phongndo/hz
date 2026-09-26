@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Creates a loopback filesystem of the requested type and mounts it for the
-# test suite. Run as root: mount-filesystem <btrfs|xfs|ext4|zfs> <mountpoint> <owner>
+# test suite. Run as root: mount-filesystem <btrfs|xfs|ext4|zfs> <mountpoint> <owner> [size]
 set -euo pipefail
 
 filesystem=$1
 mountpoint=$2
 owner=$3
+image_size=${4:-2G}
 image="/var/tmp/hz-${filesystem}.img"
 
 mkdir -p "$mountpoint"
-truncate -s 2G "$image"
+truncate -s "$image_size" "$image"
 
 case "$filesystem" in
   btrfs)
