@@ -3,7 +3,6 @@
 #include "hz/tree.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-#include <catch2/generators/catch_generators.hpp>
 
 #include <chrono>
 #include <sys/stat.h>
@@ -12,6 +11,7 @@
 #include "support.hpp"
 
 using hz::test::error_kind;
+using hz::test::mtime_ns;
 using hz::test::read_file;
 using hz::test::TempDir;
 using hz::test::write_file;
@@ -59,8 +59,8 @@ void check_copy(const fs::path& source, const fs::path& dest) {
     REQUIRE(fs::equivalent(dest / "README.md", dest / "README-hardlink.md"));
     REQUIRE_FALSE(fs::equivalent(dest / "README.md", source / "README.md"));
 
-    REQUIRE(fs::last_write_time(dest / "README.md") == fs::last_write_time(source / "README.md"));
-    REQUIRE(fs::last_write_time(dest / "src") == fs::last_write_time(source / "src"));
+    REQUIRE(mtime_ns(dest / "README.md") == mtime_ns(source / "README.md"));
+    REQUIRE(mtime_ns(dest / "src") == mtime_ns(source / "src"));
 }
 
 } // namespace

@@ -2,6 +2,8 @@
 
 #include "hz/error.hpp"
 
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -9,6 +11,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 
 namespace hz::test {
 
@@ -50,6 +53,14 @@ inline void write_file(const fs::path& path, const std::string& content) {
     fs::create_directories(path.parent_path());
     std::ofstream out(path, std::ios::binary);
     out << content;
+}
+
+// Modification time in nanoseconds. libc++ represents file times with
+// __int128, which Catch2 cannot print, so tests compare this instead.
+inline std::int64_t mtime_ns(const fs::path& path) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               fs::last_write_time(path).time_since_epoch())
+        .count();
 }
 
 inline std::string read_file(const fs::path& path) {
