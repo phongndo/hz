@@ -29,7 +29,10 @@ bool filter_excludes(const std::filesystem::path& relative) {
     bool source_control = false;
     bool git_metadata = false;
     bool excluded = false;
-    std::string_view previous;
+    // Track the previous component as a flag, not a view: libc++ path
+    // iterators own the component they yield, so a view dangles once the
+    // iterator advances.
+    bool after_yarn = false;
     for (const auto& component : relative) {
         std::string_view part = component.native();
         if (part.empty() || part == "." || part == "/") {
@@ -42,8 +45,8 @@ bool filter_excludes(const std::filesystem::path& relative) {
             return true;
         }
         excluded = excluded || contains(excluded_components, part) ||
-                   (previous == ".yarn" && contains(yarn_artifacts, part));
-        previous = part;
+                   (after_yarn && contains(yarn_artifacts, part));
+        after_yarn = part == ".yarn";
     }
     return !source_control && excluded;
 }
