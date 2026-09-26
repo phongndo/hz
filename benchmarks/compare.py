@@ -82,11 +82,17 @@ def git_env():
                 GIT_AUTHOR_DATE="2026-01-01T00:00:00Z", GIT_COMMITTER_DATE="2026-01-01T00:00:00Z")
 
 
-def git(root, *args):
+def git(root, *args, timeout=600):
     # `diff` can refresh the index even with GIT_OPTIONAL_LOCKS=0. Observers
     # must not change its cached stat data between concurrent-child checks.
     return require(run(["git", "-c", "diff.autoRefreshIndex=false", "-C", root, *args],
-                       root, git_env()))["stdout"].strip()
+                       root, git_env(), timeout=timeout))["stdout"].strip()
+
+
+def git_state(root):
+    return {"head": git(root, "rev-parse", "HEAD"),
+            "diff": git(root, "diff", "--binary", "--no-ext-diff", "--no-textconv"),
+            "cached": git(root, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv")}
 
 
 def write(path, data):
@@ -224,6 +230,7 @@ class Tool:
         self.source, self.storage = self.base / "source", self.base / "storage"
         self.base.mkdir(parents=True)
         self.copy = copy
+        self.expected_git = None
         self.env = git_env()
         self.env["HZ_DATA_DIR"] = str(self.base / "registry")
 
@@ -272,11 +279,13 @@ def validate(tool, child, expected, filtered, hashes):
     scm_source = {k: v for k, v in payload(tool.source / ".git").items() if k not in mutable}
     scm_child = {k: v for k, v in payload(child / ".git").items() if k not in mutable}
     assert scm_source == scm_child, f"{tool.name}: copied SCM metadata differs"
-    assert git(child, "rev-parse", "HEAD") == git(tool.source, "rev-parse", "HEAD")
+    if tool.expected_git is None:
+        tool.expected_git = git_state(tool.source)
+    assert git(child, "rev-parse", "HEAD") == tool.expected_git["head"]
     assert run(["git", "-C", child, "symbolic-ref", "-q", "HEAD"], child,
                tool.env)["code"] == 1
-    assert git(child, "diff", "--binary", "--no-ext-diff", "--no-textconv") == git(tool.source, "diff", "--binary", "--no-ext-diff", "--no-textconv")
-    assert git(child, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv") == git(tool.source, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv")
+    assert git(child, "diff", "--binary", "--no-ext-diff", "--no-textconv") == tool.expected_git["diff"]
+    assert git(child, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv") == tool.expected_git["cached"]
 
 
 def summarize(rows):
@@ -361,12 +370,17 @@ def main():
                   **host_details(args.output),
                   initialization="single setup observation per tool/workload; not a sampled benchmark",
                   setup_timeout_seconds=args.setup_timeout,
+                  git_observer_timeout_seconds=600,
                   validation="payload names, kinds, modes, symlink targets and sizes each sample; payload hashes warmup/last; SCM hashes with documented mutable paths excluded; Git state and removal/GC registry+disk assertions each sample",
                   binaries={name: dict(path=str(Path(binary).resolve()),
                                      sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest())
                             for name, binary in (("hz", args.hz), ("rift", args.rift))})
     if args.source:
         report["source"] = dict(path=str(args.source), commit=git(args.source, "rev-parse", "HEAD"))
+    # Capture semantics from the original checkout, whose index stat cache is
+    # still valid. Disposable copies carry different inodes; repeatedly diffing
+    # their source indexes would reread every tracked file on large workspaces.
+    reference_git = git_state(args.source) if args.source else None
     rng = random.Random(42)
     for kind in args.workloads:
         tools = {name: Tool(name, binary, args.output / kind / name)
@@ -375,7 +389,9 @@ def main():
         report["workloads"][kind] = entries
         expected = {}
         for name, tool in tools.items():
+            print(kind, name, "preparing disposable source", flush=True)
             expected[name] = copy_fixture(args.source, tool.source) if args.source else fixture(tool.source, kind)
+            tool.expected_git = reference_git if args.source else git_state(tool.source)
             entries[name] = dict(init=tool.init(timeout=args.setup_timeout), modes={})
             (args.output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
             require(entries[name]["init"])
@@ -395,11 +411,13 @@ def main():
                         entries[name]["modes"][mode]["create"].append(created)
                     report["checking"] = dict(workload=kind, mode=mode, sample=sample, tool=name, child=str(child))
                     (args.output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
+                    print(kind, mode, name, "sample", sample, f"created in {created['wall_ms']:.2f} ms; validating", flush=True)
                     validate(tool, child, expected[name], filtered, hashes=sample in (-1, args.samples-1))
                     removed = require(tool.remove(child))
                     check_removed(tool, child)
                     collected = require(tool.gc())
                     check_removed(tool, child, collected=True)
+                    print(kind, mode, name, "sample", sample, "verified and collected", flush=True)
                     if sample >= 0:
                         rows = entries[name]["modes"][mode]
                         for operation, row in (("remove", removed), ("gc", collected)):

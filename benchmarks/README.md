@@ -85,6 +85,9 @@ observation**, not a sampled performance result.
 It has a separate ten-minute limit, configurable with `--setup-timeout`; each
 measured lifecycle command retains a two-minute limit. A timeout is recorded as
 an incomplete run and must not be interpreted as an accepted timing sample.
+Git observers have a separate ten-minute limit, since inspecting a large copied
+index can reread every tracked file. Expected Git state is captured once from
+the idle input checkout, before either tool initializes its disposable copy.
 
 Validation runs outside the timing window. Every sample checks payload names,
 entry types, modes, sizes, empty directories, symlink targets, copied SCM hashes,

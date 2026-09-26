@@ -17,7 +17,7 @@ import threading
 import time
 
 sys.dont_write_bytecode = True
-from compare import Tool, calibrate_memory, fixture, host_details, require, validate
+from compare import Tool, calibrate_memory, fixture, git_state, host_details, require, validate
 
 
 def create_worker(tool, handle, barrier, retry, timeout):
@@ -117,6 +117,7 @@ def main():
     expected = {}
     for name, tool in tools.items():
         expected[name] = fixture(tool.source, args.workload)
+        tool.expected_git = git_state(tool.source)
         require(tool.init())
         report["tools"][name] = dict(burst=[], retry=[], restore=[] if name == "hz" else None)
     assert expected["hz"] == expected["rift"]

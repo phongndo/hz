@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   compare:
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -72,6 +72,7 @@ jobs:
       - name: Measure and verify copies
         shell: bash
         run: |
+          set -o pipefail
           workload_args=(--workloads development)
           if [[ "$BENCH_WORKLOAD" != synthetic ]]; then
             workload_args=(--source "$BENCH_BASE/fixture" --modes full)
@@ -80,7 +81,7 @@ jobs:
             --hz "$PWD/build/release/hz" --rift "$RUNNER_TEMP/rift/target/release/rift" \
             --hz-revision "$GITHUB_SHA" --rift-revision "$RIFT_REVISION" \
             --samples "$BENCH_SAMPLES" --output "$BENCH_BASE/results" \
-            "${workload_args[@]}" > "$BENCH_BASE/benchmark.log" 2>&1
+            "${workload_args[@]}" 2>&1 | tee "$BENCH_BASE/benchmark.log"
       - name: Show benchmark output
         if: always()
         run: test ! -f "$BENCH_BASE/benchmark.log" || cat "$BENCH_BASE/benchmark.log"
