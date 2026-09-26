@@ -141,6 +141,9 @@ a total lifecycle or CPU median; calculate the total per sample first.
 
 On btrfs, Rift full creation uses a native subvolume snapshot; hz uses the
 filesystem-independent per-file walker specified in [the design](../docs/design.md).
+On APFS, Rift full creation passes the entire directory to `clonefile`; hz still
+walks and clones individual files. Full-mode APFS results therefore compare
+different strategies too. XFS uses per-file cloning in both tools.
 Filtered creation walks files in both tools. Report these modes separately.
 Rift GC may fall back to walking when native subvolume deletion is not permitted
 by the mount. Initialization cost and source conversion also differ.

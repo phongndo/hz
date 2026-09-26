@@ -17,6 +17,10 @@ on:
         type: choice
         options: [all, btrfs, xfs, apfs]
         default: all
+      concurrency:
+        description: Also run concurrent create and restore checks
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -81,6 +85,7 @@ jobs:
         if: always()
         run: test ! -f "$BENCH_BASE/benchmark.log" || cat "$BENCH_BASE/benchmark.log"
       - name: Concurrent create and restore checks
+        if: inputs.concurrency
         shell: bash
         run: |
           nix develop .#benchmark -c python3 benchmarks/concurrency.py \
