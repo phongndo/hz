@@ -209,10 +209,11 @@ std::string working_tree_patch(const fs::path& workspace, const std::string& bas
             throw Error(ErrorKind::io, std::format("prepare untracked files: {}", trim(added.err)));
         }
     }
-    auto diff = git(workspace,
-                    {"diff", "--binary", "--no-color", "--no-ext-diff", base, "--",
-                     std::format(":(exclude,top){}", marker_name)},
-                    {.cwd = {}, .input = {}, .env = env, .passthrough = false});
+    auto diff =
+        git(workspace,
+            {"diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/",
+             "--dst-prefix=b/", base, "--", std::format(":(exclude,top){}", marker_name)},
+            {.cwd = {}, .input = {}, .env = env, .passthrough = false});
     if (!temporary_index.empty()) {
         std::error_code ignored;
         fs::remove(temporary_index, ignored);

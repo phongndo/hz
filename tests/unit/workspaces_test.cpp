@@ -88,6 +88,8 @@ TEST_CASE("registry stores, finds, and walks workspaces") {
     REQUIRE(registry.find_by_path("/code/app")->id == root.id);
     REQUIRE(registry.find_handle(root.id, "follow")->id == grandchild.id);
     REQUIRE(registry.find_id_prefix("01B").size() == 1);
+    REQUIRE(registry.find_id_prefix("%").empty());
+    REQUIRE(registry.find_id_prefix("_").empty());
     REQUIRE(registry.family(root.id).size() == 3);
 
     auto subtree = registry.subtree(root.id);

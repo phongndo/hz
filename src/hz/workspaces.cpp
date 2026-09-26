@@ -83,10 +83,36 @@ fs::path canonical_directory(const fs::path& path) {
 
 Workspaces::Workspaces(const fs::path& data_directory, fs::path context)
     : registry_((make_private_directories(data_directory), data_directory / "hz.sqlite")),
-      context_(std::move(context)) {}
+      context_(std::move(context)), data_directory_(data_directory) {}
+
+detail::Fd Workspaces::operation_lock() {
+    return lock_operations(data_directory_);
+}
+
+void Workspaces::require_separate_directory(const fs::path& directory, std::string_view except_id) {
+    for (const auto& workspace : registry_.all()) {
+        if (workspace.id == except_id) {
+            continue;
+        }
+        // Reserve the trash directory too, including any .deleting siblings.
+        // Physical nesting would let deleting one workspace erase another.
+        const auto trash =
+            workspace.trash_path ? workspace.trash_path->parent_path() : workspace.path;
+        for (const auto& location : {workspace.path, trash}) {
+            if (is_within(directory, location) || is_within(location, directory)) {
+                throw Error(ErrorKind::invalid_path,
+                            std::format("{} overlaps workspace '{}' at {}; workspaces must be "
+                                        "separate directories",
+                                        directory.string(), workspace.handle, location.string()));
+            }
+        }
+    }
+}
 
 InitResult Workspaces::init(const fs::path& directory, CopyMode mode) {
-    const fs::path path = canonical_directory(directory);
+    const auto lock = operation_lock();
+    const fs::path path =
+        canonical_directory(directory.is_absolute() ? directory : context_ / directory);
     if (path == path.root_path()) {
         throw Error(ErrorKind::invalid_path, "the filesystem root cannot be a workspace");
     }
@@ -124,6 +150,7 @@ InitResult Workspaces::init(const fs::path& directory, CopyMode mode) {
                     std::format("{} is registered as workspace '{}' ({})", path.string(),
                                 registered->handle, to_string(registered->state)));
     }
+    require_separate_directory(path);
     if (mode == CopyMode::cow && !probe_clone_support(path)) {
         throw Error(ErrorKind::cow_unavailable,
                     std::format("the filesystem at {} cannot clone files; run `hz init --copy` "

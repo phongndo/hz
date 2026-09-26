@@ -228,8 +228,8 @@ std::vector<Workspace> Registry::find_handle_anywhere(std::string_view handle) {
 }
 
 std::vector<Workspace> Registry::find_id_prefix(std::string_view prefix) {
-    // IDs are Crockford base32 and contain no LIKE wildcards.
-    return query("id LIKE ?1 || '%'", prefix);
+    // The caller supplies arbitrary target text, not a SQL LIKE pattern.
+    return query("substr(id, 1, length(?1)) = ?1", prefix);
 }
 
 std::vector<Workspace> Registry::find_trashed_handle(std::string_view root_id,

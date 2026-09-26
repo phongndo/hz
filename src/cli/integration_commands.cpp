@@ -1,6 +1,7 @@
 #include "hz/config.hpp"
 #include "hz/error.hpp"
 #include "hz/filter.hpp"
+#include "hz/fsutil.hpp"
 #include "hz/git.hpp"
 #include "hz/tree.hpp"
 
@@ -93,6 +94,7 @@ void add_git_handoff(Commands& commands, CLI::App* git) {
     auto* handoff = commands.add(
         "handoff", "Apply a workspace's changes to another, by default its parent",
         [&commands, args] {
+            const auto lock = lock_operations(default_data_directory());
             auto& workspaces = commands.workspaces();
             auto source = workspaces.resolve(args->from);
             Workspace destination;
@@ -158,6 +160,7 @@ void add_config(Commands& commands) {
     auto* init = commands.add(
         "init", "Write a commented .hz/hz.toml",
         [&commands, target] {
+            const auto lock = lock_operations(default_data_directory());
             auto workspace = commands.workspaces().resolve(*target);
             const auto file = write_config_template(workspace.path);
             const auto output = commands.output();

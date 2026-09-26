@@ -267,6 +267,7 @@ fs::path Workspaces::storage_directory(const Workspace& root) {
 }
 
 Workspace Workspaces::create(const CreateOptions& options) {
+    const auto lock = operation_lock();
     const Workspace source = resolve(options.source);
     if (source.state != State::active) {
         throw Error(ErrorKind::conflict,
@@ -304,6 +305,7 @@ Workspace Workspaces::create(const CreateOptions& options) {
     child.root_id = root->id;
     child.parent_id = source.id;
     child.path = storage / child.id;
+    require_separate_directory(child.path);
     child.state = State::creating;
     child.mode = root->mode;
     child.filtered = filtered;
@@ -400,6 +402,7 @@ void Workspaces::trash(std::vector<Workspace>& batch) {
 }
 
 RemoveResult Workspaces::remove(const RemoveOptions& options) {
+    const auto lock = operation_lock();
     const Workspace target = resolve(options.target);
     const bool unregister = target.is_root() && !options.children_only;
     if (unregister && !options.force) {
@@ -487,6 +490,7 @@ Workspace Workspaces::resolve_trashed(std::string_view target) {
 }
 
 std::vector<Workspace> Workspaces::restore(std::string_view target) {
+    const auto lock = operation_lock();
     const Workspace top = resolve_trashed(target);
     check_restore_parent(registry_, top);
 
@@ -545,6 +549,7 @@ std::vector<Workspace> Workspaces::restore(std::string_view target) {
 }
 
 GcResult Workspaces::gc() {
+    const auto lock = operation_lock();
     GcResult result;
     for (auto& workspace : registry_.trashed()) {
         if (workspace.trash_path) {
@@ -579,6 +584,7 @@ GcResult Workspaces::gc() {
 }
 
 Workspace Workspaces::set_pinned(std::string_view target, bool pinned) {
+    const auto lock = operation_lock();
     Workspace workspace = resolve(target);
     workspace.pinned = pinned;
     workspace.updated_at = now_ms();
@@ -587,6 +593,7 @@ Workspace Workspaces::set_pinned(std::string_view target, bool pinned) {
 }
 
 Workspace Workspaces::adopt(const fs::path& directory) {
+    const auto lock = operation_lock();
     const fs::path path =
         canonical_directory(directory.is_absolute() ? directory : context_ / directory);
     const auto id = read_marker(path);
@@ -619,6 +626,7 @@ Workspace Workspaces::adopt(const fs::path& directory) {
         throw Error(ErrorKind::conflict, std::format("{} is registered as workspace '{}'",
                                                      path.string(), other->handle));
     }
+    require_separate_directory(path, workspace->id);
     workspace->path = path;
     workspace->updated_at = now_ms();
     registry_.transaction([&] { registry_.update(*workspace); });
@@ -725,7 +733,9 @@ class Recovery {
         if (exists_nofollow(deleting)) {
             finding.kind = "interrupted_gc";
             finding.message = std::format("deleting '{}' was interrupted", workspace.handle);
-            if (fix_ && safe_to_finish_gc(deleting, workspace)) {
+            if (exists_nofollow(*workspace.trash_path)) {
+                finding.message += "; both trash and deletion paths exist, so both were left";
+            } else if (fix_ && safe_to_finish_gc(deleting, workspace)) {
                 finish_gc(deleting, workspace);
                 erase(workspace);
                 finding.fixed = true;
@@ -750,12 +760,23 @@ class Recovery {
                 }
             }
             report(finding);
+        } else if (!carries_marker(*workspace.trash_path, workspace.id)) {
+            finding.kind = "marker_mismatch";
+            finding.message = std::format("{} does not carry the marker of '{}'",
+                                          workspace.trash_path->string(), workspace.handle);
+            report(finding);
         }
     }
 
     void scan_orphans(const fs::path& directory) {
         std::error_code error;
-        for (const auto& entry : fs::directory_iterator(directory, error)) {
+        const fs::directory_iterator entries(directory, error);
+        if (error && error != std::errc::no_such_file_or_directory) {
+            throw Error(ErrorKind::io,
+                        std::format("inspect storage {}: {}", directory.string(), error.message()),
+                        error);
+        }
+        for (const auto& entry : entries) {
             const std::string name = entry.path().filename().string();
             std::string id = name;
             if (id.ends_with(deleting_suffix)) {
@@ -806,6 +827,7 @@ class Recovery {
 } // namespace
 
 std::vector<Finding> Workspaces::doctor(bool fix) {
+    const auto lock = operation_lock();
     return Recovery(registry_, fix).run();
 }
 

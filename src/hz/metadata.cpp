@@ -2,6 +2,7 @@
 
 #include "hz/error.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstring>
@@ -11,6 +12,10 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 #include <vector>
+
+#ifdef __APPLE__
+#include <copyfile.h>
+#endif
 
 namespace hz {
 
@@ -58,10 +63,18 @@ void copy_xattrs(const std::filesystem::path& from, const std::filesystem::path&
     }
     names.resize(static_cast<size_t>(size));
 
-    std::vector<char> value;
+    std::vector<std::string> keys;
     for (size_t offset = 0; offset < names.size();) {
-        const char* name = names.data() + offset;
-        offset += std::strlen(name) + 1;
+        keys.emplace_back(names.data() + offset);
+        offset += keys.back().size() + 1;
+    }
+    // An access ACL may remove our temporary write permission. Apply it only
+    // after the user attributes that need that permission have been copied.
+    std::ranges::stable_partition(
+        keys, [](const std::string& key) { return key != "system.posix_acl_access"; });
+    std::vector<char> value;
+    for (const auto& key : keys) {
+        const char* name = key.c_str();
         ssize_t length = get_xattr(from.c_str(), name, nullptr, 0);
         if (length < 0) {
             throw errno_error("read attribute", from);
@@ -98,10 +111,14 @@ void replay_metadata(const std::filesystem::path& from, const std::filesystem::p
     if (::lchown(to.c_str(), info.st_uid, info.st_gid) != 0 && errno != EPERM) {
         throw errno_error("set owner", to);
     }
-    if (kind != EntryKind::symlink && ::chmod(to.c_str(), info.st_mode & permission_bits) != 0) {
+    if (kind != EntryKind::symlink &&
+        ::chmod(to.c_str(), (info.st_mode & permission_bits) | S_IWUSR) != 0) {
         throw errno_error("set permissions", to);
     }
     copy_xattrs(from, to);
+    if (kind != EntryKind::symlink && ::chmod(to.c_str(), info.st_mode & permission_bits) != 0) {
+        throw errno_error("set permissions", to);
+    }
 
 #ifdef __APPLE__
     const std::array<timespec, 2> times{info.st_atimespec, info.st_mtimespec};
@@ -111,6 +128,16 @@ void replay_metadata(const std::filesystem::path& from, const std::filesystem::p
     if (::utimensat(AT_FDCWD, to.c_str(), times.data(), AT_SYMLINK_NOFOLLOW) != 0) {
         throw errno_error("set times", to);
     }
+#ifdef __APPLE__
+    // Darwin ACLs are not xattrs. Directories and byte copies never go through
+    // clonefile(CLONE_ACL), so replay their ACL explicitly, after other metadata
+    // writes that the source ACL might prohibit.
+    if (kind != EntryKind::symlink &&
+        ::copyfile(from.c_str(), to.c_str(), nullptr,
+                   COPYFILE_ACL | COPYFILE_NOFOLLOW_SRC | COPYFILE_NOFOLLOW_DST) != 0) {
+        throw errno_error("set ACL", to);
+    }
+#endif
 }
 
 } // namespace hz

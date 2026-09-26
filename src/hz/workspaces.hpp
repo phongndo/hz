@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hz/clone.hpp"
+#include "hz/detail/fd.hpp"
 #include "hz/registry.hpp"
 
 #include <filesystem>
@@ -111,6 +112,9 @@ class Workspaces {
     std::vector<Workspace> ancestors(const Workspace& workspace);
 
   private:
+    detail::Fd operation_lock();
+    void require_separate_directory(const std::filesystem::path& directory,
+                                    std::string_view except_id = "");
     Workspace workspace_at(const std::filesystem::path& directory);
     Workspace require_registered(const std::string& id);
     Workspace resolve_trashed(std::string_view target);
@@ -118,6 +122,7 @@ class Workspaces {
 
     Registry registry_;
     std::filesystem::path context_;
+    std::filesystem::path data_directory_;
 };
 
 // The canonical form of an existing directory; throws invalid_path otherwise.

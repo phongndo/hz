@@ -250,3 +250,60 @@ TEST_CASE("configuration creation is explicit and preserves existing configurati
     write_file(f.project / ".hz" / "hz.toml", "[create]\nfiltered = 'invalid'\n");
     REQUIRE(f.hz(f.project, {"--machine", "new"}).json()["error"]["kind"] == "invalid_argument");
 }
+
+TEST_CASE("hooks cannot mutate a family during its removal", "[review]") {
+    Fixture f;
+    f.init();
+    const auto child = f.child("parent");
+    write_file(child / ".hz" / "hz.toml", "[lifecycle]\npreremove = [[\"" + std::string(HZ_BINARY) +
+                                              "\", \"new\", \"late-child\"]]\n");
+    const auto result = f.hz(f.project, {"--machine", "rm", "parent"});
+    REQUIRE(result.exit_code != 0);
+    REQUIRE(fs::exists(child / "src" / "main.cpp"));
+    REQUIRE(f.ok({"--machine", "ls"}).json()["workspaces"].size() == 2);
+    f.ok({"rm", "parent", "--no-hooks"}); // failure released the operation lock
+}
+
+TEST_CASE("workspaces cannot be stored inside another workspace", "[review]") {
+    Fixture f;
+    f.init();
+    const auto child = f.child("child");
+    const auto nested = child / "nested-storage";
+    auto result = f.hz(f.project, {"--machine", "new", "nested", "--into", nested.string()});
+    REQUIRE(result.exit_code != 0);
+    REQUIRE(f.ok({"--machine", "ls"}).json()["workspaces"].size() == 2);
+}
+
+TEST_CASE("adopt refuses a directory moved inside another workspace", "[review]") {
+    Fixture f;
+    f.init();
+    const auto parent = f.child("parent");
+    const auto child = f.child("child");
+    const auto moved = parent / "nested";
+    fs::rename(child, moved);
+    REQUIRE(f.hz(f.project, {"adopt", moved.string()}).exit_code != 0);
+    REQUIRE(fs::exists(moved / "src" / "main.cpp"));
+}
+
+TEST_CASE("init refuses to enclose an existing root", "[review]") {
+    Fixture f;
+    f.init();
+    REQUIRE(f.hz(f.temp.path(), {"init", "--copy"}).exit_code != 0);
+    REQUIRE_FALSE(fs::exists(f.temp / ".hz-workspace"));
+    REQUIRE(f.hz(f.project, {"pwd"}).exit_code == 0);
+}
+
+TEST_CASE("relative init paths use the selected context", "[review]") {
+    Fixture f;
+    const auto result = f.hz(f.temp.path(), {"--at", f.project.string(), "init", "src", "--copy"});
+    REQUIRE(result.exit_code == 0);
+    REQUIRE(fs::exists(f.project / "src" / ".hz-workspace"));
+}
+
+TEST_CASE("read-only queries remain available during hooks", "[review]") {
+    Fixture f;
+    f.init();
+    write_file(f.project / ".hz" / "hz.toml",
+               "[lifecycle]\npostcreate = [[\"" + std::string(HZ_BINARY) + "\", \"pwd\"]]\n");
+    REQUIRE(fs::exists(f.child("query-hook") / "src" / "main.cpp"));
+}

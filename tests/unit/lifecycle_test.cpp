@@ -190,3 +190,35 @@ TEST_CASE("doctor leaves an interrupted create with a malformed marker", "[recov
     REQUIRE(fs::exists(workspace.path / "file.txt"));
     REQUIRE(family.registry().find(workspace.id));
 }
+
+TEST_CASE("doctor reports a replaced trash marker", "[review]") {
+    Family family;
+    const auto child = family.child("replaced-trash");
+    family.workspaces->remove({.target = child.id, .hooks = false});
+    const auto trashed = *family.registry().find(child.id);
+    write_file(*trashed.trash_path / ".hz-workspace", "invalid marker");
+    REQUIRE_FALSE(family.doctor(false).empty());
+    REQUIRE_FALSE(family.doctor(true).empty());
+    REQUIRE(fs::exists(*trashed.trash_path / "file.txt"));
+}
+
+TEST_CASE("doctor preserves ambiguous garbage collection locations", "[review]") {
+    Family family;
+    const auto child = family.child("duplicate-trash");
+    family.workspaces->remove({.target = child.id, .hooks = false});
+    const auto trashed = *family.registry().find(child.id);
+    const fs::path deleting = trashed.trash_path->string() + ".deleting";
+    fs::copy(*trashed.trash_path, deleting, fs::copy_options::recursive);
+    REQUIRE_FALSE(family.doctor(true).empty());
+    REQUIRE(fs::exists(*trashed.trash_path / "file.txt"));
+    REQUIRE(fs::exists(deleting / "file.txt"));
+    REQUIRE(family.registry().find(child.id));
+}
+
+TEST_CASE("doctor reports an inaccessible storage directory", "[review]") {
+    Family family;
+    const auto storage = hz::Workspaces::storage_directory(family.root);
+    write_file(storage, "not a directory");
+    REQUIRE(hz::test::error_kind([&] { family.doctor(false); }) == hz::ErrorKind::io);
+    REQUIRE(hz::test::read_file(storage) == "not a directory");
+}

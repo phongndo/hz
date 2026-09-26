@@ -1,5 +1,6 @@
 #include "hz/clone.hpp"
 #include "hz/error.hpp"
+#include "hz/process.hpp"
 #include "hz/tree.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -7,6 +8,12 @@
 #include <chrono>
 #include <sys/stat.h>
 #include <sys/xattr.h>
+
+#ifdef __APPLE__
+#include <memory>
+#include <sys/acl.h>
+#include <type_traits>
+#endif
 
 #include "support.hpp"
 
@@ -182,6 +189,10 @@ TEST_CASE("copy_tree replays user extended attributes") {
     if (rc != 0) {
         SKIP("filesystem at " << temp.path() << " does not support user xattrs");
     }
+    SECTION("writable files keep their attributes") {}
+    SECTION("read-only files keep their attributes") {
+        fs::permissions(source / "file", fs::perms::owner_read);
+    }
     hz::copy_tree(source, temp / "dest", {.mode = hz::CopyMode::copy});
     char value[8] = {};
 #ifdef __APPLE__
@@ -192,4 +203,46 @@ TEST_CASE("copy_tree replays user extended attributes") {
 #endif
     REQUIRE(length == 3);
     REQUIRE(std::string(value, 3) == "yes");
+    REQUIRE(fs::status(temp / "dest" / "file").permissions() ==
+            fs::status(source / "file").permissions());
 }
+
+#ifdef __APPLE__
+namespace {
+
+std::string access_acl(const fs::path& path) {
+    std::unique_ptr<std::remove_pointer_t<acl_t>, decltype(&acl_free)> acl(
+        ::acl_get_file(path.c_str(), ACL_TYPE_EXTENDED), &acl_free);
+    REQUIRE(acl);
+    std::unique_ptr<char, decltype(&acl_free)> text(::acl_to_text(acl.get(), nullptr), &acl_free);
+    REQUIRE(text);
+    return text.get();
+}
+
+} // namespace
+
+TEST_CASE("copy_tree preserves Darwin file and directory ACLs", "[review]") {
+    TempDir temp;
+    const auto source = temp / "source";
+    write_file(source / "directory" / "file", "content");
+    for (const auto& path : {source, source / "directory", source / "directory" / "file"}) {
+        REQUIRE(hz::run_process({"/bin/chmod", "+a",
+                                 "everyone allow read,readattr,readextattr,readsecurity",
+                                 path.string()})
+                    .ok());
+    }
+    auto mode = hz::CopyMode::copy;
+    SECTION("byte copies") {}
+    SECTION("clones") {
+        if (!hz::probe_clone_support(temp.path())) {
+            SKIP("filesystem does not support cloning");
+        }
+        mode = hz::CopyMode::cow;
+    }
+    const auto dest = temp / "dest";
+    hz::copy_tree(source, dest, {.mode = mode});
+    REQUIRE(access_acl(dest) == access_acl(source));
+    REQUIRE(access_acl(dest / "directory") == access_acl(source / "directory"));
+    REQUIRE(access_acl(dest / "directory" / "file") == access_acl(source / "directory" / "file"));
+}
+#endif

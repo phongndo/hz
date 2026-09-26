@@ -9,7 +9,9 @@
 #include <cstdio>
 #include <dirent.h>
 #include <format>
+#include <memory>
 #include <string>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
@@ -23,6 +25,21 @@
 namespace hz {
 
 namespace fs = std::filesystem;
+
+detail::Fd lock_operations(const fs::path& data_directory) {
+    make_private_directories(data_directory);
+    auto lock = detail::Fd::open(data_directory / "operations.lock", O_RDWR | O_CREAT | O_NOFOLLOW,
+                                 0600, "open operation lock");
+    if (::flock(lock.get(), LOCK_EX | LOCK_NB) != 0) {
+        if (errno == EWOULDBLOCK || errno == EAGAIN) {
+            throw Error(ErrorKind::conflict,
+                        "another hz operation is in progress; retry when it finishes "
+                        "(hooks must not run mutating hz commands)");
+        }
+        throw errno_error("lock operations", data_directory);
+    }
+    return lock;
+}
 
 void make_private_directories(const fs::path& directory) {
     if (exists_nofollow(directory)) {
@@ -71,42 +88,43 @@ void move_path(const fs::path& from, const fs::path& to) {
         0) {
         return;
     }
-    if (errno != ENOSYS && errno != EINVAL) {
-        throw errno_error(std::format("move to {}", to.string()), from);
-    }
 #elifdef __APPLE__
     if (::renamex_np(from.c_str(), to.c_str(), RENAME_EXCL) == 0) {
         return;
     }
-    if (errno != ENOTSUP) {
-        throw errno_error(std::format("move to {}", to.string()), from);
-    }
 #endif
-    if (exists_nofollow(to)) {
-        throw Error(ErrorKind::conflict, std::format("{} already exists", to.string()));
-    }
-    if (::rename(from.c_str(), to.c_str()) != 0) {
-        throw errno_error(std::format("move to {}", to.string()), from);
-    }
+    // A check-then-rename fallback can overwrite a destination another process
+    // creates between the check and rename. Require atomic no-replace support.
+    throw errno_error(std::format("move to {} without replacing it", to.string()), from);
 }
 
 namespace {
 
 void remove_contents(const fs::path& directory, bool keep_marker) {
     // Make sure we can list and unlink entries even if the tree was read-only.
-    ::chmod(directory.c_str(), 0700);
-    DIR* handle = ::opendir(directory.c_str());
-    if (handle == nullptr) {
+    if (::chmod(directory.c_str(), 0700) != 0) {
+        throw errno_error("set directory permissions", directory);
+    }
+    std::unique_ptr<DIR, decltype(&closedir)> handle(::opendir(directory.c_str()), &closedir);
+    if (!handle) {
         throw errno_error("open directory", directory);
     }
     std::vector<std::string> names;
-    while (const dirent* entry = ::readdir(handle)) {
+    for (;;) {
+        errno = 0;
+        const dirent* entry = ::readdir(handle.get());
+        if (entry == nullptr) {
+            if (errno != 0) {
+                throw errno_error("read directory", directory);
+            }
+            break;
+        }
         std::string name = &entry->d_name[0];
         if (name != "." && name != ".." && !(keep_marker && name == marker_name)) {
             names.push_back(std::move(name));
         }
     }
-    ::closedir(handle);
+    handle.reset();
     for (const auto& name : names) {
         const fs::path child = directory / name;
         struct stat info{};

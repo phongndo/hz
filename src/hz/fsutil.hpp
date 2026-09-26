@@ -1,9 +1,15 @@
 #pragma once
 
+#include "hz/detail/fd.hpp"
+
 #include <cstdint>
 #include <filesystem>
 
 namespace hz {
+
+// Serializes lifecycle mutations across processes. Nonblocking so a hook
+// attempting another mutation fails instead of deadlocking its caller.
+detail::Fd lock_operations(const std::filesystem::path& data_directory);
 
 // Creates `directory` and any missing parents; new directories are 0700.
 void make_private_directories(const std::filesystem::path& directory);

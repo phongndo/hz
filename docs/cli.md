@@ -24,7 +24,7 @@ separate `hz config init` command.
 `new` copies the current workspace, or `--from TARGET`, into an independent
 child. The handle is generated when omitted. Both full and filtered creation
 walk the source tree; full is the default. `--into DIR` must be outside the
-source and on the same filesystem. See [design.md](design.md) for the model and
+source, outside other registered workspaces and trash, and on the same filesystem. See [design.md](design.md) for the model and
 [config.md](config.md) for filtering defaults and hooks.
 
 ## Navigation and listing
@@ -66,7 +66,7 @@ unregistered root cannot be restored through this command.
 
 `gc` permanently deletes all registered trash across families. It is the only
 recursive removal step. `adopt` records a manual move of an active workspace
-whose marker still identifies it. `doctor --fix` repairs interrupted operations
+whose marker still identifies it, rejecting paths that overlap other workspaces. `doctor --fix` repairs interrupted operations
 where filesystem evidence proves the action safe. Unresolved findings return a
 nonzero status. Missing active markers are reported, not recreated; an explicit
 `hz init PATH` can restore a root marker after the directory is verified.
@@ -103,6 +103,10 @@ surviving ancestor only when the shell was inside a removed workspace.
 `--json`, `--machine`, `--path-only`, and help calls never navigate. `init`,
 `new`, `rm`, `restore`, and `git handoff` accept `--path-only`; an empty removal
 path means the shell should stay where it is.
+
+Overlapping mutations using the same registry return a conflict; retry after
+the other operation completes. Hooks cannot start another mutation while their
+parent operation holds the lock.
 
 ## Machine output
 

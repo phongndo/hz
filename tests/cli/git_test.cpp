@@ -125,3 +125,25 @@ TEST_CASE("default creation and removal work without SCM executables", "[git-reg
     REQUIRE_FALSE(fs::exists(child / ".git" / "fsmonitor--daemon.ipc"));
     REQUIRE(hz::run_process({HZ_BINARY, "rm", "no-scm"}, options).ok());
 }
+
+TEST_CASE("handoff ignores presentation-only Git diff configuration", "[review]") {
+    Fixture f;
+    f.make_repository();
+    write_file(f.project / ".gitattributes", "*.cpp diff=display\n");
+    git(f.project, {"add", ".gitattributes"});
+    git(f.project, {"commit", "-q", "-m", "attributes"});
+    SECTION("text conversion must not change the patch") {
+        git(f.project, {"config", "diff.display.textconv", "sed s/int/INT/g"});
+    }
+    SECTION("configured path prefixes must not change the patch") {
+        git(f.project, {"config", "diff.noprefix", "true"});
+    }
+    f.init();
+    const auto child = f.child("diff-config");
+    const std::string edited = "int main() { return 8; }\n";
+    write_file(child / "src" / "main.cpp", edited);
+    const auto result = f.hz(child, {"--machine", "git", "handoff"});
+    INFO(result.out);
+    REQUIRE(result.exit_code == 0);
+    REQUIRE(read_file(f.project / "src" / "main.cpp") == edited);
+}

@@ -54,7 +54,9 @@ directory adjacent to the root:
 
 Adjacent storage keeps source and destination on the same filesystem, which
 cloning requires. `--into DIR` overrides the location; it must also be on the
-same filesystem.
+same filesystem. Registered workspace directories must not physically contain
+one another. Initialization, creation, and adoption reject overlapping paths,
+including reserved trash locations, so removing one cannot erase another.
 
 Handles (`parser-fix`) are for people and may be reused after removal. IDs are
 for the filesystem and the registry and are never reused.
@@ -81,6 +83,17 @@ rejected without changing its contents. Use the matching older binary to manage
 existing workspaces, or select a fresh `HZ_DATA_DIR` and explicitly initialize
 roots there.
 
+Lifecycle mutations, configuration writes, Git handoff, and doctor acquire one
+exclusive operation lock per registry. An overlapping operation fails with a
+retryable conflict instead of acting on stale state. The lock is released on
+exit, including crashes; hooks inherit no lock descriptor. Status, listing, and
+path queries remain available while hooks run. This deliberately serializes
+creates too; concurrency can be refined after measurement.
+
+Recovery covers interrupted processes. It is not a transaction across SQLite
+and the filesystem during power loss. Keep the workspace tree stable during
+copying, removal, and GC; hz does not supervise processes that still use it.
+
 ## Materialization
 
 Creating a child is one operation everywhere: **walk the source tree and clone
@@ -93,7 +106,7 @@ for each entry under source (excluding the marker and any filter matches):
   hard link     → recreated as a hard link within the copy, keyed by (dev, ino)
   symlink       → recreated with the same target, never followed
   anything else → error; the copy is abandoned and removed
-then replay mode, ownership where permitted, xattrs, and timestamps
+then replay mode, ownership where permitted, xattrs, ACLs, and timestamps
 ```
 
 The per-file clone primitive is the only platform-specific part:
@@ -109,6 +122,10 @@ The corresponding clone primitives work on btrfs, XFS (reflink-enabled, the defa
 xfsprogs 5.1), OpenZFS 2.3+ (2.2.x needs `zfs_bclone_enabled=1`), bcachefs,
 APFS, and ReFS including Dev Drive. It does not work on ext4, tmpfs, NFS, NTFS,
 or FAT; those need `--copy`.
+
+User xattrs are copied before final read-only permissions are restored. Linux
+access ACLs are replayed with xattrs; Darwin ACLs are copied separately for
+files and directories, including byte-copy mode.
 
 Clones share data blocks with the source until either side writes. On
 compressed filesystems (btrfs `compress=zstd`, ZFS `compression=`) the clone
@@ -172,7 +189,10 @@ available to GC, but cannot be restored without their registered parent.
 `hz restore` renames a trashed subtree back and reactivates it, provided its
 parent is active and its original handles and paths are free. `hz gc`
 recursively unlinks everything in trash; this is the only O(files) removal
-step and it is deferred by design.
+step and it is deferred by design. Rename operations require atomic
+no-replace support; hz reports an error if the filesystem cannot provide it.
+If both trash and deletion directories exist, doctor leaves both for inspection.
+Invalid trash markers are reported and never silently accepted.
 
 ## Source control
 
