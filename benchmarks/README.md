@@ -82,6 +82,9 @@ measures RSS separately to avoid counting the Python parent's memory. RSS units
 are calibrated against the host's native resource accounting. Raw samples and
 median/minimum/maximum summaries are retained. Initialization is a **single setup
 observation**, not a sampled performance result.
+It has a separate ten-minute limit, configurable with `--setup-timeout`; each
+measured lifecycle command retains a two-minute limit. A timeout is recorded as
+an incomplete run and must not be interpreted as an accepted timing sample.
 
 Validation runs outside the timing window. Every sample checks payload names,
 entry types, modes, sizes, empty directories, symlink targets, copied SCM hashes,

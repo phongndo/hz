@@ -237,10 +237,10 @@ class Tool:
         # The cwd must be outside the source: Rift init can replace its inode.
         return run(self.command(*args), self.base, self.env, **options)
 
-    def init(self):
+    def init(self, timeout=120):
         if self.name == "hz":
-            return self.invoke("init", self.source, *(["--copy"] if self.copy else []))
-        return self.invoke("init", "--here", self.source)
+            return self.invoke("init", self.source, *(["--copy"] if self.copy else []), timeout=timeout)
+        return self.invoke("init", "--here", self.source, timeout=timeout)
 
     def create_args(self, name, filtered=False):
         if self.name == "hz":
@@ -314,6 +314,8 @@ def main():
     parser.add_argument("--rift", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--samples", type=int, default=7)
+    parser.add_argument("--setup-timeout", type=int, default=600,
+                        help="Seconds allowed for each one-time initialization (default: 600)")
     parser.add_argument("--workloads", nargs="+", choices=["small", "development", "large-files"])
     parser.add_argument("--source", type=Path, help="Read-only input checkout; copied into disposable roots")
     parser.add_argument("--modes", nargs="+", choices=["full", "filtered"], default=["full", "filtered"])
@@ -323,6 +325,8 @@ def main():
     args.output = args.output.resolve()
     if args.samples < 3:
         parser.error("use at least three measured samples")
+    if args.setup_timeout <= 0:
+        parser.error("--setup-timeout must be positive")
     if not __debug__:
         parser.error("validation requires Python assertions; do not use -O")
     if platform.system() not in {"Linux", "Darwin"}:
@@ -356,6 +360,7 @@ def main():
                   memory_calibration=calibrate_memory(),
                   **host_details(args.output),
                   initialization="single setup observation per tool/workload; not a sampled benchmark",
+                  setup_timeout_seconds=args.setup_timeout,
                   validation="payload names, kinds, modes, symlink targets and sizes each sample; payload hashes warmup/last; SCM hashes with documented mutable paths excluded; Git state and removal/GC registry+disk assertions each sample",
                   binaries={name: dict(path=str(Path(binary).resolve()),
                                      sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest())
@@ -371,7 +376,9 @@ def main():
         expected = {}
         for name, tool in tools.items():
             expected[name] = copy_fixture(args.source, tool.source) if args.source else fixture(tool.source, kind)
-            entries[name] = dict(init=require(tool.init()), modes={})
+            entries[name] = dict(init=tool.init(timeout=args.setup_timeout), modes={})
+            (args.output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
+            require(entries[name]["init"])
         assert expected["hz"] == expected["rift"]
         for mode in args.modes:
             filtered = mode == "filtered"
