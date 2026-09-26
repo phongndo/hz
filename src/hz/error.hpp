@@ -14,6 +14,14 @@ enum class ErrorKind {
     cow_unavailable,   // the filesystem cannot clone here
     unsupported_entry, // a socket, fifo, or device cannot be copied
     invalid_path,      // the caller named a path hz cannot use
+    invalid_argument,  // a name, flag, or value is not acceptable
+    not_found,         // no workspace matches
+    ambiguous,         // more than one workspace matches
+    conflict,          // the request contradicts current state
+    inconsistent,      // the registry and the filesystem disagree
+    unsafe_source,     // source control is mid-operation in the source
+    hook_failed,       // a lifecycle hook exited unsuccessfully
+    registry,          // the registry database failed
 };
 
 std::string_view to_string(ErrorKind kind);

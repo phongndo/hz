@@ -15,6 +15,22 @@ std::string_view to_string(ErrorKind kind) {
         return "unsupported_entry";
     case ErrorKind::invalid_path:
         return "invalid_path";
+    case ErrorKind::invalid_argument:
+        return "invalid_argument";
+    case ErrorKind::not_found:
+        return "not_found";
+    case ErrorKind::ambiguous:
+        return "ambiguous";
+    case ErrorKind::conflict:
+        return "conflict";
+    case ErrorKind::inconsistent:
+        return "inconsistent";
+    case ErrorKind::unsafe_source:
+        return "unsafe_source";
+    case ErrorKind::hook_failed:
+        return "hook_failed";
+    case ErrorKind::registry:
+        return "registry";
     }
     return "unknown";
 }

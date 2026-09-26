@@ -12,7 +12,8 @@ Checks: >
   -cppcoreguidelines-pro-type-vararg,
   -bugprone-easily-swappable-parameters,
   -performance-enum-size,
-  -cppcoreguidelines-avoid-const-or-ref-data-members
+  -cppcoreguidelines-avoid-const-or-ref-data-members,
+  -readability-convert-member-functions-to-static
 HeaderFilterRegex: 'src/.*'
 CheckOptions:
   readability-identifier-naming.NamespaceCase: lower_case

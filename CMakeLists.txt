@@ -36,16 +36,22 @@ add_library(
   src/hz/clone.cpp
   src/hz/error.cpp
   src/hz/filter.cpp
+  src/hz/handle.cpp
+  src/hz/marker.cpp
   src/hz/metadata.cpp
+  src/hz/registry.cpp
+  src/hz/sqlite.cpp
   src/hz/tree.cpp
-  src/hz/ulid.cpp)
+  src/hz/ulid.cpp
+  src/hz/workspaces.cpp)
 target_include_directories(hz_core PUBLIC src ${CMAKE_CURRENT_BINARY_DIR}/include)
 target_link_libraries(
   hz_core
   PUBLIC tomlplusplus::tomlplusplus nlohmann_json::nlohmann_json SQLite::SQLite3
   PRIVATE hz_warnings)
 
-add_executable(hz src/cli/main.cpp)
+add_executable(hz src/cli/main.cpp src/cli/output.cpp)
+target_include_directories(hz PRIVATE src)
 target_link_libraries(hz PRIVATE hz_core CLI11::CLI11 hz_warnings)
 
 install(TARGETS hz)

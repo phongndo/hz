@@ -5,4 +5,8 @@ Checks: >
   -cppcoreguidelines-avoid-c-arrays,
   -modernize-avoid-c-arrays,
   -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
-  -cppcoreguidelines-special-member-functions
+  -cppcoreguidelines-special-member-functions,
+  -cppcoreguidelines-owning-memory,
+  -bugprone-unchecked-optional-access,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -modernize-use-nodiscard
