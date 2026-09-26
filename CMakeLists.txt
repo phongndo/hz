@@ -25,12 +25,20 @@ target_compile_options(
   hz_warnings
   INTERFACE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic;-Wshadow;-Wconversion;-Wsign-conversion>
-)
+    # Designated initializers that leave defaulted fields out are intended.
+    $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wno-missing-designated-field-initializers>)
 
 configure_file(src/hz/version.hpp.in include/hz/version.hpp @ONLY)
 
 # hz_core: everything except argument parsing and output formatting.
-add_library(hz_core STATIC src/hz/ulid.cpp)
+add_library(
+  hz_core STATIC
+  src/hz/clone.cpp
+  src/hz/error.cpp
+  src/hz/filter.cpp
+  src/hz/metadata.cpp
+  src/hz/tree.cpp
+  src/hz/ulid.cpp)
 target_include_directories(hz_core PUBLIC src ${CMAKE_CURRENT_BINARY_DIR}/include)
 target_link_libraries(
   hz_core

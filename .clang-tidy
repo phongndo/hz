@@ -9,7 +9,10 @@ Checks: >
   -readability-magic-numbers,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-pro-bounds-pointer-arithmetic,
-  -cppcoreguidelines-pro-type-vararg
+  -cppcoreguidelines-pro-type-vararg,
+  -bugprone-easily-swappable-parameters,
+  -performance-enum-size,
+  -cppcoreguidelines-avoid-const-or-ref-data-members
 HeaderFilterRegex: 'src/.*'
 CheckOptions:
   readability-identifier-naming.NamespaceCase: lower_case

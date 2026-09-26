@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, cpp-rewrite]
   pull_request:
 
 jobs:
@@ -16,3 +16,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - run: nix flake check -L
+
+  # The package check above runs in the Nix sandbox, where the build directory
+  # cannot clone. This job runs the suite on real copy-on-write filesystems
+  # (and ext4 as the unsupported case) via loopback mounts.
+  filesystems:
+    strategy:
+      fail-fast: false
+      matrix:
+        filesystem: [btrfs, xfs, ext4, zfs]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Mount ${{ matrix.filesystem }}
+        run: sudo scripts/ci/mount-filesystem "${{ matrix.filesystem }}" /mnt/hz-test "$USER"
+      - run: nix develop -c just build
+      - run: nix develop -c ctest --preset debug
+        env:
+          HZ_TEST_DIR: /mnt/hz-test
