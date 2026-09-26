@@ -12,6 +12,11 @@ on:
         description: Measured samples per tool (at least 3)
         type: number
         default: 5
+      filesystem:
+        description: Filesystem to exercise
+        type: choice
+        options: [all, btrfs, xfs, apfs]
+        default: all
 
 permissions:
   contents: read
@@ -22,14 +27,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            filesystem: btrfs
-          - os: ubuntu-latest
-            filesystem: xfs
-          - os: macos-latest
-            filesystem: apfs
-    runs-on: ${{ matrix.os }}
+        filesystem: ${{ fromJSON(inputs.filesystem == 'all' && '["btrfs","xfs","apfs"]' || format('["{0}"]', inputs.filesystem)) }}
+    runs-on: ${{ matrix.filesystem == 'apfs' && 'macos-latest' || 'ubuntu-latest' }}
     env:
       RIFT_REVISION: 5afb72b492a4aa0c81c2fbfe39a709aebf3773c7
       BENCH_WORKLOAD: ${{ inputs.workload }}
@@ -49,7 +48,7 @@ jobs:
             mkdir "$RUNNER_TEMP/hz-benchmark"
             # Linux contains tracked names differing only by case. Prepare and
             # measure on the same case-sensitive APFS volume.
-            hdiutil create -size 12g -type SPARSE -fs APFSX -volname hz-benchmark "$RUNNER_TEMP/hz-benchmark.sparseimage"
+            hdiutil create -size 12g -type SPARSE -fs 'Case-sensitive APFS' -volname hz-benchmark "$RUNNER_TEMP/hz-benchmark.sparseimage"
             hdiutil attach -nobrowse -mountpoint "$RUNNER_TEMP/hz-benchmark" "$RUNNER_TEMP/hz-benchmark.sparseimage"
             echo "BENCH_BASE=$RUNNER_TEMP/hz-benchmark" >> "$GITHUB_ENV"
           fi

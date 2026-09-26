@@ -125,6 +125,8 @@ by concurrency/restore checks. For example:
 gh workflow run benchmark.yml -f workload=typescript -f samples=5
 ```
 
+Add `-f filesystem=apfs` (or `btrfs`/`xfs`) to run a single filesystem.
+
 Download the run's artifacts for raw JSON, logs, and fixture provenance. Shared
 CI hosts are useful for portability and correctness evidence; their timings
 are noisy and should not be compared across hosts as filesystem rankings.
