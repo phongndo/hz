@@ -42,7 +42,9 @@ detail::Fd open_directory_at(int directory, const char* name, const fs::path& pa
 }
 
 CreatedAs created_as(const struct stat& info) {
-    return {.uid = info.st_uid, .gid = info.st_gid, .mode = info.st_mode & permission_bits};
+    return {.uid = info.st_uid,
+            .gid = info.st_gid,
+            .mode = static_cast<mode_t>(info.st_mode & permission_bits)};
 }
 
 Error unsupported(const fs::path& path) {
@@ -239,9 +241,9 @@ class TreeCopier {
         if (options_.mode == CopyMode::copy && ::fcntl(source.get(), F_SETFL, 0) != 0) {
             throw errno_error("open", from);
         }
-        const auto destination = detail::Fd::open_at(directory.destination.get(), name,
-                                                     O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
-                                                     (info.st_mode & 0777) | S_IWUSR, "create", to);
+        const auto destination = detail::Fd::open_at(
+            directory.destination.get(), name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+            static_cast<mode_t>((info.st_mode & 0777) | S_IWUSR), "create", to);
         copy_contents(source.get(), destination.get(), options_.mode, from, to);
         remember_link(link, to);
         replay_metadata(source.get(), destination.get(), info,
@@ -283,7 +285,8 @@ class TreeCopier {
             }
         }
         if ((chowned || (info.st_mode & (S_ISUID | S_ISGID)) != 0) &&
-            ::fchmodat(directory.destination.get(), name, info.st_mode & permission_bits,
+            ::fchmodat(directory.destination.get(), name,
+                       static_cast<mode_t>(info.st_mode & permission_bits),
                        AT_SYMLINK_NOFOLLOW) != 0) {
             throw errno_error("set permissions", to);
         }

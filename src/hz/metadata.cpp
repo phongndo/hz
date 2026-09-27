@@ -153,13 +153,13 @@ void replay_metadata(int source, int destination, const struct stat& info, const
     }
     // Attributes need owner write, which a restrictive umask can withhold.
     const bool writable = (created.mode & S_IWUSR) != 0;
-    if (!writable && ::fchmod(destination, created.mode | S_IWUSR) != 0) {
+    if (!writable && ::fchmod(destination, static_cast<mode_t>(created.mode | S_IWUSR)) != 0) {
         throw errno_error("set permissions", to);
     }
     const bool acl = copy_xattrs(FdAttributes{source}, FdAttributes{destination}, from, to);
     // chown can clear set-ID bits and an ACL rewrites the mode, so reapply the
     // source's bits after either, and whenever the mode differs.
-    const mode_t mode = info.st_mode & permission_bits;
+    const auto mode = static_cast<mode_t>(info.st_mode & permission_bits);
     if ((chowned || acl || !writable || created.mode != mode) && ::fchmod(destination, mode) != 0) {
         throw errno_error("set permissions", to);
     }
