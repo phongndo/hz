@@ -40,10 +40,11 @@ moves into trash. A failure cancels removal, though side effects of hooks that
 already ran remain. Unregistering a root leaves its directory in place and does
 not run a removal hook in the root itself.
 
-Hooks may use read-only queries such as `hz pwd` and `hz git status`. They must
-not invoke lifecycle mutations, config writes, handoff, or doctor: the parent
-operation holds the registry's operation lock, so these commands return a
-conflict. Run any follow-up mutations after the outer command finishes.
+Hooks may use read-only queries such as `hz pwd` and `hz git status`. A
+preremove hook cannot run mutating commands, which would wait on the lock its
+parent holds, and gets a conflict ([why](design.md#registry)). A postcreate
+hook may, except on its own new workspace or a workspace containing it: the
+new workspace stays busy until its hooks finish.
 
 Hook output goes to stderr, preserving JSON and path-only output on stdout.
 Hooks receive EOF on stdin and these environment variables:

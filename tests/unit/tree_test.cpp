@@ -1,13 +1,23 @@
 #include "hz/clone.hpp"
 #include "hz/error.hpp"
+#include "hz/fsutil.hpp"
+#include "hz/marker.hpp"
 #include "hz/process.hpp"
 #include "hz/tree.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <dirent.h>
+#include <fcntl.h>
+#include <format>
+#include <map>
+#include <optional>
+#include <set>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/xattr.h>
+#include <tuple>
 
 #ifdef __APPLE__
 #include <memory>
@@ -71,6 +81,182 @@ void check_copy(const fs::path& source, const fs::path& dest) {
 }
 
 } // namespace
+
+namespace {
+
+// Everything copy_tree promises about each entry, keyed by relative path, and
+// which entries share an inode.
+struct TreeScan {
+    std::map<std::string, std::tuple<fs::file_type, fs::perms, std::string, std::int64_t>> entries;
+    std::set<std::set<std::string>> links;
+};
+
+TreeScan scan(const fs::path& root) {
+    TreeScan result;
+    std::map<std::pair<dev_t, ino_t>, std::set<std::string>> inodes;
+    for (const auto& entry : fs::recursive_directory_iterator(root)) {
+        const auto relative = entry.path().lexically_relative(root).string();
+        const auto status = fs::symlink_status(entry.path());
+        std::string content;
+        std::int64_t mtime = 0;
+        if (status.type() == fs::file_type::symlink) {
+            content = fs::read_symlink(entry.path()).string();
+        } else {
+            mtime = mtime_ns(entry.path());
+            if (status.type() == fs::file_type::regular) {
+                content = read_file(entry.path());
+                struct stat info{};
+                REQUIRE(::lstat(entry.path().c_str(), &info) == 0);
+                if (info.st_nlink > 1) {
+                    inodes[{info.st_dev, info.st_ino}].insert(relative);
+                }
+            }
+        }
+        result.entries[relative] = {status.type(), status.permissions(), content, mtime};
+    }
+    for (auto& [inode, paths] : inodes) {
+        result.links.insert(paths);
+    }
+    return result;
+}
+
+// Many directories, a directory copied in several batches, hard links across
+// directories, and read-only directories at depth.
+fs::path make_large_fixture(const TempDir& temp) {
+    const fs::path source = temp / "source";
+    for (int i = 0; i < 40; ++i) {
+        const auto directory = source / std::format("d{}", i) / "a" / "b";
+        write_file(directory / "file.txt", std::format("file {}", i));
+        fs::create_symlink("file.txt", directory / "link");
+    }
+    for (int i = 0; i < 40; i += 4) {
+        fs::create_hard_link(source / std::format("d{}", i) / "a" / "b" / "file.txt",
+                             source / std::format("d{}", i + 1) / "hard.txt");
+    }
+    for (int i = 0; i < 40; i += 7) {
+        fs::permissions(source / std::format("d{}", i) / "a" / "b",
+                        fs::perms::owner_read | fs::perms::owner_exec);
+    }
+    for (int i = 0; i < 700; ++i) {
+        write_file(source / "flat" / std::format("f{}", i), std::format("flat {}", i));
+    }
+    fs::permissions(source / "flat" / "f5", fs::perms::owner_read);
+    return source;
+}
+
+// The first entry whose recorded properties differ, for a readable failure.
+std::string first_difference(const TreeScan& actual, const TreeScan& expected) {
+    for (const auto& [path, properties] : expected.entries) {
+        const auto found = actual.entries.find(path);
+        if (found == actual.entries.end()) {
+            return "missing " + path;
+        }
+        const auto& [type, perms, content, mtime] = properties;
+        const auto& [actual_type, actual_perms, actual_content, actual_mtime] = found->second;
+        if (found->second != properties) {
+            return std::format("{}: type {} vs {}, perms {:o} vs {:o}, mtime {} vs {}, content "
+                               "equal {}",
+                               path, static_cast<int>(actual_type), static_cast<int>(type),
+                               static_cast<unsigned>(actual_perms), static_cast<unsigned>(perms),
+                               actual_mtime, mtime, actual_content == content);
+        }
+    }
+    for (const auto& [path, properties] : actual.entries) {
+        if (!expected.entries.contains(path)) {
+            return "unexpected " + path;
+        }
+    }
+    return actual.links == expected.links ? "" : "hard link groups differ";
+}
+
+} // namespace
+
+TEST_CASE("copy_tree copies large trees identically with any number of workers") {
+    TempDir temp;
+    const auto source = make_large_fixture(temp);
+    const auto mode = hz::probe_clone_support(temp.path()) ? hz::CopyMode::cow : hz::CopyMode::copy;
+    hz::copy_tree(source, temp / "serial", {.mode = mode, .workers = 1});
+    hz::copy_tree(source, temp / "parallel", {.mode = mode, .workers = 8});
+    const auto expected = scan(source);
+    REQUIRE(expected.entries.size() == 911);
+    REQUIRE(expected.links.size() == 10);
+    REQUIRE(first_difference(scan(temp / "serial"), expected).empty());
+    REQUIRE(first_difference(scan(temp / "parallel"), expected).empty());
+    REQUIRE_FALSE(fs::equivalent(temp / "parallel" / "d0" / "a" / "b" / "file.txt",
+                                 source / "d0" / "a" / "b" / "file.txt"));
+}
+
+TEST_CASE("read_directory lists an open directory completely every time") {
+    TempDir temp;
+    for (const char* name : {"a", "b", "c"}) {
+        write_file(temp / name, name);
+    }
+    fs::create_directory(temp / "d");
+    const auto directory =
+        hz::detail::Fd::open(temp.path(), O_RDONLY | O_DIRECTORY, 0, "open directory");
+    for (int pass = 0; pass < 2; ++pass) {
+        std::set<std::pair<std::string, unsigned char>> seen;
+        for (const auto& entry : hz::read_directory(directory.get(), temp.path())) {
+            seen.emplace(entry.name, entry.type);
+        }
+        REQUIRE(seen == std::set<std::pair<std::string, unsigned char>>{
+                            {"a", DT_REG}, {"b", DT_REG}, {"c", DT_REG}, {"d", DT_DIR}});
+    }
+}
+
+TEST_CASE("copy_tree copies under a umask that withholds owner access") {
+    TempDir temp;
+    write_file(temp / "source" / "nested" / "file", "content");
+    const mode_t previous = ::umask(0777);
+    std::optional<hz::ErrorKind> failure;
+    try {
+        hz::copy_tree(temp / "source", temp / "dest", {.mode = hz::CopyMode::copy, .workers = 2});
+    } catch (const hz::Error& error) {
+        failure = error.kind();
+    }
+    ::umask(previous);
+    REQUIRE_FALSE(failure);
+    REQUIRE(read_file(temp / "dest" / "nested" / "file") == "content");
+    REQUIRE(fs::status(temp / "dest" / "nested").permissions() ==
+            fs::status(temp / "source" / "nested").permissions());
+}
+
+TEST_CASE("tree work leaves the open-file limit as it found it") {
+    TempDir temp;
+    write_file(temp / "source" / "file", "1");
+    rlimit before{};
+    REQUIRE(::getrlimit(RLIMIT_NOFILE, &before) == 0);
+    hz::copy_tree(temp / "source", temp / "dest", {.mode = hz::CopyMode::copy, .workers = 2});
+    hz::remove_tree(temp / "dest");
+    rlimit after{};
+    REQUIRE(::getrlimit(RLIMIT_NOFILE, &after) == 0);
+    REQUIRE(after.rlim_cur == before.rlim_cur);
+}
+
+TEST_CASE("copy_tree removes a partial parallel copy that fails deep in the tree") {
+    TempDir temp;
+    const auto source = make_large_fixture(temp);
+    REQUIRE(::mkfifo((source / "d20" / "a" / "fifo").c_str(), 0600) == 0);
+    const fs::path dest = temp / "dest";
+    REQUIRE(error_kind([&] {
+                hz::copy_tree(source, dest, {.mode = hz::CopyMode::copy, .workers = 8});
+            }) == hz::ErrorKind::unsupported_entry);
+    REQUIRE_FALSE(fs::exists(fs::symlink_status(dest)));
+}
+
+TEST_CASE("remove_tree deletes read-only and inaccessible directories, marker last") {
+    TempDir temp;
+    const auto root = make_large_fixture(temp);
+    hz::write_marker(root, "01M3FT15QDE8TKB66940X4WNKG");
+    fs::create_directories(root / "closed" / "inner");
+    write_file(root / "closed" / "inner" / "file", "x");
+    fs::permissions(root / "closed" / "inner", fs::perms::none);
+    fs::permissions(root / "closed", fs::perms::owner_read | fs::perms::owner_exec);
+    fs::permissions(root, fs::perms::owner_read | fs::perms::owner_exec);
+    hz::remove_tree(root);
+    REQUIRE_FALSE(fs::exists(fs::symlink_status(root)));
+    REQUIRE_NOTHROW(hz::remove_tree(root)); // already gone
+}
 
 TEST_CASE("copy_tree reproduces a tree in copy mode") {
     TempDir temp;
@@ -193,7 +379,29 @@ TEST_CASE("copy_tree replays user extended attributes") {
     SECTION("read-only files keep their attributes") {
         fs::permissions(source / "file", fs::perms::owner_read);
     }
-    hz::copy_tree(source, temp / "dest", {.mode = hz::CopyMode::copy});
+    // A umask withholding owner write must not cost the attributes.
+    struct Umask {
+        mode_t previous = ::umask(0277);
+        ~Umask() { ::umask(previous); }
+        Umask() = default;
+        Umask(const Umask&) = delete;
+        Umask& operator=(const Umask&) = delete;
+        Umask(Umask&&) = delete;
+        Umask& operator=(Umask&&) = delete;
+    };
+    std::optional<Umask> umask;
+    SECTION("under a restrictive umask") {
+        umask.emplace();
+    }
+    auto mode = hz::CopyMode::copy;
+    SECTION("byte copies") {}
+    SECTION("clones") {
+        if (!hz::probe_clone_support(temp.path())) {
+            SKIP("filesystem does not support cloning");
+        }
+        mode = hz::CopyMode::cow;
+    }
+    hz::copy_tree(source, temp / "dest", {.mode = mode});
     char value[8] = {};
 #ifdef __APPLE__
     auto length =

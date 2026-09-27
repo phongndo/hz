@@ -1,3 +1,9 @@
+#include <format>
+#include <functional>
+#include <future>
+#include <string>
+#include <vector>
+
 #include "fixture.hpp"
 
 using hz::test::Fixture;
@@ -306,4 +312,91 @@ TEST_CASE("read-only queries remain available during hooks", "[review]") {
     write_file(f.project / ".hz" / "hz.toml",
                "[lifecycle]\npostcreate = [[\"" + std::string(HZ_BINARY) + "\", \"pwd\"]]\n");
     REQUIRE(fs::exists(f.child("query-hook") / "src" / "main.cpp"));
+}
+
+TEST_CASE("concurrent creates, removals, and gc all succeed without retries", "[concurrency]") {
+    Fixture f;
+    f.init();
+    for (int i = 0; i < 400; ++i) {
+        write_file(f.project / "tree" / std::format("d{}", i % 40) / std::format("f{}", i), "x");
+    }
+    const auto run_all = [&](const std::function<std::vector<std::string>(int)>& args) {
+        std::vector<std::future<hz::ProcessResult>> runs;
+        runs.reserve(6);
+        for (int i = 0; i < 6; ++i) {
+            runs.push_back(std::async(std::launch::async, [&, i] {
+                auto argv = args(i);
+                argv.insert(argv.begin(), HZ_BINARY);
+                return hz::run_process(argv, {.cwd = f.project,
+                                              .input = {},
+                                              .env = {{"HZ_DATA_DIR", f.data.string()}},
+                                              .passthrough = false});
+            }));
+        }
+        for (auto& run : runs) {
+            const auto result = run.get();
+            INFO("hz stderr: " << result.err);
+            REQUIRE(result.ok());
+        }
+    };
+    run_all([](int i) {
+        return std::vector<std::string>{"--machine", "new", std::format("c{}", i), "--no-hooks"};
+    });
+    const auto listed = f.ok({"--machine", "ls"}).json()["workspaces"];
+    REQUIRE(listed.size() == 7);
+    for (const auto& workspace : listed) {
+        REQUIRE(workspace["state"] == "active");
+        REQUIRE(read_file(fs::path(workspace["path"].get<std::string>()) / "tree" / "d7" / "f7") ==
+                "x");
+    }
+    run_all([](int i) {
+        return std::vector<std::string>{"--machine", "rm", std::format("c{}", i), "--no-hooks"};
+    });
+    run_all([](int) { return std::vector<std::string>{"--machine", "gc"}; });
+    REQUIRE(f.ok({"--machine", "ls", "--all"}).json()["workspaces"].size() == 1);
+    REQUIRE(f.ok({"--machine", "doctor"}).json()["findings"].empty());
+}
+
+TEST_CASE("a postcreate hook may run hz, but not on its own new workspace", "[concurrency]") {
+    Fixture f;
+    f.init();
+    write_file(f.project / ".hz" / "hz.toml", "[lifecycle]\npostcreate = [[\"" +
+                                                  std::string(HZ_BINARY) +
+                                                  "\", \"rm\", \"hooked\", \"--no-hooks\"]]\n");
+    const auto created = f.hz(f.project, {"--json", "new", "hooked"});
+    REQUIRE(created.exit_code == 1);
+    REQUIRE(created.json()["error"]["kind"] == "hook_failed");
+    const auto listed = f.ok({"--json", "path", "hooked"}).json()["workspace"];
+    REQUIRE(listed["state"] == "active");
+    REQUIRE(fs::exists(fs::path(listed["path"].get<std::string>()) / "src" / "main.cpp"));
+    f.ok({"rm", "hooked", "--no-hooks"}); // the lease ended with the create
+
+    write_file(f.project / ".hz" / "hz.toml",
+               std::format("[lifecycle]\npostcreate = [['{}', '--at', '{}', 'new', 'sibling', "
+                           "'--no-hooks']]\n",
+                           HZ_BINARY, f.project.string()));
+    f.ok({"new", "first"});
+    REQUIRE(f.ok({"--json", "path", "sibling"}).json()["workspace"]["state"] == "active");
+}
+
+TEST_CASE("only a live hook parent on the same registry refuses mutations", "[concurrency]") {
+    Fixture f;
+    f.init();
+    const auto gc = [&](const fs::path& data, const std::string& token) {
+        return hz::run_process({HZ_BINARY, "--machine", "gc"},
+                               {.cwd = f.project,
+                                .input = {},
+                                .env = {{"HZ_DATA_DIR", data.string()},
+                                        {"HZ_LIFECYCLE", "postcreate"},
+                                        {"HZ_HOOK_PARENT", token}},
+                                .passthrough = false});
+    };
+    const auto token = hz::generate_ulid();
+    {
+        const auto parent = hz::acquire_lease(f.data, token);
+        REQUIRE(gc(f.data, token).exit_code != 0);
+        REQUIRE(gc(f.temp / "other", token).ok());
+    }
+    // A process that outlived the hook's hz process may mutate.
+    REQUIRE(gc(f.data, token).ok());
 }

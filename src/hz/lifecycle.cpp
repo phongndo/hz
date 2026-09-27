@@ -18,6 +18,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <fcntl.h>
 #include <format>
 #include <ranges>
 #include <set>
@@ -108,23 +110,50 @@ void try_rmdir(const fs::path& directory) {
     ::rmdir(directory.c_str());
 }
 
-// Runs lifecycle hooks in `workspace`, stopping at the first failure.
-void run_hooks(const std::vector<Command>& commands, std::string_view lifecycle,
-               const Workspace& workspace, const fs::path& source, const fs::path& root) {
+// The lease an hz process holds while its hooks run, named by a fresh token.
+struct HookLease {
+    fs::path data_directory;
+    std::string token = generate_ulid();
+    detail::Fd fd;
+
+    explicit HookLease(fs::path directory)
+        : data_directory(std::move(directory)), fd(acquire_lease(data_directory, token, true)) {}
+    ~HookLease() {
+        try {
+            release_lease(data_directory, token, std::move(fd));
+        } catch (const Error&) { // NOLINT(bugprone-empty-catch): a leftover free lease is harmless
+        }
+    }
+    HookLease(const HookLease&) = delete;
+    HookLease& operator=(const HookLease&) = delete;
+    HookLease(HookLease&&) = delete;
+    HookLease& operator=(HookLease&&) = delete;
+};
+
+// Runs lifecycle hooks in `workspace`, stopping at the first failure. A
+// caller holding the operation lock passes its hook lease: hooks then learn
+// which process and registry they run under, so hz commands they start refuse
+// mutations that would wait on the lock.
+void run_hooks(const HookLease* lease, const std::vector<Command>& commands,
+               std::string_view lifecycle, const Workspace& workspace, const fs::path& source,
+               const fs::path& root) {
     for (Command argv : commands) {
         if (argv.front().find('/') != std::string::npos && fs::path(argv.front()).is_relative()) {
             argv.front() = (workspace.path / argv.front()).string();
         }
-        const ProcessOptions options{.cwd = workspace.path,
-                                     .input = {},
-                                     .env = {{"HZ_ROOT", root.string()},
-                                             {"HZ_SOURCE", source.string()},
-                                             {"HZ_WORKSPACE", workspace.path.string()},
-                                             {"HZ_WORKSPACE_ID", workspace.id},
-                                             {"HZ_PARENT_ID", workspace.parent_id.value_or("")},
-                                             {"HZ_HANDLE", workspace.handle},
-                                             {"HZ_LIFECYCLE", std::string(lifecycle)}},
-                                     .passthrough = true};
+        ProcessOptions options{.cwd = workspace.path,
+                               .input = {},
+                               .env = {{"HZ_ROOT", root.string()},
+                                       {"HZ_SOURCE", source.string()},
+                                       {"HZ_WORKSPACE", workspace.path.string()},
+                                       {"HZ_WORKSPACE_ID", workspace.id},
+                                       {"HZ_PARENT_ID", workspace.parent_id.value_or("")},
+                                       {"HZ_HANDLE", workspace.handle},
+                                       {"HZ_LIFECYCLE", std::string(lifecycle)}},
+                               .passthrough = true};
+        if (lease != nullptr) {
+            options.env.emplace_back(hook_parent_variable, lease->token);
+        }
         ProcessResult result;
         try {
             result = run_process(argv, options);
@@ -164,18 +193,38 @@ void register_child(Registry& registry, Workspace& child,
     }
 }
 
-void check_removable(const Workspace& workspace) {
+// Whether another process is still copying or deleting `workspace`. Rows
+// without a lease file come from an older hz, which recorded only its pid.
+bool busy(const fs::path& data_directory, const Workspace& workspace) {
+    switch (lease_state(data_directory, workspace.id)) {
+    case Lease::held:
+        return true;
+    case Lease::free:
+        return false;
+    case Lease::absent:
+        return workspace.state == State::creating && workspace.pid && process_alive(*workspace.pid);
+    }
+    return false;
+}
+
+void check_removable(const fs::path& data_directory, const Workspace& workspace) {
     if (workspace.pinned) {
         throw Error(ErrorKind::conflict, std::format("'{}' is pinned; run `hz unpin {}` first",
                                                      workspace.handle, workspace.handle));
     }
-    if (workspace.state == State::creating && workspace.pid && process_alive(*workspace.pid)) {
+    if (busy(data_directory, workspace)) {
         throw Error(ErrorKind::conflict,
-                    std::format("'{}' is still being created", workspace.handle));
+                    workspace.state == State::creating
+                        ? std::format("'{}' is still being created; retry when that finishes",
+                                      workspace.handle)
+                        : std::format("'{}' is busy in another hz process; retry when it finishes",
+                                      workspace.handle));
     }
 }
 
-void run_preremove_hooks(Registry& registry, const std::vector<Workspace>& batch) {
+void run_preremove_hooks(const fs::path& data_directory, Registry& registry,
+                         const std::vector<Workspace>& batch) {
+    std::optional<HookLease> lease; // one for the batch, taken when first needed
     for (const auto& workspace : batch) {
         if (!exists_nofollow(workspace.path)) {
             continue;
@@ -183,8 +232,15 @@ void run_preremove_hooks(Registry& registry, const std::vector<Workspace>& batch
         const auto parent =
             workspace.parent_id ? registry.find(*workspace.parent_id) : std::nullopt;
         const auto root = registry.find(workspace.root_id);
-        run_hooks(load_config(workspace.path).preremove, "preremove", workspace,
-                  parent ? parent->path : workspace.path, root ? root->path : workspace.path);
+        const auto commands = load_config(workspace.path).preremove;
+        if (commands.empty()) {
+            continue;
+        }
+        if (!lease) {
+            lease.emplace(data_directory);
+        }
+        run_hooks(&*lease, commands, "preremove", workspace, parent ? parent->path : workspace.path,
+                  root ? root->path : workspace.path);
     }
 }
 
@@ -267,52 +323,96 @@ fs::path Workspaces::storage_directory(const Workspace& root) {
 }
 
 Workspace Workspaces::create(const CreateOptions& options) {
-    const auto lock = operation_lock();
-    const Workspace source = resolve(options.source);
-    if (source.state != State::active) {
-        throw Error(ErrorKind::conflict,
-                    std::format("workspace '{}' is still being created", source.handle));
-    }
-    require_marker(source.path, source);
-    const auto root = registry_.find(source.root_id);
-    if (!root) {
-        throw Error(
-            ErrorKind::inconsistent,
-            std::format("the root of workspace '{}' is no longer registered", source.handle));
-    }
-    fs::path storage = storage_directory(*root);
-    if (options.into) {
-        storage = options.into->is_absolute() ? *options.into : context_ / *options.into;
-    }
-    make_private_directories(storage);
-    storage = canonical_directory(storage);
-    if (is_within(storage, source.path)) {
-        throw Error(ErrorKind::invalid_path,
-                    std::format("{} is inside the workspace being copied", storage.string()));
-    }
-    if (!same_filesystem(source.path, storage)) {
-        throw Error(ErrorKind::invalid_path,
-                    std::format("{} is on a different filesystem from {}; copy-on-write "
-                                "workspaces need both on one filesystem",
-                                storage.string(), source.path.string()));
-    }
-    git::check_source(source.path);
-    const bool filtered =
-        options.filtered.value_or(load_config(source.path).filtered.value_or(false));
-
+    // The copy runs without the operation lock, so other commands proceed
+    // meanwhile. The child's lease tells them it is still being copied.
+    Workspace source;
     Workspace child;
-    child.id = generate_ulid();
-    child.root_id = root->id;
-    child.parent_id = source.id;
-    child.path = storage / child.id;
-    require_separate_directory(child.path);
-    child.state = State::creating;
-    child.mode = root->mode;
-    child.filtered = filtered;
-    child.pid = ::getpid();
-    child.created_at = child.updated_at = now_ms();
-    register_child(registry_, child, options.handle);
+    fs::path root_path;
+    bool filtered = false;
+    detail::Fd lease(-1);
+    {
+        const auto lock = operation_lock();
+        source = resolve(options.source);
+        if (source.state != State::active) {
+            throw Error(ErrorKind::conflict,
+                        std::format("workspace '{}' is still being created", source.handle));
+        }
+        if (busy(data_directory_, source)) {
+            throw Error(ErrorKind::conflict,
+                        std::format("'{}' is busy in another hz process, for example running its "
+                                    "postcreate hooks; retry when it finishes",
+                                    source.handle));
+        }
+        require_marker(source.path, source);
+        const auto root = registry_.find(source.root_id);
+        if (!root) {
+            throw Error(
+                ErrorKind::inconsistent,
+                std::format("the root of workspace '{}' is no longer registered", source.handle));
+        }
+        root_path = root->path;
+        fs::path storage = storage_directory(*root);
+        if (options.into) {
+            storage = options.into->is_absolute() ? *options.into : context_ / *options.into;
+        }
+        make_private_directories(storage);
+        storage = canonical_directory(storage);
+        if (is_within(storage, source.path)) {
+            throw Error(ErrorKind::invalid_path,
+                        std::format("{} is inside the workspace being copied", storage.string()));
+        }
+        if (!same_filesystem(source.path, storage)) {
+            throw Error(ErrorKind::invalid_path,
+                        std::format("{} is on a different filesystem from {}; copy-on-write "
+                                    "workspaces need both on one filesystem",
+                                    storage.string(), source.path.string()));
+        }
+        git::check_source(source.path);
+        filtered = options.filtered.value_or(load_config(source.path).filtered.value_or(false));
 
+        child.id = generate_ulid();
+        child.root_id = root->id;
+        child.parent_id = source.id;
+        child.path = storage / child.id;
+        require_separate_directory(child.path);
+        child.state = State::creating;
+        child.mode = root->mode;
+        child.filtered = filtered;
+        child.pid = ::getpid();
+        child.created_at = child.updated_at = now_ms();
+        lease = acquire_lease(data_directory_, child.id);
+        try {
+            register_child(registry_, child, options.handle);
+        } catch (...) {
+            try {
+                release_lease(data_directory_, child.id, std::move(lease));
+            } catch (const Error&) { // NOLINT(bugprone-empty-catch): report the registration error
+            }
+            throw;
+        }
+    }
+
+    // Deletes the partial child without the lock, then forgets it. On failure
+    // the row stays for `hz doctor --fix`.
+    const auto discard_copy = [&] {
+        try {
+            remove_tree(child.path);
+            return true;
+        } catch (const Error&) {
+            return false;
+        }
+    };
+    const auto abandon = [&] {
+        if (!discard_copy()) {
+            return;
+        }
+        try {
+            const auto lock = operation_lock();
+            registry_.transaction([&] { registry_.erase(child.id); });
+            release_lease(data_directory_, child.id, std::move(lease));
+        } catch (const Error&) { // NOLINT(bugprone-empty-catch): report the original failure
+        }
+    };
     try {
         CopyTreeOptions copy;
         copy.mode = child.mode;
@@ -323,31 +423,79 @@ Workspace Workspaces::create(const CreateOptions& options) {
         write_marker(child.path, child.id);
         git::prepare_child(child.path);
     } catch (...) {
-        try {
-            remove_tree(child.path);
-            registry_.transaction([&] { registry_.erase(child.id); });
-        } catch (const Error&) { // NOLINT(bugprone-empty-catch): preserve the copy error; doctor
-                                 // owns cleanup.
-            // Leave the row for `hz doctor --fix`; report the original failure.
-        }
+        abandon();
         throw;
     }
 
-    child.state = State::active;
-    child.pid.reset();
-    child.updated_at = now_ms();
-    registry_.transaction([&] { registry_.update(child); });
+    std::optional<Error> refused;
+    {
+        std::optional<detail::Fd> lock;
+        try {
+            // The copy is done and activation is brief: wait longer than
+            // other commands rather than discard it.
+            lock.emplace(lock_operations(data_directory_, std::chrono::minutes(10)));
+        } catch (const Error&) {
+            // Leave only the row; its lease is free once this call unwinds, so
+            // `hz doctor --fix` forgets it. Retaking the lock would wait again.
+            discard_copy();
+            throw;
+        }
+        refused = activate(child, source);
+    }
+    if (refused) {
+        abandon();
+        throw *refused;
+    }
 
+    // The lease is kept while postcreate hooks run, so the new workspace is
+    // not removed or rewritten underneath them.
+    std::optional<Error> hook_failure;
     if (options.hooks) {
         try {
-            run_hooks(load_config(child.path).postcreate, "postcreate", child, source.path,
-                      root->path);
+            // Postcreate hooks run without the operation lock.
+            run_hooks(nullptr, load_config(child.path).postcreate, "postcreate", child, source.path,
+                      root_path);
         } catch (const Error& error) {
-            throw Error(error.kind(), std::format("{}; workspace '{}' was created at {}",
-                                                  error.what(), child.handle, child.path.string()));
+            hook_failure =
+                Error(error.kind(), std::format("{}; workspace '{}' was created at {}",
+                                                error.what(), child.handle, child.path.string()));
         }
     }
+    // Nothing else acquires an active workspace's lease, so ending it needs no
+    // lock.
+    try {
+        release_lease(data_directory_, child.id, std::move(lease));
+    } catch (const Error&) { // NOLINT(bugprone-empty-catch): a leftover free lease is harmless
+    }
+    if (hook_failure) {
+        throw *hook_failure;
+    }
     return child;
+}
+
+std::optional<Error> Workspaces::activate(Workspace& child, const Workspace& source) {
+    // Removing the source is refused while it has a child being created, but
+    // a manual move or re-registration can still happen meanwhile.
+    const auto now = registry_.find(source.id);
+    if (!now || now->state != State::active || now->path != source.path) {
+        return Error(
+            ErrorKind::conflict,
+            std::format("workspace '{}' changed while it was being copied", source.handle));
+    }
+    // Re-read the child's row: other commands, such as pin, may have changed
+    // it during the copy.
+    auto row = registry_.find(child.id);
+    if (!row) {
+        return Error(
+            ErrorKind::inconsistent,
+            std::format("workspace '{}' was unregistered while it was created", child.handle));
+    }
+    row->state = State::active;
+    row->pid.reset();
+    row->updated_at = now_ms();
+    registry_.transaction([&] { registry_.update(*row); });
+    child = std::move(*row);
+    return std::nullopt;
 }
 
 void Workspaces::trash(std::vector<Workspace>& batch) {
@@ -422,9 +570,11 @@ RemoveResult Workspaces::remove(const RemoveOptions& options) {
         }
         batch.push_back(std::move(workspace));
     }
-    std::ranges::for_each(batch, check_removable);
+    for (const auto& workspace : batch) {
+        check_removable(data_directory_, workspace);
+    }
     if (unregister) {
-        check_removable(target);
+        check_removable(data_directory_, target);
         if (exists_nofollow(target.path / marker_name)) {
             require_marker(target.path, target);
         }
@@ -435,7 +585,7 @@ RemoveResult Workspaces::remove(const RemoveOptions& options) {
                                              options.children_only || unregister);
 
     if (options.hooks) {
-        run_preremove_hooks(registry_, batch);
+        run_preremove_hooks(data_directory_, registry_, batch);
     }
 
     trash(batch);
@@ -548,39 +698,131 @@ std::vector<Workspace> Workspaces::restore(std::string_view target) {
     return batch;
 }
 
-GcResult Workspaces::gc() {
+std::optional<Workspaces::GcClaim> Workspaces::claim_for_gc(const std::string& id) {
     const auto lock = operation_lock();
-    GcResult result;
-    for (auto& workspace : registry_.trashed()) {
-        if (workspace.trash_path) {
-            // Renaming first makes the deletion visible to `restore`, which
-            // then refuses, and lets an interrupted gc resume.
-            const fs::path deleting = deleting_location(*workspace.trash_path);
-            if (!exists_nofollow(*workspace.trash_path) && exists_nofollow(workspace.path)) {
-                throw Error(ErrorKind::inconsistent,
-                            std::format("removing '{}' was interrupted; run `hz doctor --fix` "
-                                        "before garbage collection",
-                                        workspace.handle));
+    auto workspace = registry_.find(id);
+    // Restored, collected, or being deleted by another gc since listing.
+    if (!workspace || workspace->state != State::trashed || busy(data_directory_, *workspace)) {
+        return std::nullopt;
+    }
+    if (workspace->trash_path && !exists_nofollow(*workspace->trash_path) &&
+        exists_nofollow(workspace->path)) {
+        throw Error(ErrorKind::inconsistent,
+                    std::format("removing '{}' was interrupted; run `hz doctor --fix` before "
+                                "garbage collection",
+                                workspace->handle));
+    }
+    auto lease = acquire_lease(data_directory_, workspace->id);
+    GcClaim claim{.workspace = std::move(*workspace), .lease = std::move(lease), .deleting = {}};
+    const Workspace& claimed = claim.workspace;
+    if (claimed.trash_path) {
+        // Renaming first makes the deletion visible to `restore`, which then
+        // refuses, and lets an interrupted gc resume.
+        claim.deleting = deleting_location(*claimed.trash_path);
+        try {
+            if (exists_nofollow(*claimed.trash_path)) {
+                require_marker(*claimed.trash_path, claimed);
+                move_path(*claimed.trash_path, claim.deleting);
             }
-            if (exists_nofollow(*workspace.trash_path)) {
-                require_marker(*workspace.trash_path, workspace);
-                move_path(*workspace.trash_path, deleting);
-            }
-            finish_gc(deleting, workspace);
-            // Tidy up directories hz created, if now empty; never a
-            // user-chosen --into directory.
-            const fs::path trash_directory = workspace.trash_path->parent_path();
-            try_rmdir(trash_directory);
-            const fs::path storage = trash_directory.parent_path();
-            if (storage.parent_path().filename() == storage_name) {
-                try_rmdir(storage);
-                try_rmdir(storage.parent_path());
-            }
+        } catch (...) {
+            release_lease(data_directory_, claimed.id, std::move(claim.lease));
+            throw;
         }
-        registry_.transaction([&] { registry_.erase(workspace.id); });
-        result.deleted.push_back(std::move(workspace));
+    }
+    return claim;
+}
+
+GcResult Workspaces::gc() {
+    // Each workspace is claimed under the operation lock and deleted without
+    // it; its lease keeps a concurrent gc or doctor away meanwhile.
+    std::vector<std::string> ids;
+    {
+        const auto lock = operation_lock();
+        for (const auto& workspace : registry_.trashed()) {
+            ids.push_back(workspace.id);
+        }
+    }
+    GcResult result;
+    std::set<fs::path> trash_directories;
+    // Tidies what was deleted even if a later workspace fails.
+    const auto tidy = [&](std::chrono::seconds wait) {
+        if (!trash_directories.empty()) {
+            const auto lock = lock_operations(data_directory_, wait);
+            tidy_storage(trash_directories);
+        }
+    };
+    try {
+        for (const auto& id : ids) {
+            auto claim = claim_for_gc(id);
+            if (!claim) {
+                continue;
+            }
+            Workspace& workspace = claim->workspace;
+            if (workspace.trash_path) {
+                finish_gc(claim->deleting, workspace);
+            }
+            const auto lock = operation_lock();
+            registry_.transaction([&] { registry_.erase(workspace.id); });
+            try {
+                release_lease(data_directory_, workspace.id, std::move(claim->lease));
+            } catch (const Error&) { // NOLINT(bugprone-empty-catch): the deletion is committed
+            }
+            if (workspace.trash_path) {
+                trash_directories.insert(workspace.trash_path->parent_path());
+            }
+            result.deleted.push_back(std::move(workspace));
+        }
+    } catch (...) {
+        // Briefly: the failure may be a lock timeout, and the next gc tidies.
+        try {
+            tidy(std::chrono::seconds(1));
+        } catch (const Error&) { // NOLINT(bugprone-empty-catch): report the original failure
+        }
+        throw;
+    }
+    // The deletions are committed; tidying is housekeeping the next gc redoes.
+    try {
+        tidy(std::chrono::seconds(5));
+    } catch (const Error&) { // NOLINT(bugprone-empty-catch): report what was deleted
     }
     return result;
+}
+
+void Workspaces::tidy_storage(const std::set<fs::path>& trash_directories) {
+    // Remove directories hz created, if now empty and unused; never a
+    // user-chosen --into directory. A child being created is registered
+    // before its directory exists.
+    const auto workspaces = registry_.all();
+    for (const auto& trash_directory : trash_directories) {
+        try_rmdir(trash_directory);
+        const fs::path storage = trash_directory.parent_path();
+        const bool in_use = std::ranges::any_of(workspaces, [&](const Workspace& workspace) {
+            return is_within(workspace.path, storage);
+        });
+        if (storage.parent_path().filename() == storage_name && !in_use) {
+            try_rmdir(storage);
+            try_rmdir(storage.parent_path());
+        }
+    }
+}
+
+void Workspaces::require_quiescent(const Workspace& workspace) {
+    if (workspace.state != State::active) {
+        throw Error(ErrorKind::conflict, std::format("workspace '{}' is {}", workspace.handle,
+                                                     to_string(workspace.state)));
+    }
+    if (busy(data_directory_, workspace)) {
+        throw Error(ErrorKind::conflict,
+                    std::format("'{}' is busy in another hz process; retry when it finishes",
+                                workspace.handle));
+    }
+    for (const auto& child : registry_.children(workspace.id)) {
+        if (child.state == State::creating && busy(data_directory_, child)) {
+            throw Error(ErrorKind::conflict,
+                        std::format("'{}' is being copied into '{}'; retry when that finishes",
+                                    workspace.handle, child.handle));
+        }
+    }
 }
 
 Workspace Workspaces::set_pinned(std::string_view target, bool pinned) {
@@ -611,10 +853,7 @@ Workspace Workspaces::adopt(const fs::path& directory) {
     if (workspace->path == path) {
         return *workspace;
     }
-    if (workspace->state != State::active) {
-        throw Error(ErrorKind::conflict, std::format("workspace '{}' is {}", workspace->handle,
-                                                     to_string(workspace->state)));
-    }
+    require_quiescent(*workspace);
     if (exists_nofollow(workspace->path) && carries_marker(workspace->path, workspace->id)) {
         throw Error(ErrorKind::conflict,
                     std::format("{} still carries the marker of '{}', so {} is a copy, not a "
@@ -639,7 +878,8 @@ namespace {
 // guesses ownership from a registered path alone.
 class Recovery {
   public:
-    Recovery(Registry& registry, bool fix) : registry_(registry), fix_(fix) {}
+    Recovery(Registry& registry, fs::path data_directory, bool fix)
+        : registry_(registry), data_directory_(std::move(data_directory)), fix_(fix) {}
 
     std::vector<Finding> run() {
         for (const auto& workspace : registry_.all()) {
@@ -657,16 +897,21 @@ class Recovery {
             }
         }
         orphans();
+        stale_leases();
         return std::move(findings_);
     }
 
   private:
     void report(Finding finding) { findings_.push_back(std::move(finding)); }
+    // Forgets a workspace, including any lease file a crashed process left.
     void erase(const Workspace& workspace) {
         registry_.transaction([&] { registry_.erase(workspace.id); });
+        remove_free_lease(data_directory_, workspace.id);
     }
+    bool busy(const Workspace& workspace) { return hz::busy(data_directory_, workspace); }
+
     void creating(Workspace workspace, Finding finding) {
-        if (workspace.pid && process_alive(*workspace.pid)) {
+        if (busy(workspace)) {
             return; // still in progress
         }
         finding.kind = "interrupted_create";
@@ -726,8 +971,8 @@ class Recovery {
     }
 
     void trashed(Workspace workspace, Finding finding) {
-        if (!workspace.trash_path) {
-            return; // its directory was already gone when it was removed
+        if (!workspace.trash_path || busy(workspace)) {
+            return; // already gone when it was removed, or gc is deleting it
         }
         const fs::path deleting = deleting_location(*workspace.trash_path);
         if (exists_nofollow(deleting)) {
@@ -802,6 +1047,29 @@ class Recovery {
         }
     }
 
+    // Lease files nobody holds, left by crashed hooks or failed releases.
+    // A creating row keeps its free lease: that marks it as interrupted.
+    void stale_leases() {
+        if (!fix_) {
+            return;
+        }
+        const fs::path directory = data_directory_ / "leases";
+        const int fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (fd < 0) {
+            return;
+        }
+        const detail::Fd leases(fd);
+        for (const auto& entry : read_directory(leases.get(), directory)) {
+            if (!is_ulid(entry.name)) {
+                continue;
+            }
+            const auto workspace = registry_.find(entry.name);
+            if (!workspace || workspace->state != State::creating) {
+                remove_free_lease(data_directory_, entry.name);
+            }
+        }
+    }
+
     void orphans() {
         // Directories in storage that no row accounts for, typically left by an
         // interrupted gc. Only those whose own marker proves they were ours and
@@ -820,6 +1088,7 @@ class Recovery {
     }
 
     Registry& registry_;
+    fs::path data_directory_;
     bool fix_;
     std::vector<Finding> findings_;
 };
@@ -828,7 +1097,7 @@ class Recovery {
 
 std::vector<Finding> Workspaces::doctor(bool fix) {
     const auto lock = operation_lock();
-    return Recovery(registry_, fix).run();
+    return Recovery(registry_, data_directory_, fix).run();
 }
 
 } // namespace hz

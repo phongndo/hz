@@ -1,7 +1,9 @@
 #pragma once
 
 #include "hz/clone.hpp"
+#include "hz/fsutil.hpp"
 #include "hz/process.hpp"
+#include "hz/ulid.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

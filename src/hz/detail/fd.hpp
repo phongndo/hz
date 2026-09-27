@@ -38,6 +38,16 @@ class Fd {
         return Fd(fd);
     }
 
+    // openat(2) of `name` in the open `directory`; `path` labels errors.
+    static Fd open_at(int directory, const char* name, int flags, mode_t mode,
+                      std::string_view operation, const std::filesystem::path& path) {
+        int fd = ::openat(directory, name, flags | O_CLOEXEC, mode);
+        if (fd < 0) {
+            throw errno_error(operation, path);
+        }
+        return Fd(fd);
+    }
+
   private:
     int fd_;
 };

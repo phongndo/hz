@@ -84,11 +84,26 @@ existing workspaces, or select a fresh `HZ_DATA_DIR` and explicitly initialize
 roots there.
 
 Lifecycle mutations, configuration writes, Git handoff, and doctor acquire one
-exclusive operation lock per registry. An overlapping operation fails with a
-retryable conflict instead of acting on stale state. The lock is released on
-exit, including crashes; hooks inherit no lock descriptor. Status, listing, and
-path queries remain available while hooks run. This deliberately serializes
-creates too; concurrency can be refined after measurement.
+exclusive operation lock per registry, so each acts on current state. A command
+waits up to two minutes for another holder, then fails with a retryable
+conflict; `hz new` waits up to ten to record a finished copy rather than
+discard it. The lock is released on exit, including crashes; hooks inherit no
+lock descriptor. Preremove hooks run under the lock, so a mutating command
+they start with the same registry is refused while they run; the hz process
+running them holds a lease named in their `HZ_HOOK_PARENT` meanwhile. Postcreate hooks run without the lock.
+Status, listing, and path queries remain available while hooks run.
+
+The long filesystem work of `hz new` (copying) and `hz gc` (deleting) runs
+without the lock, so concurrent creates proceed in parallel. Instead the
+workspace holds a **lease**, a lock file under the data directory that its
+process holds until it records the result, and that a crash releases. A new
+child keeps its lease while its postcreate hooks run. Doctor and gc leave
+leased workspaces alone. Removal and copying refuse a leased workspace;
+handoff, configuration writes, adoption, and re-running `hz init` refuse one
+that is leased or being copied from. A child whose source was moved or unregistered during its copy is
+discarded. Doctor treats a `creating` or deleting workspace whose lease is free
+as interrupted; a `creating` row without a lease file, from an older hz, is
+judged by whether its recorded process is alive.
 
 Recovery covers interrupted processes. It is not a transaction across SQLite
 and the filesystem during power loss. Keep the workspace tree stable during
@@ -101,7 +116,7 @@ each entry**.
 
 ```text
 for each entry under source (excluding the marker and any filter matches):
-  directory     → mkdir, metadata replayed after its contents
+  directory     → private mkdir, metadata replayed once everything below it is copied
   regular file  → clone primitive (or byte copy in copy mode)
   hard link     → recreated as a hard link within the copy, keyed by (dev, ino)
   symlink       → recreated with the same target, never followed
@@ -109,12 +124,17 @@ for each entry under source (excluding the marker and any filter matches):
 then replay mode, ownership where permitted, xattrs, ACLs, and timestamps
 ```
 
-The per-file clone primitive is the only platform-specific part:
+Entries are opened relative to their already-open directory, and metadata
+writes that would change nothing are skipped. Only symlink metadata and later
+links of a hard-linked file use full paths.
+
+The per-file clone primitive, and which metadata it already carries, are the
+only platform-specific parts:
 
 | Platform | Clone primitive | Byte copy (`--copy` mode) |
 | --- | --- | --- |
 | Linux | `ioctl(FICLONE)` | `copy_file_range`, then read/write |
-| macOS | `clonefile(2)` with `CLONE_NOFOLLOW` and `CLONE_ACL` | `copyfile(3)` without `COPYFILE_CLONE` |
+| macOS | `clonefileat(2)` with `CLONE_NOFOLLOW` and `CLONE_ACL` | `fcopyfile(3)` without `COPYFILE_CLONE` |
 | Windows (design only) | `FSCTL_DUPLICATE_EXTENTS_TO_FILE` | `CopyFileEx` |
 
 Linux and macOS are implemented; Windows is not implemented or verified.
@@ -125,7 +145,9 @@ or FAT; those need `--copy`.
 
 User xattrs are copied before final read-only permissions are restored. Linux
 access ACLs are replayed with xattrs; Darwin ACLs are copied separately for
-files and directories, including byte-copy mode.
+directories and byte copies. A macOS clone already carries the source's mode,
+xattrs, ACL, and timestamps, so hz only restores ownership where permitted and
+the set-ID bits `clonefile` clears.
 
 Clones share data blocks with the source until either side writes. On
 compressed filesystems (btrfs `compress=zstd`, ZFS `compression=`) the clone
@@ -134,8 +156,10 @@ cloning nor breaks sharing. Per-file compression settings are xattrs
 (`btrfs.compression`, `bcachefs.compression`) and are carried by the xattr
 replay, not by the clone itself.
 
-Cost is O(entries) in the source tree on every platform. The walker is
-single-threaded. Byte copying also scales with data size.
+Cost is O(entries) in the source tree on every platform. Byte copying also
+scales with data size. Directories, and batches of files in large directories,
+are copied on up to four threads; more threads mostly add filesystem lock
+contention. GC deletes trees the same way.
 
 ### Why not snapshots
 

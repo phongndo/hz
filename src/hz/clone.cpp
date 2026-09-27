@@ -2,6 +2,7 @@
 
 #include "hz/detail/fd.hpp"
 #include "hz/error.hpp"
+#include "hz/metadata.hpp"
 #include "hz/ulid.hpp"
 
 #include <array>
@@ -23,8 +24,6 @@
 namespace hz {
 
 namespace {
-
-constexpr mode_t permission_bits = 07777;
 
 // Whether an errno from the clone primitive means "this filesystem cannot
 // clone here" rather than a fault with the particular file.
@@ -121,11 +120,7 @@ void clone_file_native(const std::filesystem::path& from, const std::filesystem:
     auto dest =
         detail::Fd::open(to, O_WRONLY | O_CREAT | O_EXCL, info.st_mode & permission_bits, "create");
     try {
-        if (mode == CopyMode::cow) {
-            clone_data(source.get(), dest.get(), from);
-        } else {
-            copy_data(source.get(), dest.get(), from, to);
-        }
+        copy_contents(source.get(), dest.get(), mode, from, to);
     } catch (...) {
         ::unlink(to.c_str());
         throw;
@@ -169,6 +164,39 @@ void clone_file_native(const std::filesystem::path& from, const std::filesystem:
 #endif
 
 } // namespace
+
+#ifdef __linux__
+void copy_contents(int source, int destination, CopyMode mode, const std::filesystem::path& from,
+                   const std::filesystem::path& to) {
+    if (mode == CopyMode::cow) {
+        clone_data(source, destination, from);
+    } else {
+        copy_data(source, destination, from, to);
+    }
+}
+#elifdef __APPLE__
+void copy_contents(int source, int destination, CopyMode mode, const std::filesystem::path& from,
+                   const std::filesystem::path& to) {
+    if (mode == CopyMode::cow) {
+        throw Error(ErrorKind::invalid_argument,
+                    std::format("cannot clone {} into an open file", from.string()));
+    }
+    if (::fcopyfile(source, destination, nullptr, COPYFILE_DATA) != 0) {
+        throw errno_error("copy", to);
+    }
+}
+
+void clone_at(int source_directory, const char* name, int destination_directory,
+              const std::filesystem::path& from) {
+    if (::clonefileat(source_directory, name, destination_directory, name,
+                      CLONE_NOFOLLOW | CLONE_ACL) != 0) {
+        if (means_cow_unavailable(errno)) {
+            throw cow_unavailable_error(from, errno);
+        }
+        throw errno_error("clone", from);
+    }
+}
+#endif
 
 void clone_file(const std::filesystem::path& from, const std::filesystem::path& to, CopyMode mode) {
     clone_file_native(from, to, mode);
