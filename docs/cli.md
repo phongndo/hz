@@ -104,9 +104,8 @@ surviving ancestor only when the shell was inside a removed workspace.
 `new`, `rm`, `restore`, and `git handoff` accept `--path-only`; an empty removal
 path means the shell should stay where it is.
 
-Overlapping mutations using the same registry return a conflict; retry after
-the other operation completes. Hooks cannot start another mutation while their
-parent operation holds the lock.
+Mutations using the same registry take turns and may return a retryable
+conflict; see [concurrency in the design](design.md#registry).
 
 ## Machine output
 

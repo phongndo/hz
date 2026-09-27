@@ -112,6 +112,9 @@ void add_git_handoff(Commands& commands, CLI::App* git) {
                 throw Error(ErrorKind::invalid_argument,
                             "the source and destination are the same workspace");
             }
+            // Handoff writes temporary Git state into both workspaces.
+            workspaces.require_quiescent(source);
+            workspaces.require_quiescent(destination);
             auto result = git::handoff(source.path, destination.path, args->three_way);
             const auto output = commands.output();
             if (output.json()) {
@@ -161,7 +164,9 @@ void add_config(Commands& commands) {
         "init", "Write a commented .hz/hz.toml",
         [&commands, target] {
             const auto lock = lock_operations(default_data_directory());
-            auto workspace = commands.workspaces().resolve(*target);
+            auto& workspaces = commands.workspaces();
+            auto workspace = workspaces.resolve(*target);
+            workspaces.require_quiescent(workspace);
             const auto file = write_config_template(workspace.path);
             const auto output = commands.output();
             if (output.json()) {
@@ -256,6 +261,7 @@ void add_copy_tree(Commands& commands) {
         std::string to;
         bool copy = false;
         bool filtered = false;
+        unsigned workers = 0;
     };
     auto args = std::make_shared<Args>();
     auto* command = commands.add("_copy-tree", "Copy a directory tree", [args] {
@@ -264,6 +270,7 @@ void add_copy_tree(Commands& commands) {
         if (args->filtered) {
             options.skip = filter_excludes;
         }
+        options.workers = args->workers;
         copy_tree(args->from, args->to, options);
     });
     command->group("");
@@ -271,6 +278,7 @@ void add_copy_tree(Commands& commands) {
     command->add_option("to", args->to)->required();
     command->add_flag("--copy", args->copy);
     command->add_flag("--filtered", args->filtered);
+    command->add_option("--workers", args->workers);
 }
 
 } // namespace

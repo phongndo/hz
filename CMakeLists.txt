@@ -19,6 +19,7 @@ find_package(CLI11 CONFIG REQUIRED)
 find_package(tomlplusplus CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(SQLite3 REQUIRED)
+find_package(Threads REQUIRED)
 
 add_library(hz_warnings INTERFACE)
 target_compile_options(
@@ -48,11 +49,12 @@ add_library(
   src/hz/sqlite.cpp
   src/hz/tree.cpp
   src/hz/ulid.cpp
+  src/hz/work_queue.cpp
   src/hz/workspaces.cpp)
 target_include_directories(hz_core PUBLIC src ${CMAKE_CURRENT_BINARY_DIR}/include)
 target_link_libraries(
   hz_core
-  PUBLIC tomlplusplus::tomlplusplus nlohmann_json::nlohmann_json SQLite::SQLite3
+  PUBLIC tomlplusplus::tomlplusplus nlohmann_json::nlohmann_json SQLite::SQLite3 Threads::Threads
   PRIVATE hz_warnings)
 
 # Embed the shell integration scripts. Regenerated when a script changes;

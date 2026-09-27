@@ -1,4 +1,5 @@
 #include "hz/error.hpp"
+#include "hz/fsutil.hpp"
 #include "hz/marker.hpp"
 #include "hz/ulid.hpp"
 #include "hz/workspaces.hpp"
@@ -6,6 +7,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <exception>
+#include <optional>
+#include <string>
+#include <thread>
+#include <unistd.h>
 
 #include "support.hpp"
 
@@ -221,4 +228,147 @@ TEST_CASE("doctor reports an inaccessible storage directory", "[review]") {
     write_file(storage, "not a directory");
     REQUIRE(hz::test::error_kind([&] { family.doctor(false); }) == hz::ErrorKind::io);
     REQUIRE(hz::test::read_file(storage) == "not a directory");
+}
+
+TEST_CASE("a create in progress is protected by its lease", "[concurrency]") {
+    Family family;
+    auto child = family.child("copying");
+    child.state = hz::State::creating;
+    family.registry().transaction([&] { family.registry().update(child); });
+    const auto data = family.temp / "data";
+    std::optional<hz::detail::Fd> lease(hz::acquire_lease(data, child.id));
+
+    REQUIRE(family.doctor(true).empty());
+    REQUIRE(fs::exists(child.path / "file.txt"));
+    REQUIRE(hz::test::error_kind([&] {
+                family.workspaces->remove({.target = child.id, .hooks = false});
+            }) == hz::ErrorKind::conflict);
+    REQUIRE(hz::test::error_kind([&] { family.workspaces->require_quiescent(family.root); }) ==
+            hz::ErrorKind::conflict);
+    REQUIRE(hz::test::error_kind([&] { family.workspaces->require_quiescent(child); }) ==
+            hz::ErrorKind::conflict);
+
+    lease.reset(); // as when the copying process dies
+    REQUIRE(has(family.doctor(true), "interrupted_create", true));
+    REQUIRE_FALSE(fs::exists(child.path));
+    REQUIRE_FALSE(fs::exists(data / "leases" / child.id));
+    REQUIRE_NOTHROW(family.workspaces->require_quiescent(family.root));
+}
+
+TEST_CASE("gc leaves trash that another process is deleting", "[concurrency]") {
+    Family family;
+    const auto busy = family.child("busy");
+    const auto idle = family.child("idle");
+    for (const auto& workspace : {busy, idle}) {
+        family.workspaces->remove({.target = workspace.id, .hooks = false});
+    }
+    const auto data = family.temp / "data";
+    {
+        const auto lease = hz::acquire_lease(data, busy.id);
+        const auto result = family.workspaces->gc();
+        REQUIRE(result.deleted.size() == 1);
+        REQUIRE(result.deleted.front().id == idle.id);
+        REQUIRE(family.registry().find(busy.id));
+        REQUIRE(family.doctor(true).empty());
+    }
+    REQUIRE(family.workspaces->gc().deleted.size() == 1);
+    REQUIRE_FALSE(family.registry().find(busy.id));
+    REQUIRE_FALSE(fs::exists(hz::Workspaces::storage_directory(family.root)));
+}
+
+TEST_CASE("a create by an older hz without a lease is judged by its pid", "[concurrency]") {
+    Family family;
+    auto child = family.child("older");
+    child.state = hz::State::creating;
+    child.pid = ::getpid();
+    family.registry().transaction([&] { family.registry().update(child); });
+    REQUIRE(family.doctor(true).empty());
+    REQUIRE(hz::test::error_kind([&] {
+                family.workspaces->remove({.target = child.id, .hooks = false});
+            }) == hz::ErrorKind::conflict);
+    REQUIRE(fs::exists(child.path / "file.txt"));
+}
+
+TEST_CASE("changes to a child made while it is copied survive its activation", "[concurrency]") {
+    Family family;
+    for (int i = 0; i < 4000; ++i) {
+        write_file(family.project / "tree" / std::to_string(i % 100) / std::to_string(i), "x");
+    }
+    hz::Workspaces other(family.temp / "data", family.project);
+    // Pinning must land while the copy runs; retry if a copy wins the race.
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        const std::string handle = "copying" + std::to_string(attempt);
+        std::exception_ptr failure;
+        std::atomic<bool> done = false;
+        std::thread creator([&] {
+            try {
+                family.child(handle);
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            done = true;
+        });
+        bool pinned = false;
+        for (;;) {
+            const bool finished = done;
+            const auto found = other.registry().find_handle(family.root.id, handle);
+            if (!found && finished) {
+                break; // the create failed; rethrown below
+            }
+            if (found && found->state == hz::State::active) {
+                break;
+            }
+            if (found) {
+                other.set_pinned(found->id, true);
+                pinned = true;
+                break;
+            }
+        }
+        creator.join();
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+        if (pinned) {
+            const auto child = family.registry().find_handle(family.root.id, handle);
+            REQUIRE(child->state == hz::State::active);
+            REQUIRE(child->pinned);
+            return;
+        }
+    }
+    FAIL("every copy finished before it could be pinned");
+}
+
+TEST_CASE("a workspace busy in another process is not removed or rewritten", "[concurrency]") {
+    Family family;
+    const auto child = family.child("hooked");
+    const auto lease = hz::acquire_lease(family.temp / "data", child.id);
+    REQUIRE(hz::test::error_kind([&] {
+                family.workspaces->remove({.target = child.id, .hooks = false});
+            }) == hz::ErrorKind::conflict);
+    REQUIRE(hz::test::error_kind([&] { family.workspaces->require_quiescent(child); }) ==
+            hz::ErrorKind::conflict);
+    REQUIRE(hz::test::error_kind([&] {
+                family.workspaces->create({.source = child.id, .handle = "copy", .hooks = false});
+            }) == hz::ErrorKind::conflict);
+    REQUIRE(family.doctor(true).empty());
+    REQUIRE(fs::exists(child.path / "file.txt"));
+}
+
+TEST_CASE("doctor --fix removes lease files nobody holds", "[recovery]") {
+    Family family;
+    const auto data = family.temp / "data";
+    const auto child = family.child("done");
+    const auto token = hz::generate_ulid();
+    for (const auto& id : {child.id, token}) {
+        (void)hz::acquire_lease(data, id); // released at once, file left behind
+    }
+    const auto held_token = hz::generate_ulid();
+    const auto held = hz::acquire_lease(data, held_token);
+    REQUIRE(fs::exists(data / "leases" / token));
+    family.doctor(false);
+    REQUIRE(fs::exists(data / "leases" / token));
+    family.doctor(true);
+    REQUIRE_FALSE(fs::exists(data / "leases" / child.id));
+    REQUIRE_FALSE(fs::exists(data / "leases" / token));
+    REQUIRE(fs::exists(data / "leases" / held_token));
 }

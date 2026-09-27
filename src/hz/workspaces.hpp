@@ -2,10 +2,12 @@
 
 #include "hz/clone.hpp"
 #include "hz/detail/fd.hpp"
+#include "hz/error.hpp"
 #include "hz/registry.hpp"
 
 #include <filesystem>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -103,6 +105,10 @@ class Workspaces {
     // Records that a workspace directory was moved to `directory`.
     Workspace adopt(const std::filesystem::path& directory);
 
+    // Refuses unless `workspace` is active and no child is being copied from
+    // it, so its contents may change. Call with the operation lock held.
+    void require_quiescent(const Workspace& workspace);
+
     // Checks the registry against the filesystem; repairs what is provable.
     std::vector<Finding> doctor(bool fix);
 
@@ -119,6 +125,18 @@ class Workspaces {
     Workspace require_registered(const std::string& id);
     Workspace resolve_trashed(std::string_view target);
     void trash(std::vector<Workspace>& batch);
+    // Marks a copied child active, or says why its copy must be discarded.
+    // Call with the operation lock held.
+    std::optional<Error> activate(Workspace& child, const Workspace& source);
+    // A trashed workspace this gc process now deletes, already moved to its
+    // deletion path.
+    struct GcClaim {
+        Workspace workspace;
+        detail::Fd lease;
+        std::filesystem::path deleting;
+    };
+    std::optional<GcClaim> claim_for_gc(const std::string& id);
+    void tidy_storage(const std::set<std::filesystem::path>& trash_directories);
 
     Registry registry_;
     std::filesystem::path context_;

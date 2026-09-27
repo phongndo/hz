@@ -35,8 +35,17 @@ class TempDir {
         }
         path_ = pattern;
     }
+    // Tests leave read-only directories behind, sometimes by failing early;
+    // restore owner access so everything can be removed.
     ~TempDir() {
         std::error_code ignored;
+        fs::permissions(path_, fs::perms::owner_all, fs::perm_options::add, ignored);
+        for (auto it = fs::recursive_directory_iterator(path_, ignored);
+             it != fs::recursive_directory_iterator(); it.increment(ignored)) {
+            if (it->is_directory(ignored) && !it->is_symlink(ignored)) {
+                fs::permissions(it->path(), fs::perms::owner_all, fs::perm_options::add, ignored);
+            }
+        }
         fs::remove_all(path_, ignored);
     }
     TempDir(const TempDir&) = delete;

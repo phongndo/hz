@@ -1,23 +1,30 @@
 #include "hz/fsutil.hpp"
 
+#include "hz/detail/work_queue.hpp"
 #include "hz/error.hpp"
 #include "hz/marker.hpp"
+#include "hz/ulid.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <dirent.h>
+#include <fcntl.h>
 #include <format>
 #include <memory>
+#include <optional>
 #include <string>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
 #ifdef __linux__
-#include <fcntl.h>
 #include <linux/fs.h>
 #include <sys/syscall.h>
 #endif
@@ -26,19 +33,147 @@ namespace hz {
 
 namespace fs = std::filesystem;
 
-detail::Fd lock_operations(const fs::path& data_directory) {
+namespace {
+
+fs::path lease_path(const fs::path& data_directory, std::string_view id) {
+    return data_directory / "leases" / id;
+}
+
+// Whether `path` still names the file open as `fd`: a lease file can be
+// unlinked by doctor while another process holds it open.
+bool names_open_file(const fs::path& path, int fd) {
+    struct stat held{};
+    struct stat current{};
+    if (::fstat(fd, &held) != 0) {
+        throw errno_error("stat", path);
+    }
+    if (::lstat(path.c_str(), &current) != 0) {
+        if (errno == ENOENT) {
+            return false;
+        }
+        throw errno_error("stat", path);
+    }
+    return current.st_dev == held.st_dev && current.st_ino == held.st_ino;
+}
+
+} // namespace
+
+namespace {
+
+// Whether this process runs as a hook of an hz process that still holds its
+// hook lease, and so may hold the lock. A leftover or unreadable marker is
+// ignored.
+bool hook_parent_holds_lock(const fs::path& data_directory) {
+    const char* token = std::getenv(hook_parent_variable);
+    if (token == nullptr || !is_ulid(token)) {
+        return false;
+    }
+    try {
+        return lease_state(data_directory, token) == Lease::held;
+    } catch (const Error&) {
+        return false;
+    }
+}
+
+} // namespace
+
+detail::Fd lock_operations(const fs::path& data_directory, std::chrono::seconds wait) {
     make_private_directories(data_directory);
     auto lock = detail::Fd::open(data_directory / "operations.lock", O_RDWR | O_CREAT | O_NOFOLLOW,
                                  0600, "open operation lock");
-    if (::flock(lock.get(), LOCK_EX | LOCK_NB) != 0) {
-        if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            throw Error(ErrorKind::conflict,
-                        "another hz operation is in progress; retry when it finishes "
-                        "(hooks must not run mutating hz commands)");
+    // A hook's parent hz process may hold the lock, so waiting could only
+    // time out. It holds the lease its hooks name while they run; processes
+    // that outlive it, or use another registry, may wait.
+    if (hook_parent_holds_lock(data_directory)) {
+        throw Error(ErrorKind::conflict,
+                    "hooks must not run mutating hz commands; run them after the outer command "
+                    "finishes");
+    }
+    const auto deadline = std::chrono::steady_clock::now() + wait;
+    auto delay = std::chrono::milliseconds(1);
+    while (::flock(lock.get(), LOCK_EX | LOCK_NB) != 0) {
+        if (errno == EINTR) {
+            continue;
         }
-        throw errno_error("lock operations", data_directory);
+        if (errno != EWOULDBLOCK && errno != EAGAIN) {
+            throw errno_error("lock operations", data_directory);
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            throw Error(ErrorKind::conflict,
+                        std::format("another hz operation has been in progress for over {} "
+                                    "seconds; retry when it finishes",
+                                    wait.count()));
+        }
+        std::this_thread::sleep_for(delay);
+        delay = std::min(delay * 2, std::chrono::milliseconds(20));
     }
     return lock;
+}
+
+detail::Fd acquire_lease(const fs::path& data_directory, std::string_view id, bool wait) {
+    const fs::path path = lease_path(data_directory, id);
+    make_private_directories(path.parent_path());
+    for (;;) {
+        auto lease = detail::Fd::open(path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600, "open lease");
+        int status = 0;
+        while ((status = ::flock(lease.get(), wait ? LOCK_EX : LOCK_EX | LOCK_NB)) != 0 &&
+               errno == EINTR) {
+        }
+        if (status != 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                throw Error(ErrorKind::conflict,
+                            std::format("workspace {} is busy in another hz process", id));
+            }
+            throw errno_error("lease", path);
+        }
+        // Doctor may have removed the unlocked file between open and flock;
+        // a lease on an unlinked file protects nothing.
+        if (names_open_file(path, lease.get())) {
+            return lease;
+        }
+    }
+}
+
+Lease lease_state(const fs::path& data_directory, std::string_view id) {
+    const fs::path path = lease_path(data_directory, id);
+    const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno == ENOENT) {
+            return Lease::absent;
+        }
+        throw errno_error("open lease", path);
+    }
+    const detail::Fd lease(fd);
+    if (::flock(fd, LOCK_SH | LOCK_NB) == 0) {
+        return Lease::free;
+    }
+    if (errno == EWOULDBLOCK || errno == EAGAIN) {
+        return Lease::held;
+    }
+    throw errno_error("check lease", path);
+}
+
+void remove_free_lease(const fs::path& data_directory, std::string_view id) {
+    const fs::path path = lease_path(data_directory, id);
+    const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        return;
+    }
+    const detail::Fd lease(fd);
+    // Holding it exclusively while unlinking makes a concurrent acquirer wait,
+    // then notice the file is gone and start a new one.
+    if (::flock(fd, LOCK_EX | LOCK_NB) == 0 && names_open_file(path, fd)) {
+        ::unlink(path.c_str());
+    }
+}
+
+void release_lease(const fs::path& data_directory, std::string_view id,
+                   [[maybe_unused]] detail::Fd lease) {
+    const fs::path path = lease_path(data_directory, id);
+    if (::unlink(path.c_str()) != 0 && errno != ENOENT) {
+        throw errno_error("remove lease", path);
+    }
+    // `lease` closes after the unlink, so nobody can lock the old file anew.
 }
 
 void make_private_directories(const fs::path& directory) {
@@ -100,50 +235,211 @@ void move_path(const fs::path& from, const fs::path& to) {
 
 namespace {
 
-void remove_contents(const fs::path& directory, bool keep_marker) {
-    // Make sure we can list and unlink entries even if the tree was read-only.
-    if (::chmod(directory.c_str(), 0700) != 0) {
-        throw errno_error("set directory permissions", directory);
+// The DT_* type of `name`, for filesystems whose listings omit it; nothing
+// if the entry has vanished.
+std::optional<unsigned char> type_of(int directory, const std::string& name, const fs::path& path) {
+    struct stat info{};
+    if (::fstatat(directory, name.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno == ENOENT) {
+            return std::nullopt;
+        }
+        throw errno_error("stat", path / name);
     }
-    std::unique_ptr<DIR, decltype(&closedir)> handle(::opendir(directory.c_str()), &closedir);
-    if (!handle) {
-        throw errno_error("open directory", directory);
+    return S_ISDIR(info.st_mode)   ? DT_DIR
+           : S_ISREG(info.st_mode) ? DT_REG
+           : S_ISLNK(info.st_mode) ? DT_LNK
+                                   : DT_FIFO;
+}
+
+} // namespace
+
+std::vector<DirectoryEntry> read_directory(int directory, const fs::path& path) {
+    const int handle = ::fcntl(directory, F_DUPFD_CLOEXEC, 0);
+    if (handle < 0) {
+        throw errno_error("open directory", path);
     }
-    std::vector<std::string> names;
+    const std::unique_ptr<DIR, decltype(&::closedir)> stream(::fdopendir(handle), &::closedir);
+    if (!stream) {
+        ::close(handle);
+        throw errno_error("open directory", path);
+    }
+    // The duplicate shares the caller's position; list from the start.
+    ::rewinddir(stream.get());
+    std::vector<DirectoryEntry> entries;
     for (;;) {
         errno = 0;
-        const dirent* entry = ::readdir(handle.get());
+        const dirent* entry = ::readdir(stream.get());
         if (entry == nullptr) {
             if (errno != 0) {
-                throw errno_error("read directory", directory);
+                throw errno_error("read directory", path);
             }
             break;
         }
         std::string name = &entry->d_name[0];
-        if (name != "." && name != ".." && !(keep_marker && name == marker_name)) {
-            names.push_back(std::move(name));
+        if (name == "." || name == "..") {
+            continue;
         }
+        const auto type = entry->d_type == DT_UNKNOWN ? type_of(directory, name, path)
+                                                      : std::optional(entry->d_type);
+        if (!type) {
+            continue;
+        }
+        const bool special = *type != DT_DIR && *type != DT_REG && *type != DT_LNK;
+        entries.push_back({.name = std::move(name),
+                           .type = special ? static_cast<unsigned char>(DT_FIFO) : *type});
     }
-    handle.reset();
-    for (const auto& name : names) {
-        const fs::path child = directory / name;
-        struct stat info{};
-        if (::lstat(child.c_str(), &info) != 0) {
-            if (errno == ENOENT) {
+    return entries;
+}
+
+namespace {
+
+// Makes the directory `name` in `parent` accessible to its owner, never
+// following a symlink swapped in for it. Returns false with errno set.
+bool chmod_directory_at(int parent, const char* name) {
+    if (::fchmodat(parent, name, 0700, AT_SYMLINK_NOFOLLOW) == 0) {
+        return true;
+    }
+    if (errno != ENOTSUP && errno != EOPNOTSUPP) {
+        return false;
+    }
+    // Older C libraries cannot chmod without following; check it is still a
+    // directory first.
+    struct stat info{};
+    if (::fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        return false;
+    }
+    if (!S_ISDIR(info.st_mode)) {
+        errno = ENOTDIR;
+        return false;
+    }
+    return ::fchmodat(parent, name, 0700, 0) == 0;
+}
+
+} // namespace
+
+detail::Fd open_directory_as_owner(int parent, const char* name, const fs::path& path) {
+    constexpr int flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+    int fd = ::openat(parent, name, flags);
+    if (fd < 0 && errno == EACCES) {
+        if (!chmod_directory_at(parent, name)) {
+            throw errno_error("set directory permissions", path);
+        }
+        fd = ::openat(parent, name, flags);
+    }
+    if (fd < 0) {
+        throw errno_error("open directory", path);
+    }
+    return detail::Fd(fd);
+}
+
+namespace {
+
+// Opens the directory `name` in `parent` for emptying, first making it
+// accessible if the tree was read-only.
+detail::Fd open_for_removal(int parent, const char* name, const fs::path& path) {
+    auto directory = open_directory_as_owner(parent, name, path);
+    const int fd = directory.get();
+    struct stat info{};
+    if (::fstat(fd, &info) != 0) {
+        throw errno_error("stat", path);
+    }
+    // Unlinking entries needs write and search permission.
+    if ((info.st_mode & 0700) != 0700 && ::fchmod(fd, 0700) != 0) {
+        throw errno_error("set directory permissions", path);
+    }
+    return directory;
+}
+
+// A directory being emptied; it is removed from its parent once everything
+// below it is gone.
+struct Removal {
+    detail::Fd fd{-1};
+    fs::path path;
+    std::string name;
+    std::shared_ptr<Removal> parent;
+    // Its own listing plus each subdirectory and file batch not yet removed.
+    std::atomic<std::size_t> pending{1};
+};
+
+class TreeRemover {
+  public:
+    TreeRemover() : queue_(detail::default_workers()) {}
+
+    // Empties `directory`, leaving its workspace marker.
+    void run(const fs::path& directory) {
+        auto root = std::make_shared<Removal>();
+        root->path = directory;
+        root->fd = open_for_removal(AT_FDCWD, directory.c_str(), directory);
+        queue_.push([this, root] { empty(root, true); });
+        queue_.run();
+    }
+
+  private:
+    void enter(const std::shared_ptr<Removal>& parent, const std::string& name) {
+        auto directory = std::make_shared<Removal>();
+        directory->path = parent->path / name;
+        directory->name = name;
+        directory->parent = parent;
+        try {
+            directory->fd = open_for_removal(parent->fd.get(), name.c_str(), directory->path);
+        } catch (const Error& error) {
+            if (error.code() != std::errc::no_such_file_or_directory) {
+                throw;
+            }
+            finish(parent);
+            return;
+        }
+        empty(directory, false);
+    }
+
+    void empty(const std::shared_ptr<Removal>& directory, bool keep_marker) {
+        // Listing completes before anything is unlinked: some filesystems,
+        // including APFS, skip entries of a directory changed mid-listing.
+        std::vector<std::string> files;
+        for (auto& entry : read_directory(directory->fd.get(), directory->path)) {
+            if (keep_marker && entry.name == marker_name) {
                 continue;
             }
-            throw errno_error("stat", child);
-        }
-        if (S_ISDIR(info.st_mode)) {
-            remove_contents(child, false);
-            if (::rmdir(child.c_str()) != 0) {
-                throw errno_error("remove directory", child);
+            if (entry.type == DT_DIR) {
+                directory->pending.fetch_add(1, std::memory_order_relaxed);
+                queue_.push(
+                    [this, directory, name = std::move(entry.name)] { enter(directory, name); });
+                continue;
             }
-        } else if (::unlink(child.c_str()) != 0 && errno != ENOENT) {
-            throw errno_error("remove", child);
+            files.push_back(std::move(entry.name));
+            if (files.size() == detail::file_batch) {
+                directory->pending.fetch_add(1, std::memory_order_relaxed);
+                queue_.push(
+                    [directory, batch = std::move(files)] { unlink_files(directory, batch); });
+                files.clear();
+            }
         }
+        unlink_files(directory, files);
     }
-}
+
+    // Unlinks non-directories of `directory`, then counts the batch finished.
+    static void unlink_files(const std::shared_ptr<Removal>& directory,
+                             const std::vector<std::string>& names) {
+        for (const auto& name : names) {
+            if (::unlinkat(directory->fd.get(), name.c_str(), 0) != 0 && errno != ENOENT) {
+                throw errno_error("remove", directory->path / name);
+            }
+        }
+        finish(directory);
+    }
+
+    static void finish(std::shared_ptr<Removal> directory) {
+        detail::count_down(std::move(directory), [](const Removal& finished) {
+            if (finished.parent &&
+                ::unlinkat(finished.parent->fd.get(), finished.name.c_str(), AT_REMOVEDIR) != 0 &&
+                errno != ENOENT) {
+                throw errno_error("remove directory", finished.path);
+            }
+        });
+    }
+
+    detail::WorkQueue queue_;
+};
 
 } // namespace
 
@@ -159,7 +455,7 @@ void remove_tree(const fs::path& directory) {
         throw Error(ErrorKind::invalid_path,
                     std::format("{} is not a directory", directory.string()));
     }
-    remove_contents(directory, true);
+    TreeRemover().run(directory);
     remove_marker(directory);
     if (::rmdir(directory.c_str()) != 0) {
         throw errno_error("remove directory", directory);

@@ -121,6 +121,7 @@ InitResult Workspaces::init(const fs::path& directory, CopyMode mode) {
     if (existing_id) {
         if (auto existing = registry_.find(*existing_id)) {
             if (existing->path == path && existing->state == State::active) {
+                require_quiescent(*existing);
                 git::prepare_root(path);
                 return {.workspace = *existing, .created = false};
             }

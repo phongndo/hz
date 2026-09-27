@@ -15,6 +15,21 @@ enum class CopyMode {
 // failure is an io error. Nothing is left at `to` on failure.
 void clone_file(const std::filesystem::path& from, const std::filesystem::path& to, CopyMode mode);
 
+// Fills the new, empty regular file open as `destination` from the file open
+// as `source`: shares blocks in cow mode, duplicates bytes in copy mode. The
+// paths only label errors. On macOS only copy mode is available here; clone
+// files there with clone_at.
+void copy_contents(int source, int destination, CopyMode mode, const std::filesystem::path& from,
+                   const std::filesystem::path& to);
+
+#ifdef __APPLE__
+// clonefile(2) of the regular file `name` in `source_directory` to the same
+// name in `destination_directory`. The clone carries the source's mode
+// (without set-ID bits), extended attributes, ACL, and timestamps.
+void clone_at(int source_directory, const char* name, int destination_directory,
+              const std::filesystem::path& from);
+#endif
+
 // Whether copy-on-write cloning works for files created inside `directory`.
 // Creates and removes two probe files there.
 bool probe_clone_support(const std::filesystem::path& directory);
