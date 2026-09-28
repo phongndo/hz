@@ -2,6 +2,7 @@
 """Isolated, warm-cache CLI comparison on Linux and macOS."""
 import argparse
 from contextlib import closing
+import fcntl
 import hashlib
 import json
 import os
@@ -101,7 +102,7 @@ def write(path, data):
 
 
 def fixture(root, kind):
-    root.mkdir(parents=True)
+    root.mkdir(parents=True, exist_ok=True)  # it may already be an empty subvolume
     source_count, dependencies, artifacts, artifact_size = {
         "small": (100, 0, 0, 0),
         "development": (2000, 20000, 64, 1024 * 1024),
@@ -172,6 +173,22 @@ def excluded(relative):
         for parent, child in zip(parts, parts[1:]))
 
 
+# _IOW(0x94, 14, struct btrfs_ioctl_vol_args), a 4096-byte argument.
+BTRFS_IOC_SUBVOL_CREATE = 0x5000940E
+
+
+def create_subvolume(path):
+    """Create `path` as a btrfs subvolume, as hz needs to snapshot a source."""
+    arguments = bytearray(4096)
+    name = path.name.encode()
+    arguments[8:8 + len(name)] = name
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.ioctl(parent, BTRFS_IOC_SUBVOL_CREATE, arguments)
+    finally:
+        os.close(parent)
+
+
 def copy_fixture(source, destination):
     """Copy a supplied checkout without changing it or losing hardlink groups."""
     links = {}
@@ -187,7 +204,8 @@ def copy_fixture(source, destination):
                 links[key] = dst
         return dst
 
-    shutil.copytree(source, destination, symlinks=True, copy_function=copy_file)
+    shutil.copytree(source, destination, symlinks=True, copy_function=copy_file,
+                    dirs_exist_ok=True)
     return payload(destination)
 
 
@@ -274,8 +292,10 @@ def validate(tool, child, expected, filtered, hashes):
         changed = [key for key in wanted.keys() & actual.keys() if wanted[key] != actual[key]]
         raise AssertionError(f"{tool.name}: payload differs: missing={list(set(wanted)-set(actual))[:10]}, "
                              f"extra={list(set(actual)-set(wanted))[:10]}, changed={changed[:10]}")
-    # HEAD, its reflog, marker exclusions and hz's base ref deliberately change.
-    mutable = {"HEAD", "logs/HEAD", "info/exclude", "refs/hz", "refs/hz/base", "hz-unborn-base"}
+    # HEAD, its reflog, marker exclusions and hz's base ref deliberately change,
+    # as does the index's cached stat data; its staged content is checked below.
+    mutable = {"HEAD", "logs/HEAD", "info/exclude", "refs/hz", "refs/hz/base", "hz-unborn-base",
+               "index"}
     scm_source = {k: v for k, v in payload(tool.source / ".git").items() if k not in mutable}
     scm_child = {k: v for k, v in payload(child / ".git").items() if k not in mutable}
     assert scm_source == scm_child, f"{tool.name}: copied SCM metadata differs"
@@ -328,6 +348,8 @@ def main():
     parser.add_argument("--workloads", nargs="+", choices=["small", "development", "large-files"])
     parser.add_argument("--source", type=Path, help="Read-only input checkout; copied into disposable roots")
     parser.add_argument("--modes", nargs="+", choices=["full", "filtered"], default=["full", "filtered"])
+    parser.add_argument("--hz-subvolume", action="store_true",
+                        help="On btrfs, make hz's disposable source a subvolume so full creates are snapshots")
     parser.add_argument("--hz-revision", default="unspecified")
     parser.add_argument("--rift-revision", default="unspecified")
     args = parser.parse_args()
@@ -370,6 +392,7 @@ def main():
                   **host_details(args.output),
                   initialization="single setup observation per tool/workload; not a sampled benchmark",
                   setup_timeout_seconds=args.setup_timeout,
+                  hz_source="btrfs subvolume" if args.hz_subvolume else "directory",
                   git_observer_timeout_seconds=600,
                   validation="payload names, kinds, modes, symlink targets and sizes each sample; payload hashes warmup/last; SCM hashes with documented mutable paths excluded; Git state and removal/GC registry+disk assertions each sample",
                   binaries={name: dict(path=str(Path(binary).resolve()),
@@ -390,28 +413,45 @@ def main():
         expected = {}
         for name, tool in tools.items():
             print(kind, name, "preparing disposable source", flush=True)
+            if name == "hz" and args.hz_subvolume:
+                create_subvolume(tool.source)
             expected[name] = copy_fixture(args.source, tool.source) if args.source else fixture(tool.source, kind)
             tool.expected_git = reference_git if args.source else git_state(tool.source)
             entries[name] = dict(init=tool.init(timeout=args.setup_timeout), modes={})
             (args.output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
             require(entries[name]["init"])
+            # A working checkout's index caches its files' stat data. Copying
+            # the fixture, or a tool converting it, leaves that stale, so
+            # refresh it as Git in the checkout would.
+            run(["git", "-C", tool.source, "update-index", "-q", "--refresh"], tool.source, tool.env,
+                timeout=args.setup_timeout)
         assert expected["hz"] == expected["rift"]
         for mode in args.modes:
             filtered = mode == "filtered"
             for name in tools:
-                entries[name]["modes"][mode] = dict(create=[], remove=[], gc=[])
+                entries[name]["modes"][mode] = dict(create=[], first_status=[], remove=[], gc=[])
             for sample in range(-1, args.samples):
                 order = list(tools)
                 rng.shuffle(order)
                 for name in order:
                     tool = tools[name]
+                    # Filesystems defer work, such as committing the previous
+                    # sample's deletions; flush it so no tool pays another's.
+                    os.sync()
                     created = require(tool.create(f"sample-{mode}-{sample + 1}", filtered))
                     child = Path(created["stdout"].strip())
                     if sample >= 0:
                         entries[name]["modes"][mode]["create"].append(created)
                     report["checking"] = dict(workload=kind, mode=mode, sample=sample, tool=name, child=str(child))
                     (args.output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
-                    print(kind, mode, name, "sample", sample, f"created in {created['wall_ms']:.2f} ms; validating", flush=True)
+                    # Until Git's cached stat data matches, the first Git
+                    # command in a copy rereads every tracked file.
+                    status = require(run(["git", "-C", child, "status", "--porcelain"], child,
+                                         tool.env, timeout=600))
+                    if sample >= 0:
+                        entries[name]["modes"][mode]["first_status"].append(status)
+                    print(kind, mode, name, "sample", sample, f"created in {created['wall_ms']:.2f} ms, "
+                          f"first git status {status['wall_ms']:.2f} ms; validating", flush=True)
                     validate(tool, child, expected[name], filtered, hashes=sample in (-1, args.samples-1))
                     removed = require(tool.remove(child))
                     check_removed(tool, child)
@@ -424,7 +464,8 @@ def main():
                             rows[operation].append(row)
             for name in tools:
                 rows = entries[name]["modes"][mode]
-                rows["summary"] = {op: summarize(rows[op]) for op in ("create", "remove", "gc")}
+                rows["summary"] = {op: summarize(rows[op])
+                                   for op in ("create", "first_status", "remove", "gc")}
                 print(kind, mode, name, json.dumps(rows["summary"]), flush=True)
         entries["fixture"] = dict(payload_files=sum(row["kind"] == "file" for row in expected["hz"].values()),
                                   payload_entries=len(expected["hz"]),

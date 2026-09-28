@@ -76,6 +76,12 @@ they are not part of the current comparison.
 ## Measurements and validation
 
 Each mode receives one warmup and randomized paired samples with a fixed seed.
+Each source's Git index is refreshed after initialization, as Git in a working
+checkout would. After each create, the first `git status` in the child is timed as
+`first_status`: until Git's cached stat data matches a copy, that command
+rereads every tracked file.
+The filesystem is synced before each create, outside the timing window, so a
+command does not pay for work the previous tool's commands deferred.
 Measurements include create, remove, and GC wall latency, process-tree CPU time,
 and child peak RSS. Wall/CPU timings include the measurement launcher; GNU time
 measures RSS separately to avoid counting the Python parent's memory. RSS units
@@ -142,11 +148,13 @@ revisions. Do not interpret command completion as total asynchronous device
 work or space reclamation. Do not add independently calculated medians to claim
 a total lifecycle or CPU median; calculate the total per sample first.
 
-On btrfs, Rift full creation uses a native subvolume snapshot; hz uses the
-filesystem-independent per-file walker specified in [the design](../docs/design.md).
-On APFS, Rift full creation passes the entire directory to `clonefile`; hz still
-walks and clones individual files. Full-mode APFS results therefore compare
-different strategies too. XFS uses per-file cloning in both tools.
+On btrfs, Rift's initialization converts its fixture into a subvolume and full
+creation snapshots it. hz snapshots only a source that already is a subvolume
+(see [the design](../docs/design.md#snapshots)); pass `--hz-subvolume` to give
+hz's disposable source that layout, and otherwise hz walks it. On APFS, Rift
+full creation passes the entire directory to `clonefile`; hz clones whole
+subtrees whose clone matches its walk and walks the rest. XFS uses per-file
+cloning in both tools.
 Filtered creation walks files in both tools. Report these modes separately.
 Rift GC may fall back to walking when native subvolume deletion is not permitted
 by the mount. Initialization cost and source conversion also differ.
