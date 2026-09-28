@@ -30,7 +30,8 @@ substrate.
    workspace never invokes a source-control subprocess. Hooks are opt-in.
 4. **Workspaces work the moment they exist.** The default copy is complete,
    including dependency and build artifacts, so an agent can run tests
-   immediately. Filtering is an explicit choice.
+   immediately, and Git's stat cache is valid, so the first Git command does
+   not reread every tracked file. Filtering is an explicit choice.
 5. **Removal is recoverable and constant-time.** `hz rm` renames; `hz gc`
    unlinks.
 
@@ -300,6 +301,23 @@ Git-specific behaviour on create:
   make two directories claim the same entry.
 - `.hz-workspace` is added to `.git/info/exclude` so the marker never shows as
   untracked.
+- **The index's stat cache is refreshed** after a walk. Git records each
+  file's inode number, change time, and other stat data in the index, and
+  rereads every file whose stat data differs; a walked copy differs in all of
+  them. hz gives an entry its copy's stat data only when Git in the source
+  would find it clean: the entry records the source file's current stat data,
+  was indexed before the index was last written (so it is not racily clean),
+  and the copy has the same type, size, and modification time. Other entries,
+  and split indexes, are left for Git to check; so is every entry when a
+  sample shows the source's index is stale. The source's index is read while
+  the copy is made, and the source's stat data is taken from the copy's own
+  reads rather than read again. The child's stat data is read as soon as its
+  files are final, while directory times are still being restored, and its
+  index is rewritten in place with a recomputed checksum before the child
+  becomes active, only if it is still the index that was read. A snapshot
+  keeps inode numbers and change times, so its index needs no refresh. The
+  first Git command in a new child still stats every tracked file once, which
+  on APFS is noticeably slower for newly created files.
 
 Mercurial receives the equivalent marker protection via `.hg/hgrc`.
 

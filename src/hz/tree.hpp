@@ -4,6 +4,8 @@
 
 #include <filesystem>
 #include <functional>
+#include <string>
+#include <sys/stat.h>
 
 namespace hz {
 
@@ -20,6 +22,13 @@ struct CopyTreeOptions {
     // when `skip` omits no directory; otherwise the clone is discarded and
     // the tree walked.
     bool clone_whole_tree = false;
+    // Called with the path of each source regular file and symlink, relative
+    // to the source root, and its stat data as the copy read it. Called
+    // concurrently from several threads, possibly more than once per path.
+    std::function<void(const std::string&, const struct stat&)> observe;
+    // Called once, on the calling thread, when every file of the copy is
+    // final; directory metadata may still be replayed after it returns.
+    std::function<void()> files_copied;
 };
 
 // Copies the directory `from` to the new directory `to` on the same

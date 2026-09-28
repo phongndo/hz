@@ -93,6 +93,12 @@ class TreeCopier {
     }
 
   private:
+    void observe(const fs::path& relative, const struct stat& info) const {
+        if (options_.observe) {
+            options_.observe(relative.native(), info);
+        }
+    }
+
     // Creates and lists the subdirectory `name` of `parent`.
     void enter(const std::shared_ptr<Directory>& parent, const std::string& name) {
         auto directory = std::make_shared<Directory>();
@@ -254,6 +260,7 @@ class TreeCopier {
         if (!S_ISREG(info.st_mode)) {
             throw unsupported(from);
         }
+        observe(relative, info);
         auto link = link_existing(directory, name, info, relative);
         if (link.linked) {
             return;
@@ -335,8 +342,13 @@ class TreeCopier {
                 if (!scan(subdirectory.get(), child, entry, facts.gid)) {
                     cloneable = false;
                 }
-            } else if (!clones_as_walked(entry, facts.gid)) {
-                cloneable = false;
+            } else {
+                if (entry.size) {
+                    observe(child, entry.as_stat());
+                }
+                if (!clones_as_walked(entry, facts.gid)) {
+                    cloneable = false;
+                }
             }
         }
         const std::scoped_lock lock(scanned_mutex_);
@@ -382,6 +394,7 @@ class TreeCopier {
         if (!S_ISREG(info.st_mode)) {
             throw unsupported(from);
         }
+        observe(relative, info);
         auto link = link_existing(directory, name, info, relative);
         if (link.linked) {
             return;
@@ -418,6 +431,7 @@ class TreeCopier {
         if (::fstatat(directory.source.get(), name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
             throw errno_error("stat", from);
         }
+        observe(relative, info);
         std::string target(static_cast<size_t>(info.st_size) + 1, '\0');
         for (;;) {
             const ssize_t length =
@@ -529,6 +543,12 @@ class WholeTreeCloner {
         bool symlink;
     };
 
+    void files_copied() const {
+        if (options_.files_copied) {
+            options_.files_copied();
+        }
+    }
+
     void discard() {
         try {
             remove_tree(to_);
@@ -595,6 +615,9 @@ class WholeTreeCloner {
             }
             case DT_REG:
             case DT_LNK: {
+                if (options_.observe && entry.size) {
+                    options_.observe(child, entry.as_stat());
+                }
                 const std::scoped_lock lock(mutex_);
                 if (entry.type == DT_REG && entry.links > 1) {
                     links_[{entry.device, entry.inode}].push_back(child);
@@ -634,6 +657,11 @@ class WholeTreeCloner {
         for (const auto& entry : owned_) {
             restore_ownership(entry);
         }
+        // Copying an ACL changes a file's change time, so files are only
+        // final before directory times when there is none to copy.
+        if (acls_.empty()) {
+            files_copied();
+        }
         parallel(directories_.size(), [this](std::size_t i) {
             const auto& [relative, times] = directories_[i];
             if (::utimensat(AT_FDCWD, copy(relative).c_str(), times.data(), AT_SYMLINK_NOFOLLOW) !=
@@ -646,6 +674,9 @@ class WholeTreeCloner {
                            COPYFILE_ACL | COPYFILE_NOFOLLOW) != 0) {
                 throw errno_error("set ACL", copy(relative));
             }
+        }
+        if (!acls_.empty()) {
+            files_copied();
         }
     }
 
@@ -715,6 +746,9 @@ void copy_tree(const fs::path& from, const fs::path& to, const CopyTreeOptions& 
             throw errno_error("set permissions", to);
         }
         TreeCopier(from, to, options).run(std::move(source_fd), std::move(destination));
+        if (options.files_copied) {
+            options.files_copied();
+        }
     } catch (...) {
         try {
             remove_tree(to);

@@ -36,11 +36,13 @@ add_library(
   hz_core STATIC
   src/hz/clone.cpp
   src/hz/config.cpp
+  src/hz/digest.cpp
   src/hz/entry_facts.cpp
   src/hz/error.cpp
   src/hz/filter.cpp
   src/hz/fsutil.cpp
   src/hz/git.cpp
+  src/hz/git_index.cpp
   src/hz/handle.cpp
   src/hz/lifecycle.cpp
   src/hz/marker.cpp

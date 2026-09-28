@@ -20,10 +20,13 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <exception>
 #include <fcntl.h>
 #include <format>
+#include <optional>
 #include <ranges>
 #include <set>
+#include <thread>
 #include <unistd.h>
 
 namespace hz {
@@ -117,6 +120,24 @@ void remove_ephemeral(const fs::path& workspace) {
         throw errno_error("remove", socket);
     }
 }
+
+// Joins a thread when it goes out of scope, however that happens.
+struct Joining {
+    std::thread thread;
+
+    void join() {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    ~Joining() { join(); }
+    Joining() = default;
+    explicit Joining(std::thread started) : thread(std::move(started)) {}
+    Joining(const Joining&) = delete;
+    Joining& operator=(const Joining&) = delete;
+    Joining(Joining&&) = delete;
+    Joining& operator=(Joining&&) = delete;
+};
 
 void try_rmdir(const fs::path& directory) {
     ::rmdir(directory.c_str());
@@ -487,6 +508,8 @@ Strategy Workspaces::materialize(const Workspace& source, const Workspace& child
         strategy = Strategy::snapshot;
         remove_ephemeral(child.path);
         write_marker(child.path, child.id);
+        // A snapshot keeps inode numbers and change times, so Git's cached
+        // stat data already matches.
         git::prepare_child(child.path);
         return strategy;
     }
@@ -498,9 +521,43 @@ Strategy Workspaces::materialize(const Workspace& source, const Workspace& child
     copy.clone_whole_tree = !filtered;
     const WorkerSlots workers(data_directory_);
     copy.workers = workers.count();
+    // The Git index refresh reads the source's index while the copy is made,
+    // takes the source's stat data from the copy, and reads the child's as
+    // soon as its files are final, while directory metadata is still being
+    // replayed. Without it Git just checks every file.
+    git::SourceStats seen;
+    copy.observe = [&seen](const std::string& relative, const struct stat& info) {
+        seen.add(relative, info);
+    };
+    std::optional<git::IndexRefresh> refresh;
+    std::exception_ptr refresh_failure;
+    Joining reading{std::thread([&] {
+        try {
+            refresh.emplace(source.path);
+        } catch (const Error&) { // NOLINT(bugprone-empty-catch): an optimization only
+        }
+    })};
+    Joining applying;
+    copy.files_copied = [&] {
+        reading.join();
+        if (refresh) {
+            applying.thread = std::thread([&] {
+                try {
+                    refresh->apply(child.path, seen);
+                } catch (...) {
+                    refresh_failure = std::current_exception();
+                }
+            });
+        }
+    };
     copy_tree(source.path, child.path, copy);
+    reading.join();
     write_marker(child.path, child.id);
     git::prepare_child(child.path);
+    applying.join();
+    if (refresh_failure) {
+        std::rethrow_exception(refresh_failure);
+    }
     return strategy;
 }
 

@@ -2,7 +2,8 @@ find_package(Catch2 3 CONFIG REQUIRED)
 include(Catch)
 
 add_executable(hz_unit_tests unit/ulid_test.cpp unit/filter_test.cpp unit/tree_test.cpp
-                             unit/workspaces_test.cpp unit/lifecycle_test.cpp unit/process_test.cpp)
+                             unit/workspaces_test.cpp unit/lifecycle_test.cpp unit/process_test.cpp
+                             unit/git_index_test.cpp)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_sources(hz_unit_tests PRIVATE unit/snapshot_test.cpp)
 endif()
