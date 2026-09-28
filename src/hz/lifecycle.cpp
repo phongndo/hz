@@ -97,12 +97,14 @@ bool safe_to_finish_gc(const fs::path& directory, const Workspace& workspace) {
            fs::is_empty(directory, error) && !error;
 }
 
-void finish_gc(const fs::path& directory, const Workspace& workspace) {
+void finish_gc(const fs::path& data_directory, const fs::path& directory,
+               const Workspace& workspace) {
     if (exists_nofollow(directory)) {
         if (!safe_to_finish_gc(directory, workspace)) {
             require_marker(directory, workspace);
         }
-        remove_tree(directory);
+        const WorkerSlots workers(data_directory);
+        remove_tree(directory, workers.count());
     }
 }
 
@@ -419,6 +421,8 @@ Workspace Workspaces::create(const CreateOptions& options) {
         copy.skip = [filtered](const fs::path& relative) {
             return skip_for_copy(relative, filtered);
         };
+        const WorkerSlots workers(data_directory_);
+        copy.workers = workers.count();
         copy_tree(source.path, child.path, copy);
         write_marker(child.path, child.id);
         git::prepare_child(child.path);
@@ -759,7 +763,7 @@ GcResult Workspaces::gc() {
             }
             Workspace& workspace = claim->workspace;
             if (workspace.trash_path) {
-                finish_gc(claim->deleting, workspace);
+                finish_gc(data_directory_, claim->deleting, workspace);
             }
             const auto lock = operation_lock();
             registry_.transaction([&] { registry_.erase(workspace.id); });
@@ -981,7 +985,7 @@ class Recovery {
             if (exists_nofollow(*workspace.trash_path)) {
                 finding.message += "; both trash and deletion paths exist, so both were left";
             } else if (fix_ && safe_to_finish_gc(deleting, workspace)) {
-                finish_gc(deleting, workspace);
+                finish_gc(data_directory_, deleting, workspace);
                 erase(workspace);
                 finding.fixed = true;
             }

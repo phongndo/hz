@@ -159,7 +159,9 @@ replay, not by the clone itself.
 Cost is O(entries) in the source tree on every platform. Byte copying also
 scales with data size. Directories, and batches of files in large directories,
 are copied on up to four threads; more threads mostly add filesystem lock
-contention. GC deletes trees the same way.
+contention. GC deletes trees the same way. Those threads are shared by all hz
+processes using one registry: concurrent creates and GCs take whichever of the
+four slots are free, without waiting, and each runs on at least one thread.
 
 ### Why not snapshots
 

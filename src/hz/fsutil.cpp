@@ -363,7 +363,8 @@ struct Removal {
 
 class TreeRemover {
   public:
-    TreeRemover() : queue_(detail::default_workers()) {}
+    explicit TreeRemover(unsigned workers)
+        : queue_(workers == 0 ? detail::default_workers() : workers) {}
 
     // Empties `directory`, leaving its workspace marker.
     void run(const fs::path& directory) {
@@ -443,7 +444,7 @@ class TreeRemover {
 
 } // namespace
 
-void remove_tree(const fs::path& directory) {
+void remove_tree(const fs::path& directory, unsigned workers) {
     struct stat info{};
     if (::lstat(directory.c_str(), &info) != 0) {
         if (errno == ENOENT) {
@@ -455,11 +456,39 @@ void remove_tree(const fs::path& directory) {
         throw Error(ErrorKind::invalid_path,
                     std::format("{} is not a directory", directory.string()));
     }
-    TreeRemover().run(directory);
+    TreeRemover(workers).run(directory);
     remove_marker(directory);
     if (::rmdir(directory.c_str()) != 0) {
         throw errno_error("remove directory", directory);
     }
+}
+
+WorkerSlots::WorkerSlots(const fs::path& data_directory) {
+    const unsigned slots = detail::default_workers();
+    if (slots <= 1) {
+        return;
+    }
+    const fs::path directory = data_directory / "workers";
+    make_private_directories(directory);
+    // Processes starting together try the slots from different places, so
+    // each is likely to get some.
+    const auto start = static_cast<unsigned>(::getpid());
+    for (unsigned i = 0; i < slots; ++i) {
+        const fs::path path = directory / std::to_string((start + i) % slots);
+        auto slot = detail::Fd::open(path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600, "open worker slot");
+        int status = 0;
+        while ((status = ::flock(slot.get(), LOCK_EX | LOCK_NB)) != 0 && errno == EINTR) {
+        }
+        if (status == 0) {
+            held_.push_back(std::move(slot));
+        } else if (errno != EWOULDBLOCK && errno != EAGAIN) {
+            throw errno_error("take worker slot", path);
+        }
+    }
+}
+
+unsigned WorkerSlots::count() const noexcept {
+    return std::max(1U, static_cast<unsigned>(held_.size()));
 }
 
 bool process_alive(std::int64_t pid) {

@@ -78,9 +78,26 @@ detail::Fd open_directory_as_owner(int parent, const char* name, const std::file
 // Whether a process with this ID exists on this machine.
 bool process_alive(std::int64_t pid);
 
+// Threads for tree work, shared by the hz processes of one registry. Copies
+// and deletions contend on filesystem locks, so concurrent commands each
+// running a full set of threads finish later than if they shared one set.
+// Takes whichever of the shared slots are free, without waiting; with none
+// free, work still runs on one thread. Slots last as long as this object.
+class WorkerSlots {
+  public:
+    explicit WorkerSlots(const std::filesystem::path& data_directory);
+
+    // Threads the holder may use: at least one.
+    [[nodiscard]] unsigned count() const noexcept;
+
+  private:
+    std::vector<detail::Fd> held_;
+};
+
 // Deletes the directory tree at `directory`, making read-only directories
 // writable as it goes. The workspace marker is removed last, so a tree whose
 // deletion was interrupted still identifies which workspace it belonged to.
-void remove_tree(const std::filesystem::path& directory);
+// `workers` threads delete in parallel; 0 chooses a default.
+void remove_tree(const std::filesystem::path& directory, unsigned workers = 0);
 
 } // namespace hz

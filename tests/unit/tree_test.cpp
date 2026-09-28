@@ -258,6 +258,19 @@ TEST_CASE("remove_tree deletes read-only and inaccessible directories, marker la
     REQUIRE_NOTHROW(hz::remove_tree(root)); // already gone
 }
 
+TEST_CASE("worker slots are shared by concurrent holders") {
+    TempDir temp;
+    std::optional<hz::WorkerSlots> first(std::in_place, temp.path());
+    const unsigned all = first->count();
+    REQUIRE(all >= 1);
+    {
+        const hz::WorkerSlots second(temp.path());
+        REQUIRE(second.count() == 1); // none free: still one thread
+    }
+    first.reset();
+    REQUIRE(hz::WorkerSlots(temp.path()).count() == all);
+}
+
 TEST_CASE("copy_tree reproduces a tree in copy mode") {
     TempDir temp;
     fs::path source = make_fixture(temp);
