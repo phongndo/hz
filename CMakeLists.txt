@@ -36,6 +36,7 @@ add_library(
   hz_core STATIC
   src/hz/clone.cpp
   src/hz/config.cpp
+  src/hz/entry_facts.cpp
   src/hz/error.cpp
   src/hz/filter.cpp
   src/hz/fsutil.cpp

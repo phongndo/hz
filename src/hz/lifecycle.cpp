@@ -421,6 +421,9 @@ Workspace Workspaces::create(const CreateOptions& options) {
         copy.skip = [filtered](const fs::path& relative) {
             return skip_for_copy(relative, filtered);
         };
+        // Only filtering omits directories, which a whole-tree clone would
+        // have to delete again.
+        copy.clone_whole_tree = !filtered;
         const WorkerSlots workers(data_directory_);
         copy.workers = workers.count();
         copy_tree(source.path, child.path, copy);

@@ -2,10 +2,17 @@
 
 #include "hz/detail/fd.hpp"
 #include "hz/detail/work_queue.hpp"
+#include "hz/entry_facts.hpp"
 #include "hz/error.hpp"
 #include "hz/fsutil.hpp"
 #include "hz/metadata.hpp"
 
+#ifdef __APPLE__
+#include <copyfile.h>
+#endif
+
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <dirent.h>
@@ -16,6 +23,7 @@
 #include <mutex>
 #include <string>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -61,6 +69,9 @@ struct Directory {
     CreatedAs created{};
     fs::path relative; // below both roots
     std::shared_ptr<Directory> parent;
+    // Whether the subtree clone check already covered this directory, so its
+    // subdirectories are looked up instead of scanned again.
+    bool scanned = false;
     // Its own listing plus each subdirectory and file batch not yet finished.
     std::atomic<std::size_t> pending{1};
 };
@@ -91,6 +102,16 @@ class TreeCopier {
         const fs::path to = to_ / directory->relative;
         directory->source = open_directory_at(parent->source.get(), name.c_str(), from);
         directory->info = stat_fd(directory->source.get(), from);
+#ifdef __APPLE__
+        if (options_.mode == CopyMode::cow) {
+            if (clones_as_walked(*parent, *directory)) {
+                clone_at(parent->source.get(), name.c_str(), parent->destination.get(), from);
+                restore_directory_times(*parent, name, directory->relative);
+                finish(parent);
+                return;
+            }
+        }
+#endif
         if (::mkdirat(parent->destination.get(), name.c_str(), private_mode) != 0) {
             throw errno_error("create directory", to);
         }
@@ -251,6 +272,103 @@ class TreeCopier {
     }
 
 #ifdef __APPLE__
+    // Cloning a directory clones each entry below it as clone_file_at's
+    // clonefileat would, in one call that APFS completes several times
+    // faster than cloning the entries one by one, except that it drops ACLs
+    // below the top and stamps every directory with the current time. Walking
+    // also does more for skipped entries, special files, hard links, set-ID
+    // files, and ownership the clone would not keep. A subtree without any of
+    // these is cloned whole and its directories' times restored. Like the
+    // walk, this assumes the source stays quiescent.
+
+    // Whether `directory`, a subdirectory of `parent` opened but not yet
+    // created, may be cloned whole. The first check of a subtree scans all of
+    // it and records every directory below, so later checks within it are
+    // lookups. Marks `directory` scanned.
+    bool clones_as_walked(const Directory& parent, Directory& directory) {
+        directory.scanned = true;
+        if (parent.scanned) {
+            const std::scoped_lock lock(scanned_mutex_);
+            const auto found = scanned_.find(directory.relative.native());
+            if (found != scanned_.end()) {
+                // The scan expected clones in `parent` to get its source's
+                // group, which its copy only has once replayed.
+                return found->second.cloneable && parent.created.gid == parent.info.st_gid;
+            }
+        }
+        const auto facts = entry_facts(directory.source.get(), from_ / directory.relative);
+        return scan(directory.source.get(), directory.relative, facts, parent.created.gid);
+    }
+
+    // Whether an entry clones as walking would copy it into a directory
+    // whose new entries get group `gid`.
+    static bool clones_as_walked(const EntryFacts& facts, gid_t gid) {
+        if (facts.uid != ::geteuid() || facts.gid != gid || facts.acl) {
+            return false;
+        }
+        switch (facts.type) {
+        case DT_REG:
+            return facts.links == 1 && (facts.mode & (S_ISUID | S_ISGID)) == 0;
+        case DT_DIR:
+            return (facts.mode & S_IXUSR) != 0; // its times are restored through it
+        case DT_LNK:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    // Whether the open directory `fd` at `relative`, described by `facts`
+    // and cloned into a directory giving it group `gid`, clones as walked
+    // with everything below it. Records it and each directory below.
+    bool scan(int fd, const fs::path& relative, const EntryFacts& facts, gid_t gid) {
+        bool cloneable = clones_as_walked(facts, gid);
+        for (const auto& entry : list_entry_facts(fd, from_ / relative, true)) {
+            const fs::path child = relative / entry.name;
+            if (options_.skip && options_.skip(child)) {
+                cloneable = false;
+                continue;
+            }
+            if (entry.type == DT_DIR) {
+                const auto subdirectory = open_directory_at(fd, entry.name.c_str(), from_ / child);
+                // Entries below get this directory's group when cloned.
+                if (!scan(subdirectory.get(), child, entry, facts.gid)) {
+                    cloneable = false;
+                }
+            } else if (!clones_as_walked(entry, facts.gid)) {
+                cloneable = false;
+            }
+        }
+        const std::scoped_lock lock(scanned_mutex_);
+        scanned_.insert_or_assign(relative.native(),
+                                  Scanned{.cloneable = cloneable, .times = facts.times});
+        return cloneable;
+    }
+
+    // Gives each directory of the subtree cloned as `name` in `parent`, from
+    // `relative`, its source's access and modification times.
+    void restore_directory_times(const Directory& parent, const std::string& name,
+                                 const fs::path& relative) {
+        std::vector<std::pair<std::string, std::array<timespec, 2>>> directories;
+        {
+            const std::scoped_lock lock(scanned_mutex_);
+            directories.emplace_back(name, scanned_.at(relative.native()).times);
+            // Every path below `relative` sorts together after this prefix.
+            const std::string prefix = relative.native() + '/';
+            for (auto it = scanned_.lower_bound(prefix);
+                 it != scanned_.end() && it->first.starts_with(prefix); ++it) {
+                directories.emplace_back(name + it->first.substr(relative.native().size()),
+                                         it->second.times);
+            }
+        }
+        for (const auto& [path, times] : directories) {
+            if (::utimensat(parent.destination.get(), path.c_str(), times.data(),
+                            AT_SYMLINK_NOFOLLOW) != 0) {
+                throw errno_error("set times", to_ / parent.relative / path);
+            }
+        }
+    }
+
     // clonefile carries mode, xattrs, ACL, and timestamps. Only ownership, as
     // far as the caller may set it, and the set-ID bits clonefile clears need
     // replaying.
@@ -325,7 +443,254 @@ class TreeCopier {
     detail::WorkQueue queue_;
     std::mutex links_mutex_;
     std::map<std::pair<dev_t, ino_t>, std::shared_ptr<LinkedCopy>> links_;
+#ifdef __APPLE__
+    struct Scanned {
+        bool cloneable;
+        std::array<timespec, 2> times; // access, modification
+    };
+    std::mutex scanned_mutex_;
+    std::map<std::string, Scanned> scanned_; // by relative directory path
+#endif
 };
+
+#ifdef __APPLE__
+
+// Clones the whole tree with one clonefile while the other workers scan the
+// source, then fixes up where the clone differs from what walking it would
+// produce. APFS clones a whole tree in about the time it takes to clone its
+// largest subtrees one by one, so scanning first would only add to that.
+class WholeTreeCloner {
+  public:
+    // Scanning competes with the clone for APFS; two threads finish well
+    // within the clone's time.
+    WholeTreeCloner(fs::path from, fs::path to, const CopyTreeOptions& options)
+        : from_(std::move(from)), to_(std::move(to)), options_(options),
+          queue_(std::min(2U, options.workers == 0 ? detail::default_workers() : options.workers)) {
+    }
+
+    // Returns false, leaving nothing at `to`, if the tree needs walking.
+    bool run() {
+        // Everything below the top takes the group of the clone's parent.
+        struct stat parent{};
+        if (::stat(to_.parent_path().c_str(), &parent) != 0) {
+            throw errno_error("stat", to_.parent_path());
+        }
+        clone_gid_ = parent.st_gid;
+        auto root = detail::Fd::open(from_, O_RDONLY | O_DIRECTORY, 0, "open directory");
+        const auto facts = entry_facts(root.get(), from_);
+        check_directory("", facts, /*top=*/true);
+        if (blocked_) {
+            return false;
+        }
+        queue_.push(
+            [this, fd = std::make_shared<detail::Fd>(std::move(root))] { scan(fd->get(), ""); });
+
+        std::exception_ptr clone_failure;
+        std::thread clone([&] {
+            try {
+                clone_tree(from_, to_);
+            } catch (...) {
+                clone_failure = std::current_exception();
+            }
+        });
+        std::exception_ptr scan_failure;
+        try {
+            queue_.run();
+        } catch (...) {
+            scan_failure = std::current_exception();
+        }
+        clone.join();
+        if (clone_failure) {
+            std::rethrow_exception(clone_failure);
+        }
+        try {
+            if (scan_failure) {
+                std::rethrow_exception(scan_failure);
+            }
+            if (blocked_) {
+                remove_tree(to_);
+                return false;
+            }
+            fix_up();
+        } catch (...) {
+            discard();
+            throw;
+        }
+        return true;
+    }
+
+  private:
+    // An entry whose ownership or set-ID bits the clone did not keep.
+    struct Owned {
+        std::string path;
+        uid_t uid;
+        gid_t gid;
+        mode_t mode;
+        bool symlink;
+    };
+
+    void discard() {
+        try {
+            remove_tree(to_);
+        } catch (...) { // NOLINT(bugprone-empty-catch): report the original failure
+        }
+    }
+
+    [[nodiscard]] fs::path source(const std::string& relative) const {
+        return relative.empty() ? from_ : from_ / relative;
+    }
+    [[nodiscard]] fs::path copy(const std::string& relative) const {
+        return relative.empty() ? to_ : to_ / relative;
+    }
+
+    // Records what the clone of the directory at `relative` needs; blocks
+    // the whole-tree clone if fixing up below it needs owner access the
+    // directory does not give.
+    void check_directory(const std::string& relative, const EntryFacts& facts, bool top) {
+        const std::scoped_lock lock(mutex_);
+        if (facts.type != DT_DIR || (facts.mode & S_IRWXU) != S_IRWXU) {
+            blocked_ = true;
+            return;
+        }
+        directories_.emplace_back(relative, facts.times);
+        record_ownership(relative, facts, top);
+    }
+
+    // Called with mutex_ held.
+    void record_ownership(const std::string& relative, const EntryFacts& facts, bool top) {
+        // The top keeps its ACL; entries below lose theirs.
+        if (facts.acl && !top) {
+            acls_.push_back(relative);
+        }
+        const bool owner = facts.uid != ::geteuid() || facts.gid != clone_gid_;
+        const bool set_id = facts.type == DT_REG && (facts.mode & (S_ISUID | S_ISGID)) != 0;
+        if (owner || set_id) {
+            owned_.push_back({.path = relative,
+                              .uid = facts.uid,
+                              .gid = facts.gid,
+                              .mode = facts.mode,
+                              .symlink = facts.type == DT_LNK});
+        }
+    }
+
+    void scan(int fd, const std::string& relative) {
+        for (auto& entry : list_entry_facts(fd, source(relative), true)) {
+            std::string child = relative.empty() ? entry.name : relative + '/' + entry.name;
+            if (options_.skip && options_.skip(child)) {
+                const std::scoped_lock lock(mutex_);
+                if (entry.type == DT_DIR || entry.type == DT_UNKNOWN) {
+                    blocked_ = true;
+                } else {
+                    removals_.push_back(std::move(child));
+                }
+                continue;
+            }
+            switch (entry.type) {
+            case DT_DIR: {
+                check_directory(child, entry, false);
+                auto subdirectory = std::make_shared<detail::Fd>(
+                    open_directory_at(fd, entry.name.c_str(), source(child)));
+                queue_.push([this, subdirectory, child] { scan(subdirectory->get(), child); });
+                break;
+            }
+            case DT_REG:
+            case DT_LNK: {
+                const std::scoped_lock lock(mutex_);
+                if (entry.type == DT_REG && entry.links > 1) {
+                    links_[{entry.device, entry.inode}].push_back(child);
+                }
+                record_ownership(child, entry, false);
+                break;
+            }
+            case DT_UNKNOWN: {
+                const std::scoped_lock lock(mutex_);
+                blocked_ = true;
+                break;
+            }
+            default:
+                throw unsupported(source(child));
+            }
+        }
+    }
+
+    // Brings the clone to what walking would have produced. Structural
+    // changes first, as they touch directory times; ACLs last, as a copied
+    // ACL may deny the owner the other changes.
+    void fix_up() {
+        for (const auto& removal : removals_) {
+            if (::unlink(copy(removal).c_str()) != 0) {
+                throw errno_error("remove", copy(removal));
+            }
+        }
+        for (const auto& [inode, paths] : links_) {
+            // Each later link becomes a link to the first one's copy.
+            for (std::size_t i = 1; i < paths.size(); ++i) {
+                if (::unlink(copy(paths[i]).c_str()) != 0 ||
+                    ::link(copy(paths[0]).c_str(), copy(paths[i]).c_str()) != 0) {
+                    throw errno_error("link", copy(paths[i]));
+                }
+            }
+        }
+        for (const auto& entry : owned_) {
+            restore_ownership(entry);
+        }
+        parallel(directories_.size(), [this](std::size_t i) {
+            const auto& [relative, times] = directories_[i];
+            if (::utimensat(AT_FDCWD, copy(relative).c_str(), times.data(), AT_SYMLINK_NOFOLLOW) !=
+                0) {
+                throw errno_error("set times", copy(relative));
+            }
+        });
+        for (const auto& relative : acls_) {
+            if (::copyfile(source(relative).c_str(), copy(relative).c_str(), nullptr,
+                           COPYFILE_ACL | COPYFILE_NOFOLLOW) != 0) {
+                throw errno_error("set ACL", copy(relative));
+            }
+        }
+    }
+
+    // As walking would: ownership as far as the caller may set it, then the
+    // mode, which chown and the clone may have stripped of set-ID bits.
+    void restore_ownership(const Owned& entry) const {
+        const fs::path path = copy(entry.path);
+        if (::lchown(path.c_str(), entry.uid, entry.gid) != 0 && errno != EPERM) {
+            throw errno_error("set owner", path);
+        }
+        if (!entry.symlink && ::chmod(path.c_str(), entry.mode) != 0) {
+            throw errno_error("set permissions", path);
+        }
+    }
+
+    // Runs `work(i)` for every i below `count` on the workers.
+    template <typename Work> void parallel(std::size_t count, Work work) {
+        constexpr std::size_t chunk = 256;
+        detail::WorkQueue queue(options_.workers == 0 ? detail::default_workers()
+                                                      : options_.workers);
+        for (std::size_t start = 0; start < count; start += chunk) {
+            queue.push([start, count, &work] {
+                for (std::size_t i = start; i < std::min(count, start + chunk); ++i) {
+                    work(i);
+                }
+            });
+        }
+        queue.run();
+    }
+
+    fs::path from_;
+    fs::path to_;
+    const CopyTreeOptions& options_;
+    detail::WorkQueue queue_;
+    gid_t clone_gid_ = 0;
+    std::mutex mutex_;
+    bool blocked_ = false;
+    std::vector<std::string> removals_;
+    std::map<std::pair<dev_t, ino_t>, std::vector<std::string>> links_;
+    std::vector<Owned> owned_;
+    std::vector<std::string> acls_;
+    std::vector<std::pair<std::string, std::array<timespec, 2>>> directories_;
+};
+
+#endif
 
 } // namespace
 
@@ -334,6 +699,12 @@ void copy_tree(const fs::path& from, const fs::path& to, const CopyTreeOptions& 
         throw Error(ErrorKind::invalid_path,
                     std::format("destination already exists: {}", to.string()));
     }
+#ifdef __APPLE__
+    if (options.mode == CopyMode::cow && options.clone_whole_tree &&
+        WholeTreeCloner(from, to, options).run()) {
+        return;
+    }
+#endif
     auto source_fd = detail::Fd::open(from, O_RDONLY | O_DIRECTORY, 0, "open directory");
     if (::mkdir(to.c_str(), private_mode) != 0) {
         throw errno_error("create directory", to);

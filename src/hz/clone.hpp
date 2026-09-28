@@ -23,11 +23,17 @@ void copy_contents(int source, int destination, CopyMode mode, const std::filesy
                    const std::filesystem::path& to);
 
 #ifdef __APPLE__
-// clonefile(2) of the regular file `name` in `source_directory` to the same
-// name in `destination_directory`. The clone carries the source's mode
-// (without set-ID bits), extended attributes, ACL, and timestamps.
+// clonefile(2) of the entry `name` in `source_directory` to the same name in
+// `destination_directory`. A regular file's clone carries the source's mode
+// (without set-ID bits), extended attributes, ACL, and timestamps. A
+// directory is cloned with everything below it.
 void clone_at(int source_directory, const char* name, int destination_directory,
               const std::filesystem::path& from);
+
+// clonefile(2) of the directory `from`, with everything below it, to the new
+// path `to`. Below the top, entries lose their ACLs and take the group of
+// `to`'s parent, and every directory gets the current time.
+void clone_tree(const std::filesystem::path& from, const std::filesystem::path& to);
 #endif
 
 // Whether copy-on-write cloning works for files created inside `directory`.

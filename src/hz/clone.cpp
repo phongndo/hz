@@ -196,6 +196,15 @@ void clone_at(int source_directory, const char* name, int destination_directory,
         throw errno_error("clone", from);
     }
 }
+
+void clone_tree(const std::filesystem::path& from, const std::filesystem::path& to) {
+    if (::clonefile(from.c_str(), to.c_str(), CLONE_NOFOLLOW | CLONE_ACL) != 0) {
+        if (means_cow_unavailable(errno)) {
+            throw cow_unavailable_error(from, errno);
+        }
+        throw errno_error("clone", from);
+    }
+}
 #endif
 
 void clone_file(const std::filesystem::path& from, const std::filesystem::path& to, CopyMode mode) {

@@ -18,6 +18,8 @@
 #include <sys/stat.h>
 #include <sys/xattr.h>
 #include <tuple>
+#include <unistd.h>
+#include <vector>
 
 #ifdef __APPLE__
 #include <memory>
@@ -184,6 +186,108 @@ TEST_CASE("copy_tree copies large trees identically with any number of workers")
     REQUIRE(first_difference(scan(temp / "parallel"), expected).empty());
     REQUIRE_FALSE(fs::equivalent(temp / "parallel" / "d0" / "a" / "b" / "file.txt",
                                  source / "d0" / "a" / "b" / "file.txt"));
+}
+
+TEST_CASE("copy_tree keeps walked semantics for subtrees a clone would alter") {
+    // On macOS clean subtrees are cloned whole; these nested entries must
+    // still come out as the walk copies them.
+    TempDir temp;
+    const auto mode = hz::probe_clone_support(temp.path()) ? hz::CopyMode::cow : hz::CopyMode::copy;
+    const fs::path source = temp / "source";
+    write_file(source / "clean" / "a" / "b" / "file.txt", "clean");
+    fs::create_symlink("file.txt", source / "clean" / "a" / "b" / "link");
+    write_file(source / "linked" / "a" / "one.txt", "linked");
+    fs::create_hard_link(source / "linked" / "a" / "one.txt", source / "linked" / "a" / "two.txt");
+    write_file(source / "setid" / "a" / "tool", "#!/bin/sh\n");
+    // Set-GID needs membership of the file's group, which a temporary
+    // directory's group may not give.
+    fs::permissions(source / "setid" / "a" / "tool", fs::perms::owner_all | fs::perms::set_uid);
+    write_file(source / "skipping" / "a" / "keep.txt", "keep");
+    write_file(source / "skipping" / "a" / "cache" / "drop.txt", "drop");
+    auto expected = scan(source);
+    std::erase_if(expected.entries,
+                  [](const auto& entry) { return entry.first.starts_with("skipping/a/cache"); });
+    const auto skip = [](const fs::path& relative) { return relative.filename() == "cache"; };
+    bool whole = false;
+    SECTION("subtree clones") {}
+    SECTION("a whole-tree clone, which a skipped directory turns back into a walk") {
+        whole = true;
+    }
+
+    hz::copy_tree(source, temp / "dest", {.mode = mode, .skip = skip, .clone_whole_tree = whole});
+
+    const auto difference = first_difference(scan(temp / "dest"), expected);
+    INFO(difference);
+    REQUIRE(difference.empty());
+    REQUIRE(expected.links.size() == 1);
+    REQUIRE(fs::hard_link_count(temp / "dest" / "linked" / "a" / "one.txt") == 2);
+    const auto perms = fs::status(temp / "dest" / "setid" / "a" / "tool").permissions();
+    REQUIRE((perms & fs::perms::set_uid) == fs::perms::set_uid);
+}
+
+TEST_CASE("a whole-tree clone comes out as the walk would copy the tree") {
+    TempDir temp;
+    const auto mode = hz::probe_clone_support(temp.path()) ? hz::CopyMode::cow : hz::CopyMode::copy;
+    const fs::path source = temp / "source";
+    write_file(source / "a" / "b" / "file.txt", "file");
+    fs::create_symlink("file.txt", source / "a" / "b" / "link");
+    write_file(source / "a" / "one.txt", "linked");
+    fs::create_hard_link(source / "a" / "one.txt", source / "a" / "two.txt");
+    fs::create_hard_link(source / "a" / "one.txt", source / "b-three.txt");
+    write_file(source / "tool", "#!/bin/sh\n");
+    fs::permissions(source / "tool", fs::perms::owner_all | fs::perms::set_uid);
+    write_file(source / ".hz-workspace", "01M3FT15QDE8TKB66940X4WNKG");
+    fs::create_directories(source / "empty");
+    for (const auto* directory : {"a/b", "a", "empty"}) {
+        fs::last_write_time(source / directory,
+                            fs::file_time_type::clock::now() - std::chrono::hours(24));
+    }
+    // A group of the caller's other than the one the destination would give,
+    // so ownership has to be restored.
+    std::optional<gid_t> other_group;
+    std::vector<gid_t> groups(static_cast<std::size_t>(::getgroups(0, nullptr)));
+    ::getgroups(static_cast<int>(groups.size()), groups.data());
+    struct stat parent{};
+    REQUIRE(::stat(temp.path().c_str(), &parent) == 0);
+    for (const auto group : groups) {
+        if (group != parent.st_gid) {
+            other_group = group;
+            break;
+        }
+    }
+    if (other_group) {
+        REQUIRE(::lchown((source / "a" / "b" / "file.txt").c_str(), static_cast<uid_t>(-1),
+                         *other_group) == 0);
+    }
+    auto expected = scan(source);
+    expected.entries.erase(".hz-workspace");
+    const auto skip = [](const fs::path& relative) { return relative == ".hz-workspace"; };
+
+    hz::copy_tree(source, temp / "dest", {.mode = mode, .skip = skip, .clone_whole_tree = true});
+
+    const auto difference = first_difference(scan(temp / "dest"), expected);
+    INFO(difference);
+    REQUIRE(difference.empty());
+    REQUIRE(fs::hard_link_count(temp / "dest" / "a" / "one.txt") == 3);
+    const auto perms = fs::status(temp / "dest" / "tool").permissions();
+    REQUIRE((perms & fs::perms::set_uid) == fs::perms::set_uid);
+    if (other_group) {
+        struct stat copied{};
+        REQUIRE(::lstat((temp / "dest" / "a" / "b" / "file.txt").c_str(), &copied) == 0);
+        REQUIRE(copied.st_gid == *other_group);
+    }
+}
+
+TEST_CASE("a whole-tree clone refuses special files like the walk") {
+    TempDir temp;
+    const auto mode = hz::probe_clone_support(temp.path()) ? hz::CopyMode::cow : hz::CopyMode::copy;
+    const fs::path source = temp / "source";
+    write_file(source / "a" / "file", "1");
+    REQUIRE(::mkfifo((source / "a" / "fifo").c_str(), 0600) == 0);
+    REQUIRE(error_kind([&] {
+                hz::copy_tree(source, temp / "dest", {.mode = mode, .clone_whole_tree = true});
+            }) == hz::ErrorKind::unsupported_entry);
+    REQUIRE_FALSE(fs::exists(temp / "dest"));
 }
 
 TEST_CASE("read_directory lists an open directory completely every time") {
@@ -454,14 +558,22 @@ TEST_CASE("copy_tree preserves Darwin file and directory ACLs", "[review]") {
     }
     auto mode = hz::CopyMode::copy;
     SECTION("byte copies") {}
+    bool whole = false;
     SECTION("clones") {
         if (!hz::probe_clone_support(temp.path())) {
             SKIP("filesystem does not support cloning");
         }
         mode = hz::CopyMode::cow;
     }
+    SECTION("whole-tree clones") {
+        if (!hz::probe_clone_support(temp.path())) {
+            SKIP("filesystem does not support cloning");
+        }
+        mode = hz::CopyMode::cow;
+        whole = true;
+    }
     const auto dest = temp / "dest";
-    hz::copy_tree(source, dest, {.mode = mode});
+    hz::copy_tree(source, dest, {.mode = mode, .clone_whole_tree = whole});
     REQUIRE(access_acl(dest) == access_acl(source));
     REQUIRE(access_acl(dest / "directory") == access_acl(source / "directory"));
     REQUIRE(access_acl(dest / "directory" / "file") == access_acl(source / "directory" / "file"));

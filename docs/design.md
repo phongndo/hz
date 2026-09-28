@@ -149,6 +149,29 @@ directories and byte copies. A macOS clone already carries the source's mode,
 xattrs, ACL, and timestamps, so hz only restores ownership where permitted and
 the set-ID bits `clonefile` clears.
 
+Cloning a directory on macOS clones every entry below it the same way, in one
+call that APFS completes several times faster than cloning each file. Below
+the top, though, entries lose their ACLs, take the group of the clone's parent
+directory, become separate files where they were hard links, lose set-ID bits,
+and every directory gets the current time.
+
+A full create on macOS therefore clones the whole tree in one call while the
+other threads scan the source, then fixes up where the clone differs from a
+walk: it removes skipped files such as the source's marker, relinks hard-link
+groups, restores ownership where permitted and set-ID bits, restores every
+directory's times, and reapplies ACLs last. A source it cannot fix up that way,
+because a directory would have to be skipped or its owner lacks full access to
+it, has its clone discarded and is walked instead; a special file fails the
+create as a walk would.
+
+A walk on macOS, including every filtered create, scans each top-level subtree
+and clones it whole when that gives the walk's result without fixups: nothing
+below is skipped, and every entry is a directory the owner can search, a
+symlink, or a singly linked regular file without set-ID bits, has no ACL, and
+is owned by the caller with the group the clone would give it. Directory times
+are then restored from the scan. Other subtrees are walked, and their
+subdirectories are checked against the same scan.
+
 Clones share data blocks with the source until either side writes. On
 compressed filesystems (btrfs `compress=zstd`, ZFS `compression=`) the clone
 references the compressed extents as they are, so compression neither slows
