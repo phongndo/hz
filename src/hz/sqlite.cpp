@@ -27,6 +27,13 @@ Database::Database(const std::filesystem::path& path) : path_(path) {
     sqlite3_busy_timeout(db_, busy_timeout_ms);
     exec("PRAGMA journal_mode = WAL");
     exec("PRAGMA synchronous = NORMAL");
+    // Every hz command opens and closes the registry. Checkpointing the log
+    // on close would sync it each time; with synchronous = NORMAL recent
+    // commits are not durable across power loss anyway, and SQLite still
+    // checkpoints as the log grows.
+    sqlite3_db_config(db_, SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, 1, nullptr);
+    int persist = 1;
+    sqlite3_file_control(db_, "main", SQLITE_FCNTL_PERSIST_WAL, &persist);
 }
 
 Database::~Database() {
