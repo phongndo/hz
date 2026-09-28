@@ -22,11 +22,18 @@
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 #ifdef __linux__
+#include <array>
+#include <cstdint>
+#include <linux/btrfs.h>
 #include <linux/fs.h>
+#include <linux/magic.h>
+#include <sys/ioctl.h>
 #include <sys/syscall.h>
+#include <sys/vfs.h>
 #endif
 
 namespace hz {
@@ -199,6 +206,32 @@ bool exists_nofollow(const fs::path& path) {
     throw errno_error("stat", path);
 }
 
+#ifdef __linux__
+namespace {
+
+// The UUID of the btrfs filesystem holding `path`, which every subvolume of
+// it shares although each has its own device number.
+std::optional<std::array<std::uint8_t, BTRFS_FSID_SIZE>> btrfs_filesystem(const fs::path& path) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+        return std::nullopt;
+    }
+    const detail::Fd directory(fd);
+    struct statfs filesystem{};
+    btrfs_ioctl_fs_info_args info{};
+    if (::fstatfs(fd, &filesystem) != 0 ||
+        std::cmp_not_equal(filesystem.f_type, BTRFS_SUPER_MAGIC) ||
+        ::ioctl(fd, BTRFS_IOC_FS_INFO, &info) != 0) {
+        return std::nullopt;
+    }
+    std::array<std::uint8_t, BTRFS_FSID_SIZE> fsid{};
+    std::ranges::copy(info.fsid, fsid.begin());
+    return fsid;
+}
+
+} // namespace
+#endif
+
 bool same_filesystem(const fs::path& a, const fs::path& b) {
     struct stat first{};
     struct stat second{};
@@ -208,7 +241,15 @@ bool same_filesystem(const fs::path& a, const fs::path& b) {
     if (::stat(b.c_str(), &second) != 0) {
         throw errno_error("stat", b);
     }
-    return first.st_dev == second.st_dev;
+    if (first.st_dev == second.st_dev) {
+        return true;
+    }
+#ifdef __linux__
+    const auto filesystem = btrfs_filesystem(a);
+    return filesystem && filesystem == btrfs_filesystem(b);
+#else
+    return false;
+#endif
 }
 
 bool is_within(const fs::path& candidate, const fs::path& ancestor) {

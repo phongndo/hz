@@ -22,8 +22,9 @@ explicitly selects byte copying for a new root. Configuration creation is a
 separate `hz config init` command.
 
 `new` copies the current workspace, or `--from TARGET`, into an independent
-child. The handle is generated when omitted. Both full and filtered creation
-walk the source tree; full is the default. `--into DIR` must be outside the
+child. The handle is generated when omitted. Full creation is the default. A
+full create from a btrfs subvolume is a snapshot; other creates walk the source
+tree. JSON output reports the `strategy` used: `snapshot`, `clone`, or `copy`. `--into DIR` must be outside the
 source, outside other registered workspaces and trash, and on the same filesystem. See [design.md](design.md) for the model and
 [config.md](config.md) for filtering defaults and hooks.
 

@@ -50,7 +50,8 @@ void make_private_directories(const std::filesystem::path& directory);
 // Whether `path` exists, without following a final symlink.
 bool exists_nofollow(const std::filesystem::path& path);
 
-// Whether two existing paths are on the same mounted filesystem.
+// Whether two existing paths are on the same filesystem, so one can be cloned
+// into the other. Subvolumes of one btrfs filesystem count as the same.
 bool same_filesystem(const std::filesystem::path& a, const std::filesystem::path& b);
 
 // Whether `candidate` is `ancestor` or lies below it (both canonical).

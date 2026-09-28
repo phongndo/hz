@@ -12,6 +12,7 @@
 #include "hz/handle.hpp"
 #include "hz/marker.hpp"
 #include "hz/process.hpp"
+#include "hz/snapshot.hpp"
 #include "hz/tree.hpp"
 #include "hz/ulid.hpp"
 #include "hz/workspaces.hpp"
@@ -105,6 +106,15 @@ void finish_gc(const fs::path& data_directory, const fs::path& directory,
         }
         const WorkerSlots workers(data_directory);
         remove_tree(directory, workers.count());
+    }
+}
+
+// Removes what a snapshot copies but a walk skips as ephemeral: the Git
+// fsmonitor socket, which has no daemon behind it in the copy.
+void remove_ephemeral(const fs::path& workspace) {
+    const fs::path socket = workspace / ".git" / "fsmonitor--daemon.ipc";
+    if (::unlink(socket.c_str()) != 0 && errno != ENOENT) {
+        throw errno_error("remove", socket);
     }
 }
 
@@ -324,7 +334,7 @@ fs::path Workspaces::storage_directory(const Workspace& root) {
            std::format("{}-{}", root.handle, root.id.substr(root.id.size() - 6));
 }
 
-Workspace Workspaces::create(const CreateOptions& options) {
+Created Workspaces::create(const CreateOptions& options) {
     // The copy runs without the operation lock, so other commands proceed
     // meanwhile. The child's lease tells them it is still being copied.
     Workspace source;
@@ -415,20 +425,9 @@ Workspace Workspaces::create(const CreateOptions& options) {
         } catch (const Error&) { // NOLINT(bugprone-empty-catch): report the original failure
         }
     };
+    Strategy strategy = Strategy::clone;
     try {
-        CopyTreeOptions copy;
-        copy.mode = child.mode;
-        copy.skip = [filtered](const fs::path& relative) {
-            return skip_for_copy(relative, filtered);
-        };
-        // Only filtering omits directories, which a whole-tree clone would
-        // have to delete again.
-        copy.clone_whole_tree = !filtered;
-        const WorkerSlots workers(data_directory_);
-        copy.workers = workers.count();
-        copy_tree(source.path, child.path, copy);
-        write_marker(child.path, child.id);
-        git::prepare_child(child.path);
+        strategy = materialize(source, child, filtered);
     } catch (...) {
         abandon();
         throw;
@@ -477,7 +476,32 @@ Workspace Workspaces::create(const CreateOptions& options) {
     if (hook_failure) {
         throw *hook_failure;
     }
-    return child;
+    return {.workspace = std::move(child), .strategy = strategy};
+}
+
+Strategy Workspaces::materialize(const Workspace& source, const Workspace& child, bool filtered) {
+    Strategy strategy = child.mode == CopyMode::cow ? Strategy::clone : Strategy::copy;
+    // Filtering needs a walk; a snapshot would copy what it omits.
+    if (strategy == Strategy::clone && !filtered && can_snapshot(source.path) &&
+        snapshot(source.path, child.path)) {
+        strategy = Strategy::snapshot;
+        remove_ephemeral(child.path);
+        write_marker(child.path, child.id);
+        git::prepare_child(child.path);
+        return strategy;
+    }
+    CopyTreeOptions copy;
+    copy.mode = child.mode;
+    copy.skip = [filtered](const fs::path& relative) { return skip_for_copy(relative, filtered); };
+    // Only filtering omits directories, which a whole-tree clone would have
+    // to delete again.
+    copy.clone_whole_tree = !filtered;
+    const WorkerSlots workers(data_directory_);
+    copy.workers = workers.count();
+    copy_tree(source.path, child.path, copy);
+    write_marker(child.path, child.id);
+    git::prepare_child(child.path);
+    return strategy;
 }
 
 std::optional<Error> Workspaces::activate(Workspace& child, const Workspace& source) {

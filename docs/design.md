@@ -14,12 +14,13 @@ substrate.
 
 ## Principles
 
-1. **One behaviour on every filesystem.** hz has the same semantics, commands,
-   and guarantees everywhere. Filesystems differ only in speed and in whether
-   copy-on-write is available at all. hz does not use filesystem-specific
-   snapshot mechanisms (btrfs subvolumes, ZFS datasets, APFS snapshots), even
-   where they would be faster, because each one carries its own privilege
-   rules, layout constraints, and failure modes that would leak into the model.
+1. **One contract, the fastest strategy per filesystem.** Commands,
+   semantics, and guarantees are the same everywhere; how a child's files are
+   produced is not. Each create uses the fastest [strategy](#materialization)
+   the source and filesystem allow, as long as its result meets the contract,
+   and reports which it used. A strategy that would copy the source
+   differently is not used for it. hz never converts, moves, or needs
+   privileges over a user's directory to enable a faster strategy.
 2. **No silent degradation.** A root is registered in exactly one copy mode.
    `hz init` proves that copy-on-write cloning works in that directory before
    registering it; if it does not, `hz init` fails and names `hz init --copy` as
@@ -111,8 +112,24 @@ copying, removal, and GC; hz does not supervise processes that still use it.
 
 ## Materialization
 
-Creating a child is one operation everywhere: **walk the source tree and clone
-each entry**.
+Every strategy produces the same child: the source's directories, regular
+files, symlinks, and hard-link groups, except the marker, ephemeral files, and
+filter matches, with permission bits, ownership where permitted, extended
+attributes, ACLs, and timestamps. Otherwise the create fails and leaves
+nothing behind.
+
+| Strategy | Used when | Cost |
+| --- | --- | --- |
+| `snapshot` | Linux btrfs, a full create, and the source is a subvolume holding no other subvolume | constant |
+| `clone` | any other create in a `cow` root | O(entries); on macOS, one clone call plus fixups |
+| `copy` | a root registered with `hz init --copy` | O(entries + bytes) |
+
+`hz new` reports the strategy it used in its JSON output.
+
+### Walking
+
+The `clone` and `copy` strategies **walk the source tree and copy each
+entry**.
 
 ```text
 for each entry under source (excluding the marker and any filter matches):
@@ -179,31 +196,45 @@ cloning nor breaks sharing. Per-file compression settings are xattrs
 (`btrfs.compression`, `bcachefs.compression`) and are carried by the xattr
 replay, not by the clone itself.
 
-Cost is O(entries) in the source tree on every platform. Byte copying also
+Walking costs O(entries) in the source tree on every platform. Byte copying also
 scales with data size. Directories, and batches of files in large directories,
 are copied on up to four threads; more threads mostly add filesystem lock
 contention. GC deletes trees the same way. Those threads are shared by all hz
 processes using one registry: concurrent creates and GCs take whichever of the
 four slots are free, without waiting, and each runs on at least one thread.
 
-### Why not snapshots
+### Snapshots
 
-A btrfs subvolume snapshot of the same tree takes about 3 ms. hz still does
-not use it, for these reasons:
+A btrfs snapshot copies a subvolume in constant time, however many files it
+holds. hz uses one for a full create whenever the source is
+the top of a btrfs subvolume with no other subvolume inside it, which a
+snapshot would leave as an empty directory, and the caller may snapshot it.
+Otherwise it walks.
 
-- It only works if the source is already a subvolume. Converting a live
-  repository into one means a staged copy and a rename swap of the user's
-  directory, and afterwards the directory can no longer be `mv`ed across the
-  filesystem.
-- Deleting a subvolume in constant time needs root or the
-  `user_subvol_rm_allowed` mount option; without it, deletion is the same
-  recursive unlink a plain directory needs.
-- Nested subvolumes are excluded from snapshots and appear as empty stubs.
-- Snapshots cannot be filtered.
-- None of this exists on XFS, APFS, or ReFS, so hz would have two models.
+The child is a writable subvolume, so its own children are snapshots too. hz
+replaces the copied marker and removes the Git fsmonitor socket. A snapshot is
+a point-in-time copy of everything, so unlike a walk it keeps ownership it
+could not set and reproduces sockets, fifos, and device files instead of
+refusing them. It also keeps stray `.hz-workspace` markers or `.hz-workspaces`
+directories that a manual move left inside the source; registered workspaces
+never lie inside one another. GC deletes a snapshot like any other tree and
+then removes the empty subvolume, which Linux 4.18 and later allow without
+privileges. Subvolumes of one filesystem have separate device numbers; hz
+treats them as one filesystem.
 
-The one property snapshots have that cloning lacks is a point-in-time copy of
-`.git`. hz compensates with the source-control checks below.
+hz does not turn directories into subvolumes. To use snapshots for a root,
+make it one before `hz init`, and reopen shells and editors that were in the
+old directory:
+
+```sh
+btrfs subvolume create app.new
+cp -a --reflink=always app/. app.new/
+mv app app.old && mv app.new app
+```
+
+Other filesystems' snapshots are not strategies: ZFS dataset clones need
+delegated privileges and become separate mounts, and APFS snapshots cover a
+whole volume and are read-only.
 
 ### Copy modes
 
@@ -257,8 +288,8 @@ Git-specific behaviour on create:
   An unborn HEAD is left as it is. `refs/hz/base` records the creation commit;
   an unborn-base marker records when there was no commit yet. Reftable sources
   are refused because editing their HEAD would require invoking Git.
-- **Sources mid-operation are refused.** A walk-and-clone copy is not
-  point-in-time, so hz refuses to create from a source whose `.git` contains
+- **Sources mid-operation are refused.** A walk is not point-in-time, so hz
+  refuses to create from a source whose `.git` contains
   `index.lock`, `HEAD.lock`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
   `BISECT_LOG`, `rebase-merge`, or `rebase-apply`. Retry once the operation
   finishes. Top-level Git locks and locks under `refs` are also refused, as is
@@ -295,11 +326,12 @@ the rename into trash. `--no-hooks` skips both. Hooks receive `HZ_ROOT`,
 
 `--machine` forces JSON output, disables shell navigation, and is the interface
 for agents and editors. Every command's JSON includes the workspace ID, handle,
-path, state, and copy mode where relevant.
+path, state, and copy mode where relevant; `hz new` adds the strategy it used.
 
 ## Non-goals
 
-- Filesystem-native snapshots, for the reasons above.
+- Strategies that need privileges, convert or move the user's directories, or
+  change what a workspace is, such as ZFS dataset clones.
 - Running or supervising agents. hz produces directories; what runs in them is
   the caller's concern.
 - Replacing source-control commands. hz never commits, branches, or merges on

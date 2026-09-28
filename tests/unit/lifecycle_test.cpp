@@ -37,11 +37,13 @@ struct Family {
     }
 
     hz::Workspace child(const std::string& handle) {
-        return workspaces->create({.source = "",
-                                   .handle = handle,
-                                   .into = std::nullopt,
-                                   .filtered = false,
-                                   .hooks = false});
+        return workspaces
+            ->create({.source = "",
+                      .handle = handle,
+                      .into = std::nullopt,
+                      .filtered = false,
+                      .hooks = false})
+            .workspace;
     }
 
     std::vector<hz::Finding> doctor(bool fix) { return workspaces->doctor(fix); }
@@ -174,7 +176,8 @@ TEST_CASE("a failed subtree rename rolls back earlier moves", "[recovery]") {
     Family family;
     const auto parent = family.child("parent");
     const auto nested =
-        family.workspaces->create({.source = parent.id, .handle = "nested", .hooks = false});
+        family.workspaces->create({.source = parent.id, .handle = "nested", .hooks = false})
+            .workspace;
     // Deepest-first removal moves nested before hitting this occupied path.
     const auto occupied = parent.path.parent_path() / ".trash" / parent.id;
     write_file(occupied / "keep", "unrelated");

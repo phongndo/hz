@@ -47,6 +47,7 @@ add_library(
   src/hz/metadata.cpp
   src/hz/process.cpp
   src/hz/registry.cpp
+  src/hz/snapshot.cpp
   src/hz/sqlite.cpp
   src/hz/tree.cpp
   src/hz/ulid.cpp

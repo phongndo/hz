@@ -4,6 +4,7 @@
 #include "hz/detail/fd.hpp"
 #include "hz/error.hpp"
 #include "hz/registry.hpp"
+#include "hz/snapshot.hpp"
 
 #include <filesystem>
 #include <optional>
@@ -29,6 +30,11 @@ struct CreateOptions {
     std::optional<std::filesystem::path> into; // storage directory override
     std::optional<bool> filtered;              // default: the source's [create] filtered
     bool hooks = true;                         // run postcreate hooks
+};
+
+struct Created {
+    Workspace workspace;
+    Strategy strategy = Strategy::clone; // how its files were produced
 };
 
 struct RemoveOptions {
@@ -89,7 +95,7 @@ class Workspaces {
     std::vector<Workspace> list(const ListOptions& options);
 
     // Copies a workspace into a new child and registers it.
-    Workspace create(const CreateOptions& options);
+    Created create(const CreateOptions& options);
 
     // Moves a workspace and its descendants into trash, or unregisters a root.
     RemoveResult remove(const RemoveOptions& options);
@@ -118,6 +124,11 @@ class Workspaces {
     std::vector<Workspace> ancestors(const Workspace& workspace);
 
   private:
+    // Produces the files of the registered, still empty `child` from
+    // `source` with the fastest strategy that applies, marks it, and prepares
+    // its source control. Returns the strategy used.
+    Strategy materialize(const Workspace& source, const Workspace& child, bool filtered);
+
     detail::Fd operation_lock();
     void require_separate_directory(const std::filesystem::path& directory,
                                     std::string_view except_id = "");

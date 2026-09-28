@@ -50,10 +50,12 @@ lifecycle state. Children normally live beside the root:
 ~/code/.hz-workspaces/app-<last-six-root-id-characters>/.trash/<workspace-id>/
 ```
 
-Creation walks the tree and clones each file with Linux `FICLONE` or macOS
-`clonefile`. Clones share data blocks until either side writes. `hz init --copy`
-explicitly selects byte copies instead; hz never falls back silently. `--into`
-can select another storage directory on the same filesystem.
+Creation uses the fastest strategy the filesystem allows. A root that is a
+btrfs subvolume is copied with a constant-time snapshot. Otherwise hz clones
+each file with Linux `FICLONE`, or the whole tree with macOS `clonefile`. Clones
+share data blocks until either side writes. `hz init --copy` explicitly selects
+byte copies instead; hz never falls back silently. `--into` can select another
+storage directory on the same filesystem.
 
 Copies are full by default, including build and dependency artifacts.
 `hz new --filtered` skips built-in regenerable artifacts; `.hz/hz.toml` can make

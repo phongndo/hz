@@ -3,6 +3,9 @@ include(Catch)
 
 add_executable(hz_unit_tests unit/ulid_test.cpp unit/filter_test.cpp unit/tree_test.cpp
                              unit/workspaces_test.cpp unit/lifecycle_test.cpp unit/process_test.cpp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_sources(hz_unit_tests PRIVATE unit/snapshot_test.cpp)
+endif()
 target_link_libraries(hz_unit_tests PRIVATE hz_core Catch2::Catch2WithMain hz_warnings)
 catch_discover_tests(hz_unit_tests)
 

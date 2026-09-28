@@ -85,10 +85,10 @@ void add_new(Commands& commands) {
             options.filtered = args->filtered;
         }
         options.hooks = !args->no_hooks;
-        auto workspace = commands.workspaces().create(options);
+        auto [workspace, strategy] = commands.workspaces().create(options);
         const auto output = commands.output();
         if (output.json()) {
-            output.emit({{"workspace", to_json(workspace)}});
+            output.emit({{"workspace", to_json(workspace)}, {"strategy", to_string(strategy)}});
         } else if (args->path_only) {
             output.line(workspace.path.string());
         } else {
