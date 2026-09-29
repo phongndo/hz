@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hz/clone.hpp"
+#include "hz/labels.hpp"
 #include "hz/sqlite.hpp"
 
 #include <cstdint>
@@ -36,6 +37,7 @@ struct Workspace {
     std::int64_t created_at = 0; // unix milliseconds
     std::int64_t updated_at = 0;
     std::optional<std::int64_t> pid; // creating process while creating
+    Labels labels;
 
     [[nodiscard]] bool is_root() const { return !parent_id; }
     // Where the directory is when no operation is in flight.

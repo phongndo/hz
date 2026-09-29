@@ -80,10 +80,13 @@ See [the design](docs/design.md) for guarantees and filesystem support,
 `--machine` emits JSON and bypasses shell navigation:
 
 ```sh
-hz --machine new parser-fix
-hz --machine list
+hz --machine new parser-fix --label owner=my-agent --label task=123
+hz --machine list --all --label task=123
 hz --machine git status parser-fix
 ```
+
+JSON output and exit statuses are versioned; see
+[machine output](docs/cli.md#machine-output).
 
 `--json`, help, and path-only calls also bypass shell navigation. Hook output
 goes to stderr so it does not corrupt machine output.

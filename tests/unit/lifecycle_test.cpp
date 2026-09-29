@@ -242,17 +242,31 @@ TEST_CASE("a create in progress is protected by its lease", "[concurrency]") {
     REQUIRE(fs::exists(child.path / "file.txt"));
     REQUIRE(hz::test::error_kind([&] {
                 family.workspaces->remove({.target = child.id, .hooks = false});
-            }) == hz::ErrorKind::conflict);
+            }) == hz::ErrorKind::busy);
     REQUIRE(hz::test::error_kind([&] { family.workspaces->require_quiescent(family.root); }) ==
-            hz::ErrorKind::conflict);
+            hz::ErrorKind::busy);
     REQUIRE(hz::test::error_kind([&] { family.workspaces->require_quiescent(child); }) ==
-            hz::ErrorKind::conflict);
+            hz::ErrorKind::busy);
 
     lease.reset(); // as when the copying process dies
     REQUIRE(has(family.doctor(true), "interrupted_create", true));
     REQUIRE_FALSE(fs::exists(child.path));
     REQUIRE_FALSE(fs::exists(data / "leases" / child.id));
     REQUIRE_NOTHROW(family.workspaces->require_quiescent(family.root));
+}
+
+TEST_CASE("an interrupted create is not reported as busy", "[recovery]") {
+    Family family;
+    auto child = family.child("interrupted");
+    child.state = hz::State::creating;
+    family.registry().transaction([&] { family.registry().update(child); });
+
+    REQUIRE(hz::test::error_kind([&] { family.workspaces->require_quiescent(child); }) ==
+            hz::ErrorKind::inconsistent);
+    REQUIRE(hz::test::error_kind([&] {
+                family.workspaces->create({.source = child.id, .handle = "copy", .hooks = false});
+            }) == hz::ErrorKind::inconsistent);
+    REQUIRE(has(family.doctor(true), "interrupted_create", true));
 }
 
 TEST_CASE("gc leaves trash that another process is deleting", "[concurrency]") {
@@ -285,7 +299,7 @@ TEST_CASE("a create by an older hz without a lease is judged by its pid", "[conc
     REQUIRE(family.doctor(true).empty());
     REQUIRE(hz::test::error_kind([&] {
                 family.workspaces->remove({.target = child.id, .hooks = false});
-            }) == hz::ErrorKind::conflict);
+            }) == hz::ErrorKind::busy);
     REQUIRE(fs::exists(child.path / "file.txt"));
 }
 
@@ -344,12 +358,12 @@ TEST_CASE("a workspace busy in another process is not removed or rewritten", "[c
     const auto lease = hz::acquire_lease(family.temp / "data", child.id);
     REQUIRE(hz::test::error_kind([&] {
                 family.workspaces->remove({.target = child.id, .hooks = false});
-            }) == hz::ErrorKind::conflict);
+            }) == hz::ErrorKind::busy);
     REQUIRE(hz::test::error_kind([&] { family.workspaces->require_quiescent(child); }) ==
-            hz::ErrorKind::conflict);
+            hz::ErrorKind::busy);
     REQUIRE(hz::test::error_kind([&] {
                 family.workspaces->create({.source = child.id, .handle = "copy", .hooks = false});
-            }) == hz::ErrorKind::conflict);
+            }) == hz::ErrorKind::busy);
     REQUIRE(family.doctor(true).empty());
     REQUIRE(fs::exists(child.path / "file.txt"));
 }

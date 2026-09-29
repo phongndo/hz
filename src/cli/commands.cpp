@@ -39,10 +39,10 @@ int Commands::run() {
                 return exit_code_;
             } catch (const Error& error) {
                 out.error(error);
-                return 1;
+                return exit_status(error.kind());
             } catch (const fs::filesystem_error& error) {
                 out.error(Error(ErrorKind::io, error.what(), error.code()));
-                return 1;
+                return exit_status(ErrorKind::io);
             }
         }
     }

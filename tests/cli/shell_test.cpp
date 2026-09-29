@@ -10,7 +10,11 @@ TEST_CASE("shell wrappers navigate only when a path is returned", "[shell]") {
         INFO(shell);
         Fixture f;
         f.init();
-        auto script = f.ok({"shell", shell}).out;
+        // Startup files may reset PATH, as nix-darwin's /etc/zshenv does, so
+        // the script itself puts the hz under test first.
+        auto script = std::string(shell == "fish" ? "set -gx PATH $HZ_TEST_BIN $PATH\n"
+                                                  : "PATH=\"$HZ_TEST_BIN:$PATH\"\n") +
+                      f.ok({"shell", shell}).out;
         if (shell == "fish") {
             script += R"sh(
 hz new child; or exit 11
@@ -49,12 +53,12 @@ test "$PWD" = "$HZ_TEST_ROOT" || exit 23
         }
         const auto file = f.temp / "test-shell";
         write_file(file, script);
-        const std::string path =
-            std::filesystem::path(HZ_BINARY).parent_path().string() + ":" + std::getenv("PATH");
+        const std::string bin = std::filesystem::path(HZ_BINARY).parent_path().string();
         const auto result = hz::run_process(
             {shell, file.string()},
             {.cwd = f.project,
-             .env = {{"PATH", path},
+             .env = {{"PATH", bin + ":" + std::getenv("PATH")},
+                     {"HZ_TEST_BIN", bin},
                      {"HZ_DATA_DIR", f.data.string()},
                      {"HZ_TEST_ROOT", std::filesystem::canonical(f.project).string()}}});
         INFO(result.err);

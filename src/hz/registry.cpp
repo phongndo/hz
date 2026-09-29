@@ -2,6 +2,8 @@
 
 #include "hz/error.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <chrono>
 #include <format>
 
@@ -11,7 +13,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int schema_version = 2;
+constexpr int schema_version = 3;
 
 // Paths are absolute and canonical. Uniqueness of handles is per family and
 // ignores trashed rows so a handle can be reused once its owner is removed.
@@ -33,16 +35,20 @@ CREATE TABLE workspace (
     pinned      INTEGER NOT NULL DEFAULT 0,
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
-    pid         INTEGER
+    pid         INTEGER,
+    labels      TEXT NOT NULL DEFAULT '{}'
 ) STRICT;
 CREATE UNIQUE INDEX workspace_handle ON workspace (root_id, handle) WHERE state != 'trashed';
 CREATE INDEX workspace_parent ON workspace (parent_id);
 CREATE INDEX workspace_removal ON workspace (removal_id);
 )sql";
 
+constexpr std::string_view labels_column =
+    "ALTER TABLE workspace ADD COLUMN labels TEXT NOT NULL DEFAULT '{}'";
+
 constexpr std::string_view columns =
     "id, root_id, parent_id, handle, path, trash_path, state, "
-    "mode, filtered, pinned, created_at, updated_at, pid, removal_id";
+    "mode, filtered, pinned, created_at, updated_at, pid, removal_id, labels";
 
 State parse_state(const std::string& text) {
     if (text == "active") {
@@ -74,6 +80,7 @@ Workspace read_row(const sqlite::Statement& row) {
         workspace.pid = row.integer(12);
     }
     workspace.removal_id = row.optional_text(13);
+    workspace.labels = nlohmann::json::parse(row.text(14)).get<Labels>();
     return workspace;
 }
 
@@ -103,6 +110,7 @@ void bind_fields(sqlite::Statement& statement, const Workspace& workspace) {
         statement.bind(13, std::nullopt);
     }
     statement.bind(14, workspace.removal_id);
+    statement.bind(15, nlohmann::json(workspace.labels).dump());
 }
 
 } // namespace
@@ -137,6 +145,10 @@ Registry::Registry(const fs::path& database) : db_(database) {
         if (current == 0) {
             db_.exec(schema);
             db_.exec(std::format("PRAGMA user_version = {}", schema_version));
+        } else if (current == 2) {
+            // Version 3 added labels; older binaries then refuse the registry.
+            db_.exec(labels_column);
+            db_.exec(std::format("PRAGMA user_version = {}", schema_version));
         } else if (current != schema_version) {
             throw Error(ErrorKind::registry,
                         std::format("registry {} has schema version {}, but this hz requires {}; "
@@ -149,7 +161,7 @@ Registry::Registry(const fs::path& database) : db_(database) {
 
 void Registry::insert(const Workspace& workspace) {
     auto statement = db_.prepare(std::format("INSERT INTO workspace ({}) VALUES (?1, ?2, ?3, ?4, "
-                                             "?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                                             "?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                                              columns));
     bind_fields(statement, workspace);
     try {
@@ -168,10 +180,11 @@ void Registry::insert(const Workspace& workspace) {
 }
 
 void Registry::update(const Workspace& workspace) {
-    auto statement = db_.prepare(
-        "UPDATE workspace SET root_id = ?2, parent_id = ?3, handle = ?4, path = ?5, "
-        "trash_path = ?6, state = ?7, mode = ?8, filtered = ?9, pinned = ?10, "
-        "created_at = ?11, updated_at = ?12, pid = ?13, removal_id = ?14 WHERE id = ?1");
+    auto statement =
+        db_.prepare("UPDATE workspace SET root_id = ?2, parent_id = ?3, handle = ?4, path = ?5, "
+                    "trash_path = ?6, state = ?7, mode = ?8, filtered = ?9, pinned = ?10, "
+                    "created_at = ?11, updated_at = ?12, pid = ?13, removal_id = ?14, "
+                    "labels = ?15 WHERE id = ?1");
     bind_fields(statement, workspace);
     statement.run();
     if (db_.changes() != 1) {

@@ -23,6 +23,8 @@ std::string_view to_string(ErrorKind kind) {
         return "ambiguous";
     case ErrorKind::conflict:
         return "conflict";
+    case ErrorKind::busy:
+        return "busy";
     case ErrorKind::inconsistent:
         return "inconsistent";
     case ErrorKind::unsafe_source:
@@ -33,6 +35,10 @@ std::string_view to_string(ErrorKind kind) {
         return "registry";
     }
     return "unknown";
+}
+
+bool is_retryable(ErrorKind kind) {
+    return kind == ErrorKind::busy;
 }
 
 Error::Error(ErrorKind kind, const std::string& message)

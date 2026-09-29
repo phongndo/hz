@@ -11,6 +11,16 @@
 
 namespace hz::cli {
 
+// Version of the JSON documents and exit statuses described in docs/cli.md.
+// Bump it when a change could break a client: removing or renaming a field,
+// changing a field's type or meaning, or changing an exit status.
+inline constexpr int api_version = 1;
+
+// Exit statuses besides success and the per-kind statuses of exit_status.
+inline constexpr int exit_internal = 1;
+inline constexpr int exit_usage = 2;
+int exit_status(ErrorKind kind);
+
 nlohmann::json to_json(const Workspace& workspace);
 nlohmann::json to_json(const std::vector<Workspace>& workspaces);
 

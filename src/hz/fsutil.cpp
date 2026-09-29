@@ -99,7 +99,7 @@ detail::Fd lock_operations(const fs::path& data_directory, std::chrono::seconds 
             throw errno_error("lock operations", data_directory);
         }
         if (std::chrono::steady_clock::now() >= deadline) {
-            throw Error(ErrorKind::conflict,
+            throw Error(ErrorKind::busy,
                         std::format("another hz operation has been in progress for over {} "
                                     "seconds; retry when it finishes",
                                     wait.count()));
@@ -121,7 +121,7 @@ detail::Fd acquire_lease(const fs::path& data_directory, std::string_view id, bo
         }
         if (status != 0) {
             if (errno == EWOULDBLOCK || errno == EAGAIN) {
-                throw Error(ErrorKind::conflict,
+                throw Error(ErrorKind::busy,
                             std::format("workspace {} is busy in another hz process", id));
             }
             throw errno_error("lease", path);

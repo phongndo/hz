@@ -144,8 +144,8 @@ end
 
 complete -c hz -e
 complete -c hz -f
-complete -c hz -n 'not __fish_seen_subcommand_from init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell' -a 'init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell'
-complete -c hz -n '__hz_top_level_is path cd ancestors remove rm pin unpin' -a '(__hz_targets)'
+complete -c hz -n 'not __fish_seen_subcommand_from init new path cd list ls pwd ancestors remove rm pin unpin label restore gc adopt doctor git hg config install shell' -a 'init new path cd list ls pwd ancestors remove rm pin unpin label restore gc adopt doctor git hg config install shell'
+complete -c hz -n '__hz_top_level_is path cd ancestors remove rm pin unpin label' -a '(__hz_targets)'
 complete -c hz -n '__hz_top_level_is restore' -a '(__hz_trash_targets)'
 complete -c hz -n '__hz_git_needs_subcommand' -a 'status handoff'
 complete -c hz -n '__hz_git_needs_target' -a '(__hz_targets)'

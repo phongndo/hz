@@ -302,6 +302,7 @@ std::vector<Workspace> Workspaces::list(const ListOptions& options) {
     if (!options.include_trashed) {
         rows = without_trashed(std::move(rows));
     }
+    std::erase_if(rows, [&](const Workspace& row) { return !matches(row.labels, options.labels); });
     return rows;
 }
 

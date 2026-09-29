@@ -1,5 +1,6 @@
 #include "hz/error.hpp"
 #include "hz/handle.hpp"
+#include "hz/labels.hpp"
 #include "hz/marker.hpp"
 #include "hz/registry.hpp"
 #include "hz/workspaces.hpp"
@@ -142,6 +143,59 @@ TEST_CASE("incompatible registry versions are rejected without changing their da
     auto row = old.prepare("SELECT value FROM saved");
     REQUIRE(row.step());
     REQUIRE(row.text(0) == "keep");
+}
+
+TEST_CASE("version 2 registries gain labels in place") {
+    TempDir temp;
+    {
+        hz::sqlite::Database old(temp / "hz.sqlite");
+        old.exec(R"sql(
+CREATE TABLE workspace (
+    id TEXT PRIMARY KEY, root_id TEXT NOT NULL, parent_id TEXT, handle TEXT NOT NULL,
+    path TEXT NOT NULL UNIQUE, trash_path TEXT UNIQUE, removal_id TEXT,
+    state TEXT NOT NULL, mode TEXT NOT NULL, filtered INTEGER NOT NULL DEFAULT 0,
+    pinned INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL, pid INTEGER
+) STRICT;
+INSERT INTO workspace (id, root_id, handle, path, state, mode, created_at, updated_at)
+VALUES ('01AAAAAAAAAAAAAAAAAAAAAAAA', '01AAAAAAAAAAAAAAAAAAAAAAAA', 'app', '/code/app',
+        'active', 'cow', 1, 1);
+PRAGMA user_version = 2;
+)sql");
+    }
+    hz::Registry registry(temp / "hz.sqlite");
+    auto row = registry.find("01AAAAAAAAAAAAAAAAAAAAAAAA");
+    REQUIRE(row);
+    REQUIRE(row->labels.empty());
+    row->labels = {{"owner", "t3"}, {"thread", "a b=c"}};
+    registry.transaction([&] { registry.update(*row); });
+    REQUIRE(registry.find(row->id)->labels == row->labels);
+}
+
+TEST_CASE("labels are validated and selected") {
+    REQUIRE(hz::parse_label("owner=t3") == std::pair<std::string, std::string>{"owner", "t3"});
+    REQUIRE(hz::parse_label("url=https://x/?a=b").second == "https://x/?a=b");
+    REQUIRE(hz::parse_label("t3.dev/thread=").second.empty());
+    for (const auto* bad : {"owner", "=v", "-k=v", "a b=v", "k=line\nbreak", "k=\x1b[31m"}) {
+        INFO(bad);
+        REQUIRE(error_kind([&] { hz::parse_label(bad); }) == hz::ErrorKind::invalid_argument);
+    }
+    REQUIRE(error_kind([&] { hz::parse_label("k=\xff"); }) == hz::ErrorKind::invalid_argument);
+    REQUIRE(error_kind([&] {
+                hz::parse_label("k=\xc2\x9b"
+                                "31m");
+            }) == hz::ErrorKind::invalid_argument);
+    REQUIRE(hz::parse_label("k=caf\xc3\xa9\xc2\xa0").second == "caf\xc3\xa9\xc2\xa0");
+    REQUIRE(error_kind([&] { hz::parse_label("k=" + std::string(4097, 'x')); }) ==
+            hz::ErrorKind::invalid_argument);
+
+    const hz::Labels labels{{"owner", "t3"}, {"thread", "42"}};
+    REQUIRE(hz::matches(labels, {}));
+    REQUIRE(hz::matches(labels, {hz::parse_label_selector("owner")}));
+    REQUIRE(hz::matches(
+        labels, {hz::parse_label_selector("owner=t3"), hz::parse_label_selector("thread=42")}));
+    REQUIRE_FALSE(hz::matches(labels, {hz::parse_label_selector("owner=other")}));
+    REQUIRE_FALSE(hz::matches(labels, {hz::parse_label_selector("task")}));
 }
 
 TEST_CASE("init registers a root and resolves targets") {

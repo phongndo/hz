@@ -29,6 +29,7 @@ struct CreateOptions {
     std::optional<std::filesystem::path> into; // storage directory override
     std::optional<bool> filtered;              // default: the source's [create] filtered
     bool hooks = true;                         // run postcreate hooks
+    Labels labels;                             // attached to the new workspace
 };
 
 struct RemoveOptions {
@@ -62,6 +63,7 @@ struct Finding {
 struct ListOptions {
     bool all_families = false; // otherwise the current family, or all outside one
     bool include_trashed = false;
+    std::vector<LabelSelector> labels; // only workspaces matching all of them
 };
 
 // The workspace model: registration, lookup, and lifecycle. `context` is the
@@ -101,6 +103,11 @@ class Workspaces {
     GcResult gc();
 
     Workspace set_pinned(std::string_view target, bool pinned);
+
+    // Sets the labels in `set` and removes the keys in `unset`, which must
+    // not overlap. Unsetting a missing key does nothing.
+    Workspace set_labels(std::string_view target, const Labels& set,
+                         const std::vector<std::string>& unset);
 
     // Records that a workspace directory was moved to `directory`.
     Workspace adopt(const std::filesystem::path& directory);

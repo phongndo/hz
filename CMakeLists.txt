@@ -41,6 +41,7 @@ add_library(
   src/hz/fsutil.cpp
   src/hz/git.cpp
   src/hz/handle.cpp
+  src/hz/labels.cpp
   src/hz/lifecycle.cpp
   src/hz/marker.cpp
   src/hz/metadata.cpp
