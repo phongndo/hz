@@ -65,7 +65,7 @@ for the filesystem and the registry and are never reused.
 
 One SQLite database per user (`$XDG_DATA_HOME/hz/hz.sqlite` or the platform
 equivalent) records every workspace: ID, root ID, parent ID, handle, path,
-state, copy mode, pin flag, and timestamps. The marker in the directory and the
+state, copy mode, pin flag, caller-owned labels, and timestamps. The marker in the directory and the
 row in the registry must agree; a mismatch is reported by `hz doctor` and never
 silently repaired, because a path alone cannot prove that the directory now at
 that path is the workspace that was registered there.
@@ -78,15 +78,15 @@ to `<id>.deleting` and preserves its marker until the final unlink so interrupte
 deletion can resume without guessing ownership. If removal was interrupted
 before its rename, GC requires repair first instead of forgetting the directory.
 
-The C++ rewrite does not migrate older registries. An incompatible schema is
-rejected without changing its contents. Use the matching older binary to manage
-existing workspaces, or select a fresh `HZ_DATA_DIR` and explicitly initialize
-roots there.
+The C++ rewrite does not migrate registries from the earlier implementation. An
+incompatible schema is rejected without changing its contents. Use the matching
+older binary to manage existing workspaces, or select a fresh `HZ_DATA_DIR` and
+explicitly initialize roots there. C++ schema versions are upgraded in place
+when the upgrade only adds data; older binaries then reject the registry.
 
 Lifecycle mutations, configuration writes, Git handoff, and doctor acquire one
 exclusive operation lock per registry, so each acts on current state. A command
-waits up to two minutes for another holder, then fails with a retryable
-conflict; `hz new` waits up to ten to record a finished copy rather than
+waits up to two minutes for another holder, then fails as `busy`; `hz new` waits up to ten to record a finished copy rather than
 discard it. The lock is released on exit, including crashes; hooks inherit no
 lock descriptor. Preremove hooks run under the lock, so a mutating command
 they start with the same registry is refused while they run; the hz process
@@ -269,8 +269,13 @@ the rename into trash. `--no-hooks` skips both. Hooks receive `HZ_ROOT`,
 ## Machine interface
 
 `--machine` forces JSON output, disables shell navigation, and is the interface
-for agents and editors. Every command's JSON includes the workspace ID, handle,
-path, state, and copy mode where relevant.
+for agents and editors. The JSON documents and exit statuses are versioned
+together; [cli.md](cli.md#machine-output) specifies them.
+
+Tools that manage workspaces for their own users attach labels, such as a
+session ID, instead of keeping a separate mapping to hz IDs that could drift.
+Labels are opaque to hz and are not inherited, because a child created from a
+labeled workspace is not owned by whatever owns its parent.
 
 ## Non-goals
 

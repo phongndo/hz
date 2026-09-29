@@ -39,6 +39,38 @@ std::string notes(const Workspace& workspace) {
 
 } // namespace
 
+int exit_status(ErrorKind kind) {
+    switch (kind) {
+    case ErrorKind::io:
+        return 10;
+    case ErrorKind::cow_unavailable:
+        return 11;
+    case ErrorKind::unsupported_entry:
+        return 12;
+    case ErrorKind::invalid_path:
+        return 13;
+    case ErrorKind::invalid_argument:
+        return 14;
+    case ErrorKind::not_found:
+        return 15;
+    case ErrorKind::ambiguous:
+        return 16;
+    case ErrorKind::conflict:
+        return 17;
+    case ErrorKind::busy:
+        return 18;
+    case ErrorKind::inconsistent:
+        return 19;
+    case ErrorKind::unsafe_source:
+        return 20;
+    case ErrorKind::hook_failed:
+        return 21;
+    case ErrorKind::registry:
+        return 22;
+    }
+    return exit_internal;
+}
+
 nlohmann::json to_json(const Workspace& workspace) {
     nlohmann::json object{
         {"id", workspace.id},
@@ -54,6 +86,7 @@ nlohmann::json to_json(const Workspace& workspace) {
         {"root", workspace.is_root()},
         {"created_at", workspace.created_at},
         {"updated_at", workspace.updated_at},
+        {"labels", workspace.labels},
     };
     if (workspace.parent_id) {
         object["parent_id"] = *workspace.parent_id;
@@ -70,7 +103,9 @@ nlohmann::json to_json(const std::vector<Workspace>& workspaces) {
 }
 
 void Output::emit(const nlohmann::json& document) const {
-    std::println("{}", document.dump(2));
+    auto versioned = document;
+    versioned["api_version"] = api_version;
+    std::println("{}", versioned.dump(2));
 }
 
 void Output::line(const std::string& text) const {
@@ -79,7 +114,10 @@ void Output::line(const std::string& text) const {
 
 void Output::error(const Error& error) const {
     if (json_) {
-        emit({{"error", {{"kind", to_string(error.kind())}, {"message", error.what()}}}});
+        emit({{"error",
+               {{"kind", to_string(error.kind())},
+                {"message", error.what()},
+                {"retryable", is_retryable(error.kind())}}}});
     } else {
         std::cerr << "hz: " << error.what() << '\n';
     }
@@ -87,7 +125,7 @@ void Output::error(const Error& error) const {
 
 void Output::error(const std::string& message) const {
     if (json_) {
-        emit({{"error", {{"kind", "internal"}, {"message", message}}}});
+        emit({{"error", {{"kind", "internal"}, {"message", message}, {"retryable", false}}}});
     } else {
         std::cerr << "hz: " << message << '\n';
     }

@@ -22,7 +22,9 @@ int run(int argc, char** argv) {
     try {
         app.parse(argc, argv);
     } catch (const CLI::ParseError& error) {
-        return app.exit(error);
+        // Help and --version are successes; every other parse error is a
+        // usage error, whatever CLI11's own code for it.
+        return app.exit(error) == 0 ? 0 : hz::cli::exit_usage;
     }
     return commands.run();
 }
@@ -35,6 +37,6 @@ int main(int argc, char** argv) {
     } catch (const std::exception& error) {
         // iostreams do not throw by default, so the handler itself is exception-free.
         std::cerr << "hz: " << error.what() << '\n';
-        return 1;
+        return hz::cli::exit_internal;
     }
 }

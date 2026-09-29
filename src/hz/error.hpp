@@ -18,6 +18,7 @@ enum class ErrorKind {
     not_found,         // no workspace matches
     ambiguous,         // more than one workspace matches
     conflict,          // the request contradicts current state
+    busy,              // another hz process holds what this needs; retrying may succeed
     inconsistent,      // the registry and the filesystem disagree
     unsafe_source,     // source control is mid-operation in the source
     hook_failed,       // a lifecycle hook exited unsuccessfully
@@ -25,6 +26,10 @@ enum class ErrorKind {
 };
 
 std::string_view to_string(ErrorKind kind);
+
+// Whether the same request may succeed later without the caller changing
+// anything, because another hz process will release what it holds.
+bool is_retryable(ErrorKind kind);
 
 class Error : public std::runtime_error {
   public:

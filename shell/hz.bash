@@ -72,7 +72,7 @@ _hz_target_completions() {
 
 _hz_complete() {
   local current="${COMP_WORDS[COMP_CWORD]}"
-  local top="init new path cd list ls pwd ancestors remove rm pin unpin restore gc adopt doctor git hg config install shell"
+  local top="init new path cd list ls pwd ancestors remove rm pin unpin label restore gc adopt doctor git hg config install shell"
   local command="" subcommand="" command_index=0 index word
   COMPREPLY=()
 
@@ -121,7 +121,7 @@ _hz_complete() {
     config)
       [[ -z "$subcommand" ]] && COMPREPLY=( $(compgen -W "init" -- "$current") )
       ;;
-    path|cd|ancestors|remove|rm|pin|unpin)
+    path|cd|ancestors|remove|rm|pin|unpin|label)
       _hz_target_completions workspace-targets "$current"
       ;;
     restore)

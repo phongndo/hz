@@ -20,6 +20,20 @@ std::string handles(const std::vector<Workspace>& workspaces) {
     return text;
 }
 
+// Parses repeated `--label KEY=VALUE` arguments; a key may appear once.
+Labels parse_labels(const std::vector<std::string>& arguments) {
+    Labels labels;
+    for (const auto& argument : arguments) {
+        auto [key, value] = parse_label(argument);
+        if (labels.contains(key)) {
+            throw Error(ErrorKind::invalid_argument,
+                        std::format("label '{}' is given more than once", key));
+        }
+        labels.emplace(std::move(key), std::move(value));
+    }
+    return labels;
+}
+
 void print_workspace(Commands& commands, const Workspace& workspace) {
     const auto output = commands.output();
     if (output.json()) {
@@ -70,10 +84,12 @@ void add_new(Commands& commands) {
         bool full = false;
         bool no_hooks = false;
         bool path_only = false;
+        std::vector<std::string> labels;
     };
     auto args = std::make_shared<Args>();
     auto* command = commands.add("new", "Create a child workspace", [&commands, args] {
         CreateOptions options;
+        options.labels = parse_labels(args->labels);
         options.source = args->from;
         if (!args->name.empty()) {
             options.handle = args->name;
@@ -105,6 +121,9 @@ void add_new(Commands& commands) {
         ->excludes(filtered);
     command->add_flag("--no-hooks", args->no_hooks, "Skip postcreate hooks");
     command->add_flag("--path-only", args->path_only, "Print only the new workspace's path");
+    command->add_option("--label,-l", args->labels, "Attach a label; repeatable")
+        ->type_name("KEY=VALUE")
+        ->allow_extra_args(false);
 }
 
 void add_remove(Commands& commands) {
@@ -221,6 +240,34 @@ void add_pin(Commands& commands, bool pin) {
     command->add_option("targets", *targets, "Handles, IDs, or paths")->required();
 }
 
+void add_label(Commands& commands) {
+    struct Args {
+        std::string target;
+        std::vector<std::string> labels;
+        std::vector<std::string> unset;
+    };
+    auto args = std::make_shared<Args>();
+    auto* command = commands.add("label", "Show or change a workspace's labels", [&commands, args] {
+        const auto set = parse_labels(args->labels);
+        auto workspace = set.empty() && args->unset.empty()
+                             ? commands.workspaces().resolve(args->target)
+                             : commands.workspaces().set_labels(args->target, set, args->unset);
+        const auto output = commands.output();
+        if (output.json()) {
+            output.emit({{"workspace", to_json(workspace)}});
+        } else {
+            for (const auto& [key, value] : workspace.labels) {
+                output.line(std::format("{}={}", key, value));
+            }
+        }
+    });
+    command->add_option("target", args->target, "Handle, ID, or path")->required();
+    command->add_option("labels", args->labels, "Labels to set")->type_name("KEY=VALUE");
+    command->add_option("--unset,-u", args->unset, "Remove a label; repeatable")
+        ->type_name("KEY")
+        ->allow_extra_args(false);
+}
+
 void add_adopt(Commands& commands) {
     auto path = std::make_shared<std::string>();
     auto* command = commands.add(
@@ -267,7 +314,7 @@ void add_doctor(Commands& commands) {
                 }
             }
             if (unresolved) {
-                commands.set_exit_code(1);
+                commands.set_exit_code(exit_status(ErrorKind::inconsistent));
             }
         });
     command->add_flag("--fix", *fix, "Repair problems whose resolution is provable");
@@ -278,11 +325,15 @@ void add_list(Commands& commands) {
         bool tree = false;
         bool all = false;
         bool trash = false;
+        std::vector<std::string> labels;
     };
     auto args = std::make_shared<Args>();
     auto* command = commands.add("list", "List workspaces", [&commands, args] {
-        auto rows =
-            commands.workspaces().list({.all_families = args->all, .include_trashed = args->trash});
+        ListOptions options{.all_families = args->all, .include_trashed = args->trash};
+        for (const auto& selector : args->labels) {
+            options.labels.push_back(parse_label_selector(selector));
+        }
+        auto rows = commands.workspaces().list(options);
         const auto output = commands.output();
         if (output.json()) {
             output.emit({{"workspaces", to_json(rows)}});
@@ -296,6 +347,11 @@ void add_list(Commands& commands) {
     command->add_flag("--tree,-t", args->tree, "Draw workspace ancestry");
     command->add_flag("--all", args->all, "List every family, not just the current one");
     command->add_flag("--trash", args->trash, "Include trashed workspaces");
+    command
+        ->add_option("--label,-l", args->labels,
+                     "Only workspaces with this label, or this key; repeatable")
+        ->type_name("KEY[=VALUE]")
+        ->allow_extra_args(false);
 }
 
 void add_path(Commands& commands) {
@@ -341,6 +397,7 @@ void add_workspace_commands(Commands& commands) {
     add_gc(commands);
     add_pin(commands, true);
     add_pin(commands, false);
+    add_label(commands);
     add_adopt(commands);
     add_doctor(commands);
 }

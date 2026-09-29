@@ -207,13 +207,29 @@ bool busy(const fs::path& data_directory, const Workspace& workspace) {
     return false;
 }
 
+// Why a workspace that is not active cannot be used: busy while another
+// process still creates it, otherwise an interrupted create or a removal.
+Error inactive(const fs::path& data_directory, const Workspace& workspace) {
+    if (workspace.state != State::creating) {
+        return {ErrorKind::conflict,
+                std::format("workspace '{}' is {}", workspace.handle, to_string(workspace.state))};
+    }
+    if (busy(data_directory, workspace)) {
+        return {
+            ErrorKind::busy,
+            std::format("'{}' is still being created; retry when that finishes", workspace.handle)};
+    }
+    return {ErrorKind::inconsistent,
+            std::format("creating '{}' was interrupted; run `hz doctor --fix`", workspace.handle)};
+}
+
 void check_removable(const fs::path& data_directory, const Workspace& workspace) {
     if (workspace.pinned) {
         throw Error(ErrorKind::conflict, std::format("'{}' is pinned; run `hz unpin {}` first",
                                                      workspace.handle, workspace.handle));
     }
     if (busy(data_directory, workspace)) {
-        throw Error(ErrorKind::conflict,
+        throw Error(ErrorKind::busy,
                     workspace.state == State::creating
                         ? std::format("'{}' is still being created; retry when that finishes",
                                       workspace.handle)
@@ -325,6 +341,7 @@ fs::path Workspaces::storage_directory(const Workspace& root) {
 Workspace Workspaces::create(const CreateOptions& options) {
     // The copy runs without the operation lock, so other commands proceed
     // meanwhile. The child's lease tells them it is still being copied.
+    require_valid_labels(options.labels);
     Workspace source;
     Workspace child;
     fs::path root_path;
@@ -334,11 +351,10 @@ Workspace Workspaces::create(const CreateOptions& options) {
         const auto lock = operation_lock();
         source = resolve(options.source);
         if (source.state != State::active) {
-            throw Error(ErrorKind::conflict,
-                        std::format("workspace '{}' is still being created", source.handle));
+            throw inactive(data_directory_, source);
         }
         if (busy(data_directory_, source)) {
-            throw Error(ErrorKind::conflict,
+            throw Error(ErrorKind::busy,
                         std::format("'{}' is busy in another hz process, for example running its "
                                     "postcreate hooks; retry when it finishes",
                                     source.handle));
@@ -379,6 +395,7 @@ Workspace Workspaces::create(const CreateOptions& options) {
         child.mode = root->mode;
         child.filtered = filtered;
         child.pid = ::getpid();
+        child.labels = options.labels;
         child.created_at = child.updated_at = now_ms();
         lease = acquire_lease(data_directory_, child.id);
         try {
@@ -808,17 +825,16 @@ void Workspaces::tidy_storage(const std::set<fs::path>& trash_directories) {
 
 void Workspaces::require_quiescent(const Workspace& workspace) {
     if (workspace.state != State::active) {
-        throw Error(ErrorKind::conflict, std::format("workspace '{}' is {}", workspace.handle,
-                                                     to_string(workspace.state)));
+        throw inactive(data_directory_, workspace);
     }
     if (busy(data_directory_, workspace)) {
-        throw Error(ErrorKind::conflict,
+        throw Error(ErrorKind::busy,
                     std::format("'{}' is busy in another hz process; retry when it finishes",
                                 workspace.handle));
     }
     for (const auto& child : registry_.children(workspace.id)) {
         if (child.state == State::creating && busy(data_directory_, child)) {
-            throw Error(ErrorKind::conflict,
+            throw Error(ErrorKind::busy,
                         std::format("'{}' is being copied into '{}'; retry when that finishes",
                                     workspace.handle, child.handle));
         }
@@ -829,6 +845,29 @@ Workspace Workspaces::set_pinned(std::string_view target, bool pinned) {
     const auto lock = operation_lock();
     Workspace workspace = resolve(target);
     workspace.pinned = pinned;
+    workspace.updated_at = now_ms();
+    registry_.transaction([&] { registry_.update(workspace); });
+    return workspace;
+}
+
+Workspace Workspaces::set_labels(std::string_view target, const Labels& set,
+                                 const std::vector<std::string>& unset) {
+    require_valid_labels(set);
+    for (const auto& key : unset) {
+        require_valid_label_key(key);
+        if (set.contains(key)) {
+            throw Error(ErrorKind::invalid_argument,
+                        std::format("label '{}' cannot be both set and unset", key));
+        }
+    }
+    const auto lock = operation_lock();
+    Workspace workspace = resolve(target);
+    for (const auto& [key, value] : set) {
+        workspace.labels[key] = value;
+    }
+    for (const auto& key : unset) {
+        workspace.labels.erase(key);
+    }
     workspace.updated_at = now_ms();
     registry_.transaction([&] { registry_.update(workspace); });
     return workspace;

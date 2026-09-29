@@ -34,7 +34,7 @@ TEST_CASE("hz new copies the current workspace into a registered child") {
         REQUIRE(chain[1]["id"] == created["id"]);
     }
     SECTION("handles must be valid and unique in the family") {
-        REQUIRE(f.hz(f.project, {"new", "bad/name"}).exit_code == 1);
+        REQUIRE(f.hz(f.project, {"new", "bad/name"}).exit_code == 14);
         f.ok({"new", "taken"});
         REQUIRE(f.hz(f.project, {"--json", "new", "taken"}).json()["error"]["kind"] == "conflict");
     }
@@ -89,7 +89,7 @@ TEST_CASE("hz rm trashes a subtree that hz restore brings back together") {
         auto deleted = f.ok({"--json", "gc"}).json()["deleted"];
         REQUIRE(deleted.size() == 2);
         REQUIRE_FALSE(fs::exists(parent.parent_path() / ".trash"));
-        REQUIRE(f.hz(f.project, {"restore", "parent"}).exit_code == 1);
+        REQUIRE(f.hz(f.project, {"restore", "parent"}).exit_code == 15);
     }
 }
 
@@ -160,7 +160,7 @@ TEST_CASE("hz adopt follows a moved workspace; doctor reports what it cannot fix
     fs::rename(child, destination);
 
     auto doctor = f.hz(f.project, {"--json", "doctor"});
-    REQUIRE(doctor.exit_code == 1);
+    REQUIRE(doctor.exit_code == 19);
     REQUIRE(doctor.json()["findings"][0]["kind"] == "missing");
 
     f.ok({"adopt", destination.string()});
@@ -202,11 +202,11 @@ TEST_CASE("lifecycle hooks run with the workspace environment") {
     SECTION("a failing postcreate keeps the workspace; a failing preremove cancels removal") {
         write_file(f.project / "hooks" / "record", "#!/bin/sh\nexit 3\n");
         auto created = f.hz(f.project, {"--json", "new", "broken"});
-        REQUIRE(created.exit_code == 1);
+        REQUIRE(created.exit_code == 21);
         REQUIRE(created.json()["error"]["kind"] == "hook_failed");
         const auto path = fs::path(Fixture::trim(f.ok({"path", "broken"}).out));
         REQUIRE(fs::exists(path));
-        REQUIRE(f.hz(f.project, {"rm", "broken"}).exit_code == 1);
+        REQUIRE(f.hz(f.project, {"rm", "broken"}).exit_code == 21);
         REQUIRE(fs::exists(path));
         f.ok({"rm", "broken", "--no-hooks"});
     }
@@ -218,7 +218,7 @@ TEST_CASE("shell integration scripts and completion") {
     for (const auto* shell : {"zsh", "bash", "fish"}) {
         REQUIRE(f.ok({"shell", shell}).out.find("__complete") != std::string::npos);
     }
-    REQUIRE(f.hz(f.project, {"shell", "tcsh"}).exit_code == 1);
+    REQUIRE(f.hz(f.project, {"shell", "tcsh"}).exit_code == 14);
 
     f.ok({"new", "alpha"});
     f.ok({"new", "beta"});
@@ -364,7 +364,7 @@ TEST_CASE("a postcreate hook may run hz, but not on its own new workspace", "[co
                                                   std::string(HZ_BINARY) +
                                                   "\", \"rm\", \"hooked\", \"--no-hooks\"]]\n");
     const auto created = f.hz(f.project, {"--json", "new", "hooked"});
-    REQUIRE(created.exit_code == 1);
+    REQUIRE(created.exit_code == 21);
     REQUIRE(created.json()["error"]["kind"] == "hook_failed");
     const auto listed = f.ok({"--json", "path", "hooked"}).json()["workspace"];
     REQUIRE(listed["state"] == "active");
