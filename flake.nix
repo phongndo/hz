@@ -89,6 +89,7 @@
             pkgs.clang-tools # clangd, clang-format, clang-tidy
             pkgs.python3 # run-clang-tidy
             pkgs.git
+            pkgs.hk
             pkgs.just
             pkgs.nixd
           ];

@@ -35,7 +35,8 @@ clean:
 
 # Run hk checks (equivalent to pre-commit hook steps)
 hk-check:
-    mise x hk -- hk check
+    hk check
 
 hooks:
-    mise x hk -- hk validate
+    hk validate
+    hk install

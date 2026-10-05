@@ -59,7 +59,8 @@ nix flake check  # what CI runs: release build plus tests
 
 Git hooks are managed by [hk](https://hk.jdx.dev); the steps are in
 [hk.pkl](./hk.pkl) and run clang-format before each commit. `just hooks`
-validates the configuration.
+validates the configuration and installs this repository's hooks, which call
+the dev shell's `hk`, so commit from inside `nix develop`.
 
 For repeatable CLI performance comparisons against Rift, see
 [the benchmark runner](benchmarks/README.md). Build optimized binaries and run
