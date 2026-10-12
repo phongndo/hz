@@ -1,7 +1,7 @@
 # The release archive for one platform: an hz that runs without Nix, the installer that
 # `hz update` reruns, and the licenses of the libraries linked into it. On Linux the executable
 # is static (musl), so it runs on any distribution. On macOS nixpkgs already links the system's
-# libc++, so building SQLite static leaves only macOS's own libraries.
+# libc++, so building toml++ and SQLite static leaves only macOS's own libraries.
 { pkgs }:
 
 let
@@ -28,9 +28,14 @@ let
         musl = pkgs.pkgsStatic.stdenv.cc.libc;
       }
     else
+      let
+        static = pkg: pkg.override { stdenv = pkgs.stdenvAdapters.makeStaticLibraries pkgs.stdenv; };
+      in
       {
-        inherit (pkgs) cli11 tomlplusplus nlohmann_json;
-        sqlite = pkgs.sqlite.override { stdenv = pkgs.stdenvAdapters.makeStaticLibraries pkgs.stdenv; };
+        inherit (pkgs) cli11 nlohmann_json;
+        # nixpkgs builds toml++ as a compiled library, not only headers.
+        tomlplusplus = static pkgs.tomlplusplus;
+        sqlite = static pkgs.sqlite;
       };
 
   hz =
@@ -45,7 +50,7 @@ let
     else
       pkgs.callPackage ./package.nix {
         stdenv = pkgs.clangStdenv;
-        inherit (deps) sqlite;
+        inherit (deps) tomlplusplus sqlite;
       };
 
   # Sources whose licenses ask for their notice in binary distributions. (SQLite is in the
