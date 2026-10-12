@@ -10,24 +10,34 @@ consideration, not an implemented platform. Older registries are not migrated.
 
 ## Install
 
-Homebrew on macOS or Linux:
+hz runs on Apple Silicon macOS 14 or newer and on x86_64 and ARM64 Linux.
+
+### Homebrew
 
 ```sh
 brew install phongndo/tap/hz-cli
 ```
 
-Or use the install script, [mise](https://mise.jdx.dev) or [Nix](https://nixos.org):
+### Install script
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh
+```
+
+### mise
+
+```sh
 mise use -g github:phongndo/hz
+```
+
+### Nix
+
+```sh
 nix profile add github:phongndo/hz
 ```
 
-Releases run on Apple Silicon macOS 14 or newer and on x86_64 and ARM64 Linux.
-Update with the method that installed hz; the install script's copy updates with
-`hz update`. [Installation](docs/installation.md) covers pinning a version,
-removal, and building from source.
+Update with `hz update`, however you installed it. [Installation](docs/installation.md)
+covers pinning a version, removal, and building from source.
 
 ## Quickstart
 
