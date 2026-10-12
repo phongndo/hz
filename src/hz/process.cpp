@@ -6,6 +6,7 @@
 #include <array>
 #include <cerrno>
 #include <csignal>
+#include <cstdint>
 #include <cstring>
 #include <fcntl.h>
 #include <format>
@@ -14,6 +15,10 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 // POSIX owns this mutable global; we only read it to build the child's env.
 extern char**
@@ -240,6 +245,23 @@ ProcessResult run_process(const std::vector<std::string>& argv, const ProcessOpt
     }
     result.exit_code = wait_for(pid);
     return result;
+}
+
+std::filesystem::path current_executable() {
+#ifdef __APPLE__
+    std::uint32_t size = 0;
+    ::_NSGetExecutablePath(nullptr, &size);
+    std::vector<char> buffer(size);
+    if (::_NSGetExecutablePath(buffer.data(), &size) != 0) {
+        return {};
+    }
+    const std::filesystem::path path = buffer.data();
+#else
+    const std::filesystem::path path = "/proc/self/exe";
+#endif
+    std::error_code error;
+    auto canonical = std::filesystem::canonical(path, error);
+    return error ? std::filesystem::path{} : canonical;
 }
 
 } // namespace hz

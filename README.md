@@ -8,6 +8,27 @@ relationship.
 hz is pre-1.0. This C++23 rewrite targets Linux and macOS. Windows is a design
 consideration, not an implemented platform. Older registries are not migrated.
 
+## Install
+
+Homebrew on macOS or Linux:
+
+```sh
+brew install phongndo/tap/hz-cli
+```
+
+Or use the install script, [mise](https://mise.jdx.dev) or [Nix](https://nixos.org):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh
+mise use -g github:phongndo/hz
+nix profile add github:phongndo/hz
+```
+
+Releases run on Apple Silicon macOS 14 or newer and on x86_64 and ARM64 Linux.
+Update with the method that installed hz; the install script's copy updates with
+`hz update`. [Installation](docs/installation.md) covers pinning a version,
+removal, and building from source.
+
 ## Quickstart
 
 ```sh
@@ -104,7 +125,7 @@ nix flake check -L
 
 `nix build` produces the release binary and runs the tests. CI checks Linux and
 macOS packages plus Linux btrfs, XFS, ZFS, and ext4. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
+[CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and releases.
 
 ## License
 

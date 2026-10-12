@@ -85,7 +85,7 @@ _hz_complete() {
   local state command="" subcommand="" index
   _arguments -C \
     '--machine[emit stable machine-readable output]' \
-    '1:command:(init new path cd list ls pwd ancestors remove rm pin unpin label restore gc adopt doctor git hg config install shell)' \
+    '1:command:(init new path cd list ls pwd ancestors remove rm pin unpin label restore gc adopt doctor git hg config install shell update)' \
     '*::arg:->args'
 
   # Global options may precede the command, so positional word indexes are not

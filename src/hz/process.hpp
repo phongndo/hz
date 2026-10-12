@@ -29,4 +29,8 @@ struct ProcessResult {
 // spawn or I/O failure. Nonzero child exits are returned in ProcessResult.
 ProcessResult run_process(const std::vector<std::string>& argv, const ProcessOptions& options = {});
 
+// The running executable with symlinks resolved, or an empty path if the
+// system cannot say.
+std::filesystem::path current_executable();
+
 } // namespace hz
