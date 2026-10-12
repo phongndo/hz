@@ -6,10 +6,10 @@
   outputs =
     { self, nixpkgs }:
     let
+      # nixpkgs 26.11 dropped x86_64-darwin.
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
-        "x86_64-darwin"
         "x86_64-linux"
       ];
 
