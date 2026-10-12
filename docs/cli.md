@@ -133,13 +133,17 @@ Mutations using the same registry take turns and may fail as `busy`; see [concur
 hz update [VERSION]
 ```
 
-`update` replaces an hz that [the install script](installation.md#install-script)
-installed with the latest release, or with `VERSION` such as `0.10.0`. It reruns
-the script that came with the running release, in the directories it used, and
-does nothing when that release is already installed. Copies installed another
-way fail as `conflict` and name the commands that update them. The script prints
-its progress as text, so `update` with `--json` or `--machine` fails as
-`invalid_argument`.
+`update` updates the running hz the way it was installed, as
+[Updating](installation.md#updating) describes. For an hz from
+[the install script](installation.md#install-script), it reruns the script that
+came with the release, in the directories it used, to install the latest release
+or `VERSION` such as `0.10.0`. For Homebrew, mise or a Nix profile, `update` prints
+`Updating with: COMMAND` to stderr and replaces itself with that command, whose
+output and exit status are then its own. `VERSION` with those fails as
+`invalid_argument` and says how to pin a version instead. An hz that `update`
+cannot update, from a Nix configuration, `nix run`, or a source build, fails as
+`conflict`; a package manager that cannot be started fails as `io`. Progress is
+text, so `update` with `--json` or `--machine` fails as `invalid_argument`.
 
 ## Machine output
 

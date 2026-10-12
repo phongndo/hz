@@ -80,15 +80,33 @@ jobs:
           TAG: ${{ steps.source.outputs.tag }}
         run: |
           cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Builds for Apple Silicon macOS 14+ and for x86_64 and ARM64 Linux (static, any
+          distribution). Install with one of these, then update with \`hz update\`. See
+          [Installation](https://github.com/phongndo/hz/blob/main/docs/installation.md).
+
+          Homebrew:
+
           \`\`\`sh
           brew install phongndo/tap/hz-cli
-          curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh
-          mise use -g github:phongndo/hz
-          nix profile add github:phongndo/hz/$TAG
           \`\`\`
 
-          Builds for Apple Silicon macOS 14+ and for x86_64 and ARM64 Linux (static, any
-          distribution). See [Installation](https://github.com/phongndo/hz/blob/main/docs/installation.md).
+          Install script:
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh
+          \`\`\`
+
+          mise:
+
+          \`\`\`sh
+          mise use -g github:phongndo/hz
+          \`\`\`
+
+          Nix:
+
+          \`\`\`sh
+          nix profile add github:phongndo/hz/$TAG
+          \`\`\`
 
           EOF
           # Assets go up while the release is a draft: a published release can't change.

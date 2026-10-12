@@ -236,15 +236,15 @@ def check(archive: Path) -> None:
         if "checksum verification failed" not in output or command.readlink() != before:
             raise SystemExit("a corrupt download changed the installation")
 
-        # The installer leaves commands it did not install alone, and `hz update` only manages
-        # its own installations.
+        # The installer leaves commands it did not install alone, and `hz update` refuses an hz
+        # that nothing it knows installed.
         foreign = root / "foreign"
         foreign.mkdir()
         (foreign / "hz").write_text("#!/bin/sh\n")
         run("sh", installer, ok=False, HZ_INSTALL_DIR=str(foreign))
         extracted = extract(archive, root / "extracted") / "bin/hz"
-        if "brew upgrade hz-cli" not in run(str(extracted), "update", ok=False):
-            raise SystemExit("hz update offered to manage an installation it did not make")
+        if "can only update an hz installed by" not in run(str(extracted), "update", ok=False):
+            raise SystemExit("hz update did not refuse an hz that nothing it knows installed")
 
         # With the default directories, the releases share hz's data directory on Linux; it
         # must stay private, and hz must still keep its registry there.
