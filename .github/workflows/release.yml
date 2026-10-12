@@ -1,0 +1,117 @@
+name: Release
+
+# Publishes a stable release when its tag is pushed (see "Releases" in CONTRIBUTING.md). The tag
+# must be CMakeLists.txt's version on a main commit whose ci and Distribution runs pass; the
+# release carries the archives that Distribution built and tested for that commit.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # with pipefail, unlike the default shell
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the tag and wait for its commit's ci and Distribution runs
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(python3 scripts/dist.py version)
+          if [[ "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "::error::$GITHUB_REF_NAME is not the version in CMakeLists.txt, $tag"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$tag does not point to a commit on main"
+            exit 1
+          fi
+          for workflow in ci.yml distribution.yml; do
+            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$GITHUB_SHA&event=push&branch=main" \
+              --jq '.workflow_runs[0].id // empty')
+            if [[ -z "$run" ]]; then
+              echo "::error::$workflow has not run for main at $GITHUB_SHA"
+              exit 1
+            fi
+            if ! gh run watch "$run" --exit-status --interval 60 > /dev/null; then
+              echo "::error::$workflow failed for $GITHUB_SHA: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run"
+              exit 1
+            fi
+          done
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "distribution=$run" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.source.outputs.distribution }}
+          pattern: hz-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify the archives and write the Homebrew formula
+        run: |
+          [[ $(find dist -name '*.tar.gz' | wc -l) -eq 3 ]]
+          (cd dist && sha256sum --check ./*.sha256)
+          python3 scripts/dist.py formula --checksums dist --output dist/hz-cli.rb
+          ruby -c dist/hz-cli.rb
+          cp scripts/install.sh dist/
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.source.outputs.tag }}
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          \`\`\`sh
+          brew install phongndo/tap/hz-cli
+          curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh
+          mise use -g github:phongndo/hz
+          nix profile add github:phongndo/hz/$TAG
+          \`\`\`
+
+          Builds for Apple Silicon macOS 14+ and for x86_64 and ARM64 Linux (static, any
+          distribution). See [Installation](https://github.com/phongndo/hz/blob/main/docs/installation.md).
+
+          EOF
+          # Assets go up while the release is a draft: a published release can't change.
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2> /dev/null); then
+            if [[ "$draft" != true ]]; then
+              echo "::error::$TAG is already published; release a new version instead"
+              exit 1
+            fi
+          else
+            gh release create "$TAG" --draft --verify-tag --title "hz ${TAG#v}" \
+              --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
+          fi
+          gh release upload "$TAG" dist/* --clobber
+          gh release edit "$TAG" --draft=false --latest
+
+      - name: Tell the Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ steps.source.outputs.tag }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::notice::No HOMEBREW_TAP_TOKEN; the tap picks up $TAG on its next scheduled update."
+            exit 0
+          fi
+          gh api --method POST repos/phongndo/homebrew-tap/dispatches \
+            -f event_type=hz-release -f "client_payload[release_tag]=$TAG"

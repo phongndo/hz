@@ -3,16 +3,21 @@
 #include "hz/filter.hpp"
 #include "hz/fsutil.hpp"
 #include "hz/git.hpp"
+#include "hz/installation.hpp"
+#include "hz/process.hpp"
 #include "hz/tree.hpp"
+#include "hz/version.hpp"
 
 #include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <print>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 
 #include "cli/commands.hpp"
 #include "cli/shell_scripts.hpp"
@@ -235,6 +240,52 @@ void add_shell(Commands& commands) {
     install->add_option("shell", *install_shell, "zsh, bash, or fish")->required();
 }
 
+std::optional<Installation> read_receipt(const fs::path& file) {
+    std::ifstream in(file);
+    if (!in) {
+        return std::nullopt;
+    }
+    std::stringstream receipt;
+    receipt << in.rdbuf();
+    return parse_installation(receipt.str());
+}
+
+// Reruns the install script that came with the running release, in the
+// directories its receipt names. Other installations have no receipt.
+void add_update(Commands& commands) {
+    auto version = std::make_shared<std::string>();
+    auto* command = commands.add(
+        "update", "Update an hz that the install script installed", [&commands, version] {
+            if (commands.output().json()) {
+                throw Error(ErrorKind::invalid_argument,
+                            "update prints the install script's progress and has no JSON output");
+            }
+            // The install script links to bin/hz in a release directory, whose
+            // share/hz holds the script and its receipt.
+            const fs::path executable = current_executable();
+            const fs::path share = executable.parent_path().parent_path() / "share" / "hz";
+            const auto installation =
+                executable.empty() ? std::nullopt : read_receipt(share / "installation");
+            if (!installation) {
+                throw Error(ErrorKind::conflict,
+                            "update only updates an hz that the install script installed; update "
+                            "this one the way you installed it:\n"
+                            "  brew upgrade hz-cli\n"
+                            "  mise upgrade github:phongndo/hz\n"
+                            "  nix profile upgrade hz");
+            }
+            const fs::path script = share / "install.sh";
+            const std::string current = std::string("v") + hz::version;
+            ::setenv("HZ_INSTALL_DIR", installation->install_dir.c_str(), 1);
+            ::setenv("HZ_RELEASES_DIR", installation->releases_dir.c_str(), 1);
+            ::setenv("HZ_VERSION", version->empty() ? "latest" : version->c_str(), 1);
+            ::setenv("HZ_CURRENT_RELEASE", current.c_str(), 1);
+            ::execl("/bin/sh", "sh", script.c_str(), static_cast<char*>(nullptr));
+            throw errno_error("run the install script", script);
+        });
+    command->add_option("version", *version, "A release such as 0.10.0 (default: the latest)");
+}
+
 // Hidden entry point for shell completion.
 void add_complete(Commands& commands) {
     auto kind = std::make_shared<std::string>();
@@ -290,6 +341,7 @@ void add_integration_commands(Commands& commands) {
     add_hg(commands);
     add_config(commands);
     add_shell(commands);
+    add_update(commands);
     add_complete(commands);
     add_copy_tree(commands);
 }

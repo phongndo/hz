@@ -127,6 +127,20 @@ path means the shell should stay where it is.
 
 Mutations using the same registry take turns and may fail as `busy`; see [concurrency in the design](design.md#registry).
 
+## Updating hz
+
+```sh
+hz update [VERSION]
+```
+
+`update` replaces an hz that [the install script](installation.md#install-script)
+installed with the latest release, or with `VERSION` such as `0.10.0`. It reruns
+the script that came with the running release, in the directories it used, and
+does nothing when that release is already installed. Copies installed another
+way fail as `conflict` and name the commands that update them. The script prints
+its progress as text, so `update` with `--json` or `--machine` fails as
+`invalid_argument`.
+
 ## Machine output
 
 Data commands emit one JSON object on stdout when requested. Every object

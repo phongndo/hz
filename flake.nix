@@ -6,69 +6,43 @@
   outputs =
     { self, nixpkgs }:
     let
+      # nixpkgs 26.11 dropped x86_64-darwin.
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
-        "x86_64-darwin"
         "x86_64-linux"
       ];
 
       forAllSystems =
         function: nixpkgs.lib.genAttrs systems (system: function nixpkgs.legacyPackages.${system});
-
-      # CMakeLists.txt is the single home of the version number.
-      version = builtins.head (
-        builtins.match ".*project\\([[:space:]]*hz[[:space:]]+VERSION[[:space:]]+([0-9.]+).*" (
-          builtins.readFile ./CMakeLists.txt
-        )
-      );
-
-      dependencies = pkgs: [
-        pkgs.cli11
-        pkgs.tomlplusplus
-        pkgs.nlohmann_json
-        pkgs.sqlite
-        pkgs.catch2_3
-      ];
     in
     {
       packages = forAllSystems (pkgs: {
-        default = pkgs.clangStdenv.mkDerivation {
-          pname = "hz";
-          inherit version;
-          src = self;
-
-          nativeBuildInputs = [
-            pkgs.cmake
-            pkgs.ninja
-          ];
-          buildInputs = dependencies pkgs;
-
-          # The test suite drives real git repositories.
-          nativeCheckInputs = [
-            pkgs.git
-            pkgs.bash
-            pkgs.zsh
-            pkgs.fish
-          ];
-          cmakeFlags = [ "-DHZ_BUILD_TESTS=ON" ];
-          doCheck = true;
-          checkPhase = ''
-            runHook preCheck
-            ctest --output-on-failure
-            runHook postCheck
-          '';
-
-          meta = {
-            description = "Copy-on-write workspaces for parallel humans and agents";
-            license = pkgs.lib.licenses.mit;
-            mainProgram = "hz";
-          };
-        };
+        default = pkgs.callPackage ./nix/package.nix { stdenv = pkgs.clangStdenv; };
+        # This system's release archive and its checksum, in ./result
+        dist = import ./nix/dist.nix { inherit pkgs; };
       });
 
       checks = forAllSystems (pkgs: {
         package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+
+        actionlint =
+          pkgs.runCommand "hz-actionlint"
+            {
+              nativeBuildInputs = [
+                pkgs.actionlint
+                pkgs.shellcheck
+              ];
+            }
+            ''
+              cd ${self} && actionlint .github/workflows/*.yml
+              touch $out
+            '';
+
+        shellcheck = pkgs.runCommand "hz-shellcheck" { nativeBuildInputs = [ pkgs.shellcheck ]; } ''
+          shellcheck ${self}/scripts/install.sh
+          touch $out
+        '';
       });
 
       devShells = forAllSystems (pkgs: {

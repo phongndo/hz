@@ -33,18 +33,22 @@ shell is the development binary.
 ```text
 CMakeLists.txt        version number, targets, dependencies
 CMakePresets.json     debug and release presets under build/<preset>
-flake.nix             package, checks, and development shell
+flake.nix             packages, checks, and development shell
+nix/                  the package and the release archive
 src/hz/               hz_core: workspace model, registry, materialization
 src/cli/              the hz executable: argument parsing and output
 shell/                zsh, bash, and fish integration scripts
 tests/unit/           Catch2 unit tests for hz_core
 tests/CMakeLists.txt  unit test registration and black-box CLI tests
-docs/                 design, CLI, and configuration references
+docs/                 design, CLI, configuration, and installation references
+scripts/install.sh    the install script that every release ships
+scripts/dist.py       release tooling and the install checks
 ```
 
 Dependencies come from nixpkgs and are found with CMake config packages:
 CLI11, toml++, nlohmann_json, SQLite, and Catch2. Add a dependency in both
-`flake.nix` and `CMakeLists.txt`.
+`nix/package.nix` and `CMakeLists.txt`; if the hz executable links it, add its
+license to the notices in `nix/dist.nix` too.
 
 ## Local checks
 
@@ -54,7 +58,7 @@ just test        # build, then ctest
 just fmt         # clang-format in place
 just check       # clang-format --dry-run and clang-tidy (warnings fail)
 just release     # optimized build under build/release
-nix flake check  # what CI runs: release build plus tests
+nix flake check  # what CI runs: release build plus tests, actionlint, shellcheck
 ```
 
 Git hooks are managed by [hk](https://hk.jdx.dev); the steps are in
@@ -82,4 +86,32 @@ measurements separately from builds and test suites.
 - Include tests for new behaviour: unit tests for `hz_core`, black-box CLI
   tests for command output and filesystem effects.
 - CI runs `nix flake check` on Linux and macOS, plus filesystem tests on Linux
-  btrfs, XFS, ZFS, and ext4. Shell tests exercise bash, zsh, and fish.
+  btrfs, XFS, ZFS, and ext4. Shell tests exercise bash, zsh, and fish. The
+  Distribution workflow builds the release archives and installs them.
+
+## Releases
+
+`nix build .#dist` builds this system's release archive into `./result`: the
+executable, the install script, and the licenses of everything linked in. On
+Linux the executable is static (musl, with glibc's 8 MiB thread stacks), so it
+runs on any distribution; on macOS it links only system libraries. The
+Distribution workflow builds the archive for each platform on every push and
+pull request, then installs it on fresh runners without Nix, with the install
+script and with the Homebrew formula a release would publish.
+`python3 scripts/dist.py check result` runs the same install, update, and
+workspace checks locally.
+
+To release, set the new version in `project()` in `CMakeLists.txt`, merge it to
+`main`, then push its tag:
+
+```sh
+git tag v0.10.0 && git push origin v0.10.0
+```
+
+The Release workflow waits for that commit's ci and Distribution runs, then
+publishes the archives Distribution built, their checksums, the install script,
+and the Homebrew formula `hz-cli.rb`, and asks the
+[tap](https://github.com/phongndo/homebrew-tap) to update (with a
+`HOMEBREW_TAP_TOKEN` secret; without one the tap updates within six hours). The
+workflow never changes a published release, so fix a mistake with a new
+version.

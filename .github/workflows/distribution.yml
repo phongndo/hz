@@ -1,0 +1,85 @@
+name: Distribution
+
+# Builds the release archives on each platform they're published for, then installs them on
+# fresh runners without Nix: with scripts/install.sh (and `hz update`), and with the Homebrew
+# formula a release would publish. The Release workflow publishes the archives a main push built
+# here, so a release is exactly what this tested.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash # with pipefail, unlike the default shell
+
+jobs:
+  package:
+    name: Package (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin, runner: macos-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - run: nix build --print-build-logs .#dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hz-${{ matrix.target }}
+          path: result/
+          if-no-files-found: error
+
+  install:
+    name: Install (${{ matrix.target }})
+    needs: package
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin, runner: macos-latest }
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: hz-*
+          path: dist
+          merge-multiple: true
+      - name: Install with the install script, update, and make a workspace
+        run: python3 scripts/dist.py check dist
+      - uses: Homebrew/actions/setup-homebrew@dc7099b3e807f1e2ecc61f3ecabc840eedd5586a
+      - name: Install with the release's Homebrew formula
+        run: |
+          tap=$RUNNER_TEMP/tap
+          mkdir -p "$tap/Formula"
+          python3 scripts/dist.py formula --checksums dist --base-url "file://$PWD/dist" \
+            --output "$tap/Formula/hz-cli.rb"
+          git -C "$tap" init --quiet
+          git -C "$tap" add Formula
+          git -C "$tap" -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m formula
+          brew tap hz/test "$tap"
+          brew style hz/test/hz-cli
+          brew install hz/test/hz-cli
+          brew test hz/test/hz-cli
+          "$(brew --prefix)/bin/hz" --version
