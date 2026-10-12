@@ -1,9 +1,9 @@
 name: Distribution
 
 # Builds the release archives on each platform they're published for, then installs them on
-# fresh runners without Nix: with scripts/install.sh (and `hz update`), and with the Homebrew
-# formula a release would publish. The Release workflow publishes the archives a main push built
-# here, so a release is exactly what this tested.
+# fresh runners without Nix, with scripts/install.sh and with the Homebrew formula a release would
+# publish, and updates each with `hz update`. The Release workflow publishes the archives a main
+# push built here, so a release is exactly what this tested.
 
 on:
   push:
@@ -83,3 +83,10 @@ jobs:
           brew install hz/test/hz-cli
           brew test hz/test/hz-cli
           "$(brew --prefix)/bin/hz" --version
+          # hz update runs brew, which finds hz-cli current.
+          output=$("$(brew --prefix)/bin/hz" update 2>&1)
+          printf '%s\n' "$output"
+          if [[ $output != *"Updating with: "* || $output != *"brew upgrade hz-cli"* ]]; then
+            echo "::error::hz update did not run brew upgrade hz-cli"
+            exit 1
+          fi

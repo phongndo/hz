@@ -9,6 +9,7 @@
 #include "hz/version.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -17,7 +18,9 @@
 #include <print>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unistd.h>
+#include <vector>
 
 #include "cli/commands.hpp"
 #include "cli/shell_scripts.hpp"
@@ -250,40 +253,138 @@ std::optional<Installation> read_receipt(const fs::path& file) {
     return parse_installation(receipt.str());
 }
 
+constexpr std::string_view installation_docs =
+    "https://github.com/phongndo/hz/blob/main/docs/installation.md";
+
 // Reruns the install script that came with the running release, in the
-// directories its receipt names. Other installations have no receipt.
+// directories its receipt names.
+[[noreturn]] void rerun_install_script(const fs::path& share, const Installation& installation,
+                                       const std::string& version) {
+    const fs::path script = share / "install.sh";
+    const std::string current = std::string("v") + hz::version;
+    ::setenv("HZ_INSTALL_DIR", installation.install_dir.c_str(), 1);
+    ::setenv("HZ_RELEASES_DIR", installation.releases_dir.c_str(), 1);
+    ::setenv("HZ_VERSION", version.empty() ? "latest" : version.c_str(), 1);
+    ::setenv("HZ_CURRENT_RELEASE", current.c_str(), 1);
+    ::execl("/bin/sh", "sh", script.c_str(), static_cast<char*>(nullptr));
+    throw errno_error("run the install script", script);
+}
+
+// Replaces hz with the package manager's command, so it can replace hz's files.
+[[noreturn]] void run_instead(std::vector<std::string> argv) {
+    std::string command_line;
+    for (const auto& argument : argv) {
+        command_line += (command_line.empty() ? "" : " ") + argument;
+    }
+    std::println(stderr, "Updating with: {}", command_line);
+    std::vector<char*> pointers;
+    pointers.reserve(argv.size() + 1);
+    for (auto& argument : argv) {
+        pointers.push_back(argument.data());
+    }
+    pointers.push_back(nullptr);
+    ::execvp(pointers.front(), pointers.data());
+    const int error = errno;
+    throw Error(ErrorKind::io, std::format("could not run {}: {}; run it yourself: `{}`",
+                                           argv.front(), std::strerror(error), command_line));
+}
+
+// The element of the default Nix profile that holds `store_path`, if nix can say.
+std::optional<std::string> nix_profile_name(const fs::path& store_path) {
+    try {
+        const auto listed = run_process({"nix", "profile", "list", "--json"});
+        return listed.ok() ? nix_profile_element(listed.out, store_path) : std::nullopt;
+    } catch (const Error&) {
+        return std::nullopt; // no nix on PATH
+    }
+}
+
+// MISE_DATA_DIR with symlinks resolved, as they are in the executable's path.
+std::string mise_data_dir() {
+    const char* value = std::getenv("MISE_DATA_DIR");
+    if (value == nullptr || *value == '\0') {
+        return {};
+    }
+    std::error_code error;
+    const auto resolved = fs::weakly_canonical(value, error);
+    return error ? value : resolved.string();
+}
+
+// Updates the running hz with whatever installed it: reruns the install
+// script, or replaces itself with Homebrew, mise or Nix.
+[[noreturn]] void update(const std::string& version) {
+    // The install script links to bin/hz in a release directory, whose share/hz
+    // holds the script and its receipt.
+    const fs::path executable = current_executable();
+    const fs::path share = executable.parent_path().parent_path() / "share" / "hz";
+    const auto receipt = executable.empty() ? std::nullopt : read_receipt(share / "installation");
+    const auto found = installed_by(executable, mise_data_dir(), receipt.has_value());
+    // Package managers name a release 0.10.0; the install script takes v0.10.0 too.
+    const std::string_view bare =
+        std::string_view(version).substr(version.starts_with('v') ? 1 : 0);
+    switch (found.installer) {
+    case Installer::install_script:
+        if (receipt) {
+            rerun_install_script(share, *receipt, version);
+        }
+        break;
+    case Installer::homebrew: {
+        if (!version.empty()) {
+            throw Error(ErrorKind::invalid_argument,
+                        "Homebrew installs only the latest release; run `hz update` without a "
+                        "version");
+        }
+        const fs::path brew = found.homebrew_prefix / "bin" / "brew";
+        run_instead({::access(brew.c_str(), X_OK) == 0 ? brew.string() : "brew", "upgrade",
+                     found.homebrew_formula});
+    }
+    case Installer::mise:
+        if (!version.empty()) {
+            throw Error(
+                ErrorKind::invalid_argument,
+                std::format("pin a version with mise instead: `mise use -g github:phongndo/hz@{}`",
+                            bare));
+        }
+        run_instead({"mise", "upgrade", "github:phongndo/hz"});
+    case Installer::nix: {
+        // `nix profile upgrade` with a name the profile lacks succeeds without
+        // doing anything, so only the profile can name hz.
+        const auto name = nix_profile_name(found.nix_store_path);
+        if (!name) {
+            throw Error(ErrorKind::conflict,
+                        "this hz comes from a Nix configuration or `nix run`; update its flake "
+                        "input (`nix flake update hz`) and rebuild");
+        }
+        if (!version.empty()) {
+            throw Error(ErrorKind::invalid_argument,
+                        std::format("pin a version with Nix instead: `nix profile remove {} && "
+                                    "nix profile add github:phongndo/hz/v{}`",
+                                    *name, bare));
+        }
+        run_instead({"nix", "profile", "upgrade", *name});
+    }
+    case Installer::other:
+        break;
+    }
+    throw Error(ErrorKind::conflict,
+                std::format("`hz update` can only update an hz installed by Homebrew, the install "
+                            "script, mise or Nix; rebuild this one from source, or reinstall it "
+                            "with one of those: {}",
+                            installation_docs));
+}
+
 void add_update(Commands& commands) {
     auto version = std::make_shared<std::string>();
-    auto* command = commands.add(
-        "update", "Update an hz that the install script installed", [&commands, version] {
+    auto* command =
+        commands.add("update", "Update hz the way it was installed", [&commands, version] {
             if (commands.output().json()) {
                 throw Error(ErrorKind::invalid_argument,
-                            "update prints the install script's progress and has no JSON output");
+                            "update prints its progress as text and has no JSON output");
             }
-            // The install script links to bin/hz in a release directory, whose
-            // share/hz holds the script and its receipt.
-            const fs::path executable = current_executable();
-            const fs::path share = executable.parent_path().parent_path() / "share" / "hz";
-            const auto installation =
-                executable.empty() ? std::nullopt : read_receipt(share / "installation");
-            if (!installation) {
-                throw Error(ErrorKind::conflict,
-                            "update only updates an hz that the install script installed; update "
-                            "this one the way you installed it:\n"
-                            "  brew upgrade hz-cli\n"
-                            "  mise upgrade github:phongndo/hz\n"
-                            "  nix profile upgrade hz");
-            }
-            const fs::path script = share / "install.sh";
-            const std::string current = std::string("v") + hz::version;
-            ::setenv("HZ_INSTALL_DIR", installation->install_dir.c_str(), 1);
-            ::setenv("HZ_RELEASES_DIR", installation->releases_dir.c_str(), 1);
-            ::setenv("HZ_VERSION", version->empty() ? "latest" : version->c_str(), 1);
-            ::setenv("HZ_CURRENT_RELEASE", current.c_str(), 1);
-            ::execl("/bin/sh", "sh", script.c_str(), static_cast<char*>(nullptr));
-            throw errno_error("run the install script", script);
+            update(*version);
         });
-    command->add_option("version", *version, "A release such as 0.10.0 (default: the latest)");
+    command->add_option("version", *version,
+                        "A release such as 0.10.0, for the install script (default: the latest)");
 }
 
 // Hidden entry point for shell completion.
