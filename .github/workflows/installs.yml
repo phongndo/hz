@@ -65,13 +65,22 @@ jobs:
         runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     env:
       TAG: ${{ needs.release.outputs.tag }}
+      HOURS: ${{ needs.release.outputs.hours }}
       GITHUB_TOKEN: ${{ github.token }} # spares the runners' shared GitHub API rate limit
     steps:
       - name: Install mise
         run: |
           curl -fsSL https://mise.run | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - run: mise use -g github:phongndo/hz
+      - name: Install with mise
+        run: |
+          # mise installs a release as the latest once it's a day old, or sooner by its version.
+          if (( HOURS >= 24 )); then
+            mise use -g github:phongndo/hz
+          else
+            echo "::notice::mise installs $TAG without a version once it's a day old"
+            mise use -g "github:phongndo/hz@${TAG#v}"
+          fi
       - name: Check the installed version
         run: |
           installed=$(mise exec -- hz --version)
