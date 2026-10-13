@@ -1,12 +1,15 @@
 name: Release
 
-# Publishes a stable release when its tag is pushed (see "Releases" in CONTRIBUTING.md). The tag
-# must be CMakeLists.txt's version on a main commit whose ci and Distribution runs pass; the
-# release carries the archives that Distribution built and tested for that commit.
+# Publishes CMakeLists.txt's version when a push to main carries one that has no release yet
+# (see "Releases" in CONTRIBUTING.md), once that commit's ci and Distribution runs pass. The
+# release carries the archives Distribution built and tested for that commit; the Installs
+# workflow then installs it the ways the README documents. Running it by hand retries a failed
+# release.
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -21,7 +24,28 @@ defaults:
     shell: bash # with pipefail, unlike the default shell
 
 jobs:
+  version:
+    name: Find an unreleased version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(python3 scripts/dist.py version)
+          if [[ $(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2> /dev/null) == false ]]; then
+            echo "$tag is already released; bump the version in CMakeLists.txt to release again."
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   publish:
+    needs: version
+    if: needs.version.outputs.tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -29,23 +53,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check the tag and wait for its commit's ci and Distribution runs
+      - name: Check the commit and wait for its ci and Distribution runs
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
-          tag=$(python3 scripts/dist.py version)
-          if [[ "$GITHUB_REF_NAME" != "$tag" ]]; then
-            echo "::error::$GITHUB_REF_NAME is not the version in CMakeLists.txt, $tag"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not a commit on main"
             exit 1
           fi
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::$tag does not point to a commit on main"
+          if tagged=$(git rev-parse --verify --quiet "refs/tags/$TAG^{commit}") && [[ "$tagged" != "$GITHUB_SHA" ]]; then
+            echo "::error::$TAG already points to $tagged, not $GITHUB_SHA"
             exit 1
           fi
           for workflow in ci.yml distribution.yml; do
-            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$GITHUB_SHA&event=push&branch=main" \
-              --jq '.workflow_runs[0].id // empty')
+            # The push that started this run started those too; give them time to appear.
+            for _ in {1..30}; do
+              run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$GITHUB_SHA&event=push&branch=main" \
+                --jq '.workflow_runs[0].id // empty')
+              [[ -n "$run" ]] && break
+              sleep 10
+            done
             if [[ -z "$run" ]]; then
               echo "::error::$workflow has not run for main at $GITHUB_SHA"
               exit 1
@@ -55,7 +84,7 @@ jobs:
               exit 1
             fi
           done
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "distribution=$run" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v8
@@ -115,8 +144,10 @@ jobs:
               echo "::error::$TAG is already published; release a new version instead"
               exit 1
             fi
+            # A draft left by an earlier attempt may have been for another commit.
+            gh release edit "$TAG" --target "$GITHUB_SHA"
           else
-            gh release create "$TAG" --draft --verify-tag --title "hz ${TAG#v}" \
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "hz ${TAG#v}" \
               --notes-file "$RUNNER_TEMP/notes.md" --generate-notes
           fi
           gh release upload "$TAG" dist/* --clobber
@@ -128,8 +159,12 @@ jobs:
           TAG: ${{ steps.source.outputs.tag }}
         run: |
           if [[ -z "$GH_TOKEN" ]]; then
-            echo "::notice::No HOMEBREW_TAP_TOKEN; the tap picks up $TAG on its next scheduled update."
+            echo "::notice::No HOMEBREW_TAP_TOKEN; the tap picks up $TAG on its next hourly update."
             exit 0
           fi
           gh api --method POST repos/phongndo/homebrew-tap/dispatches \
             -f event_type=hz-release -f "client_payload[release_tag]=$TAG"
+
+  installs:
+    needs: publish
+    uses: ./.github/workflows/installs.yml

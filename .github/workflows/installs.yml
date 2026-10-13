@@ -1,0 +1,123 @@
+name: Installs
+
+# Installs the latest release the ways the README documents, on each platform it's published for,
+# and checks that the installed hz runs and is that release. The Release workflow runs this
+# after publishing, and it runs daily, so a release that never went out, an archive an installer
+# can't find, or a tap that fell behind fails here before a user finds it. Nix builds main, as
+# `nix profile add` does, so it checks only that the build installs and runs.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: "47 9 * * *"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash # with pipefail, unlike the default shell
+
+jobs:
+  release:
+    name: Latest release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.latest.outputs.tag }}
+      hours: ${{ steps.latest.outputs.hours }}
+    steps:
+      - id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view --repo "$GITHUB_REPOSITORY" --json tagName,publishedAt --jq '
+            "tag=\(.tagName)", "hours=\((now - (.publishedAt | fromdateiso8601)) / 3600 | floor)"' |
+            tee -a "$GITHUB_OUTPUT"
+
+  script:
+    name: Install script (${{ matrix.runner }})
+    needs: release
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    env:
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - run: curl -fsSL https://raw.githubusercontent.com/phongndo/hz/main/scripts/install.sh | sh
+      - name: Check the installed version
+        run: |
+          installed=$("$HOME/.local/bin/hz" --version)
+          [[ $installed == "hz ${TAG#v}" ]] || { echo "::error::Installed $installed, not $TAG"; exit 1; }
+
+  mise:
+    name: mise (${{ matrix.runner }})
+    needs: release
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    env:
+      TAG: ${{ needs.release.outputs.tag }}
+      GITHUB_TOKEN: ${{ github.token }} # spares the runners' shared GitHub API rate limit
+    steps:
+      - name: Install mise
+        run: |
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: mise use -g github:phongndo/hz
+      - name: Check the installed version
+        run: |
+          installed=$(mise exec -- hz --version)
+          [[ $installed == "hz ${TAG#v}" ]] || { echo "::error::Installed $installed, not $TAG"; exit 1; }
+
+  homebrew:
+    name: Homebrew (${{ matrix.runner }})
+    needs: release
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    env:
+      TAG: ${{ needs.release.outputs.tag }}
+      HOURS: ${{ needs.release.outputs.hours }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: Homebrew/actions/setup-homebrew@dc7099b3e807f1e2ecc61f3ecabc840eedd5586a
+      - name: Install from the tap
+        run: |
+          brew tap phongndo/tap
+          formula=$(brew info --json=v2 phongndo/tap/hz-cli 2> /dev/null | jq -r '.formulae[0].versions.stable') || formula=
+          if [[ v$formula != "$TAG" ]]; then
+            # The tap looks for new releases every hour.
+            if (( HOURS >= 2 )); then
+              echo "::error::The tap has hz ${formula:-nothing} $HOURS hours after $TAG was published"
+              exit 1
+            fi
+            echo "::notice::The tap has hz ${formula:-nothing} until it picks up $TAG, within the hour"
+            [[ -n $formula ]] || exit 0
+          fi
+          brew install phongndo/tap/hz-cli
+          installed=$("$(brew --prefix)/bin/hz" --version)
+          [[ $installed == "hz $formula" ]] || { echo "::error::Installed $installed, not $formula"; exit 1; }
+
+  nix:
+    name: Nix (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    steps:
+      - uses: DeterminateSystems/nix-installer-action@main
+      - run: nix profile add --profile "$RUNNER_TEMP/profile" github:phongndo/hz
+      - run: '"$RUNNER_TEMP/profile/bin/hz" --version'
