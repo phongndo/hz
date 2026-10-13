@@ -101,17 +101,16 @@ script and with the Homebrew formula a release would publish.
 `python3 scripts/dist.py check result` runs the same install, update, and
 workspace checks locally.
 
-To release, set the new version in `project()` in `CMakeLists.txt`, merge it to
-`main`, then push its tag:
-
-```sh
-git tag v0.10.0 && git push origin v0.10.0
-```
-
-The Release workflow waits for that commit's ci and Distribution runs, then
-publishes the archives Distribution built, their checksums, the install script,
-and the Homebrew formula `hz-cli.rb`, and asks the
+To release, set the new version in `project()` in `CMakeLists.txt` and merge it
+to `main`. The Release workflow runs on every push to `main` and acts when the
+version has no release yet: it waits for that commit's ci and Distribution runs,
+tags the commit, publishes the archives Distribution built, their checksums, the
+install script, and the Homebrew formula `hz-cli.rb`, and asks the
 [tap](https://github.com/phongndo/homebrew-tap) to update (with a
-`HOMEBREW_TAP_TOKEN` secret; without one the tap updates within six hours). The
-workflow never changes a published release, so fix a mistake with a new
-version.
+`HOMEBREW_TAP_TOKEN` secret; without one the tap updates within the hour). If a
+run fails, fix `main` and the next push retries, or rerun it. The workflow never
+changes a published release, so fix a mistake with a new version.
+
+The Installs workflow then installs the release with Homebrew, the install
+script, mise, and Nix on each platform, and checks the installed version; it
+runs again daily.

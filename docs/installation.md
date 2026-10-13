@@ -26,8 +26,8 @@ brew install phongndo/tap/hz-cli
 
 The formula is `hz-cli` because homebrew-core's `hz` is another project, the
 command-line tool of CloudWeGo's Go HTTP framework, and installs an `hz` command
-too; Homebrew won't install both. The tap picks up a new release within six
-hours of its publication.
+too; Homebrew won't install both. The tap picks up a new release within an
+hour of its publication.
 
 ## Install script
 
