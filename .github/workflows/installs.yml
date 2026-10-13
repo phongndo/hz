@@ -97,8 +97,8 @@ jobs:
           brew tap phongndo/tap
           formula=$(brew info --json=v2 phongndo/tap/hz-cli 2> /dev/null | jq -r '.formulae[0].versions.stable') || formula=
           if [[ v$formula != "$TAG" ]]; then
-            # The tap looks for new releases every hour.
-            if (( HOURS >= 2 )); then
+            # The tap looks for new releases every hour; allow for a missed run.
+            if (( HOURS >= 3 )); then
               echo "::error::The tap has hz ${formula:-nothing} $HOURS hours after $TAG was published"
               exit 1
             fi
