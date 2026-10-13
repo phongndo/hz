@@ -80,7 +80,9 @@ mise use -g github:phongndo/hz
 ```
 
 Pin a version with `github:phongndo/hz@0.10.0`, globally or in a project's
-`mise.toml`.
+`mise.toml`. mise takes a release as the latest once it's a day old, so for a
+day after a release it installs the one before; name the new version to get it
+sooner.
 
 ## Nix
 
