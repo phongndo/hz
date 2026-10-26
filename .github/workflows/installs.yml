@@ -104,7 +104,9 @@ jobs:
       - name: Install from the tap
         run: |
           brew tap phongndo/tap
-          formula=$(brew info --json=v2 phongndo/tap/hz-cli 2> /dev/null | jq -r '.formulae[0].versions.stable') || formula=
+          # Homebrew loads a tap formula only once it is trusted; install trusts the one it names, info does not.
+          brew trust --formula phongndo/tap/hz-cli
+          formula=$(brew info --json=v2 phongndo/tap/hz-cli | jq -r '.formulae[0].versions.stable') || formula=
           if [[ v$formula != "$TAG" ]]; then
             # The tap looks for new releases every hour; allow for a missed run.
             if (( HOURS >= 3 )); then
